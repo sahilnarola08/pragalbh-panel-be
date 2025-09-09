@@ -59,7 +59,6 @@ userSchema.virtual('fullName').get(function () {
 });
 
 // Index for better query performance
-userSchema.index({ email: 1 });
 userSchema.index({ company: 1 });
 
 const User = mongoose.model("User", userSchema);
