@@ -36,8 +36,6 @@ const orderSchema = new mongoose.Schema({
      },
      supplier: {
           type: String,
-          required: true,
-          trim: true,
      },
      orderPlatform: {
           type: String,
@@ -46,8 +44,6 @@ const orderSchema = new mongoose.Schema({
      },
      otherDetails: {
           type: String,
-          required: true,
-          trim: true,
      }
 }, {
      timestamps: true,

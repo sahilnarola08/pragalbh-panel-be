@@ -52,7 +52,7 @@ const register = async (req, res, next) => {
  // get all users
  const  getAllUsers = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search, sortField = 'createdAt', sortOrder = 'desc' } = req.body;
+    const { page = 1, limit = 10, search, sortField = 'createdAt', sortOrder = 'desc' } = req.query;
     const offset = (page - 1) * limit;
     const sort = {};
     sort[sortField] = sortOrder === "asc" ? 1 : -1;1
