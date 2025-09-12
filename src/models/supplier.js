@@ -49,9 +49,6 @@ supplierSchema.virtual('fullName').get(function () {
      return `${this.firstName} ${this.lastName}`;
 });
 
-// Index for better query performance
-supplierSchema.index({ company: 1 });
-supplierSchema.index({ fullName: 1 });
 const Supplier = mongoose.model("Supplier", supplierSchema);
 
 export default Supplier;
