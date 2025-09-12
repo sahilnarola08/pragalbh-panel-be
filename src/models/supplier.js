@@ -5,11 +5,13 @@ const supplierSchema = new mongoose.Schema({
           type: String,
           required: true,
           trim: true,
+          index: true,
      },
      lastName: {
           type: String,
           required: true,
           trim: true,
+          index: true,
      },
      address: {
           type: String,
@@ -19,17 +21,22 @@ const supplierSchema = new mongoose.Schema({
      contactNumber: {
           type: String,
           required: true,
+          unique: true,
           trim: true,
+          index: true,
      },
      company: {
           type: String,
           required: true,
           trim: true,
+          default: 0,
+          index: true,
      },
      advancePayment: {
           type: Number,
           required: true,
           trim: true,
+          default: 0,
      },
 }, {
      timestamps: true,
