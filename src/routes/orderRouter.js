@@ -11,8 +11,12 @@ router.post("/create", orderController.createOrder);
 router.get("/all", orderController.getAllOrders);
 
 // update order status
-router.patch("/update-status/:id", orderController.updateOrderStatus);
+router.patch("/update-status", orderController.updateOrderStatus);
 
+// update order checklist
+router.patch("/update-checklist", orderController.updateOrderChecklist);
+
+// get kanban board data
 router.get("/kanban-board", orderController.getKanbanData);
 
 export default router;

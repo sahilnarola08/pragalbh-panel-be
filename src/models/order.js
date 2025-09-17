@@ -26,7 +26,7 @@ const orderSchema = new mongoose.Schema({
           required: true,
      },
      dispatchDate: {
-          type: Date,    
+          type: Date,
           required: true,
      },
      purchasePrice: {
@@ -61,13 +61,31 @@ const orderSchema = new mongoose.Schema({
      },
      trackingId: {
           type: String,
-     }
+          default: ""
+     },
+     courierCompany: {
+          type: String,
+          default: ""
+     },
+     checklist: {
+          type: [
+            { id: String, label: String, checked: Boolean }
+          ],
+          default: [
+            { id: "diamonds", label: "Check Diamonds", checked: false },
+            { id: "movements", label: "Check Movements", checked: false },
+            { id: "crown", label: "Check Crown", checked: false },
+            { id: "datetime", label: "Check Day Date Time", checked: false },
+            { id: "rah", label: "Check RAH", checked: false },
+          ]
+        },
+      trackingIdUpdatedAt: { type: Date },   
 }, {
      timestamps: true,
 });
 
 // Generate order ID 
-orderSchema.pre('save', async function(next) {
+orderSchema.pre('save', async function (next) {
      if (!this.orderId) {
           const count = await mongoose.model('Order').countDocuments();
           this.orderId = `ORD-${String(count + 1).padStart(4, '0')}`;

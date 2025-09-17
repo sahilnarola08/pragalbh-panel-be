@@ -147,50 +147,169 @@ const getKanbanData = async (req, res) => {
   }
 };
 
-// New function to update the status of an order
-const updateOrderStatus = async (req, res) => {
+
+export const updateOrderChecklist = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { status } = req.body;
+    const { orderId, checklist } = req.body;
+    const id = orderId || req.params?.id;
 
-    if (!status) {
-      return sendErrorResponse({
-        res,
-        message: "Status is required to update an order",
-        status: 400
-      });
+    if (!id) {
+      return sendErrorResponse({ res, status: 400, message: "orderId is required" });
+    }
+    if (!Array.isArray(checklist)) {
+      return sendErrorResponse({ res, status: 400, message: "Checklist array is required" });
     }
 
-    const order = await Order.findByIdAndUpdate(id, { status }, { new: true });
-
+    const order = await Order.findById(id);
     if (!order) {
-      return sendErrorResponse({
-        res,
-        message: "Order not found",
-        status: 404
-      });
+      return sendErrorResponse({ res, status: 404, message: "Order not found" });
     }
+
+    order.checklist = checklist;
+    await order.save();
 
     return sendSuccessResponse({
       res,
+      status: 200,
+      data: order,
+      message: "Checklist updated successfully",
+    });
+  } catch (err) {
+    console.error("Error updating checklist:", err);
+    return sendErrorResponse({ res, status: 500, message: "Failed to update checklist" });
+  }
+};
+
+// Update status endpoint with validation rules
+// export const updateOrderStatus = async (req, res) => {
+//   try {
+//     const { orderId, status, trackingId, courierCompany } = req.body;
+//     const id = orderId || req.params?.id;
+//     if (!id) {
+//       return sendErrorResponse({ res, status: 400, message: "orderId is required" });
+//     }
+//     if (!status) {
+//       return sendErrorResponse({ res, status: 400, message: "status is required" });
+//     }
+
+//     const order = await Order.findById(id);
+//     if (!order) {
+//       return sendErrorResponse({ res, status: 404, message: "Order not found" });
+//     }
+
+//     // Validate: factory_process -> video_confirmation requires all required checklist items checked
+//     // if (order.status === ORDER_STATUS.FACTORY_PROCESS && status === ORDER_STATUS.VIDEO_CONFIRMATION) {
+//     //   const requiredChecks = ["diamonds", "movements", "crown", "datetime", "rah"];
+//     //   const incomplete = requiredChecks.filter((key) => {
+//     //     const found = order.checklist.find((c) => c.id === key);
+//     //     return !found || !found.checked;
+//     //   });
+//     //   if (incomplete.length > 0) {
+//     //     return sendErrorResponse({
+//     //       res,
+//     //       status: 400,
+//     //       message: `Cannot move to video confirmation. Incomplete checks: ${incomplete.join(", ")}`,
+//     //     });
+//     //   }
+//     // }
+
+//     if (status === ORDER_STATUS.VIDEO_CONFIRMATION) {
+//       const requiredChecks = ["diamonds", "movements", "crown", "datetime", "rah"];
+//       const incomplete = requiredChecks.filter((key) => {
+//         const found = order.checklist.find((c) => c.id === key);
+//         return !found || !found.checked;
+//       });
+
+//       if (incomplete.length > 0) {
+//         return sendErrorResponse({
+//           res,
+//           status: 400,
+//           message: `Cannot move to video confirmation. Incomplete checks: ${incomplete.join(", ")}`,
+//         });
+//       }
+//     }
+
+//     // All validations passed — update status
+//     order.status = status;
+//     await order.save();
+
+//     return sendSuccessResponse({
+//       res,
+//       status: 200,
+//       data: order,
+//       message: "Order status updated successfully",
+//     });
+//   } catch (err) {
+//     console.error("Error updating order status:", err);
+//     return sendErrorResponse({ res, status: 500, message: "Failed to update order status" });
+//   }
+// };
+
+export const updateOrderStatus = async (req, res) => {
+  try {
+    const { orderId, status } = req.body;
+    const id = orderId || req.params?.id;
+
+    if (!id) {
+      return sendErrorResponse({ res, status: 400, message: "orderId is required" });
+    }
+    if (!status) {
+      return sendErrorResponse({ res, status: 400, message: "status is required" });
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      return sendErrorResponse({ res, status: 404, message: "Order not found" });
+    }
+
+    // 🔥 Columns that require checklist to be fully completed
+    const protectedColumns = [
+      ORDER_STATUS.VIDEO_CONFIRMATION,
+      ORDER_STATUS.DISPATCH,
+      ORDER_STATUS.UPDATED_TRACKING_ID,
+    ];
+
+    if (protectedColumns.includes(status)) {
+      const requiredChecks = ["diamonds", "movements", "crown", "datetime", "rah"];
+      const incomplete = requiredChecks.filter((key) => {
+        const found = order.checklist.find((c) => c.id === key);
+        return !found || !found.checked;
+      });
+      if (incomplete.length > 0) {
+        return sendErrorResponse({
+          res,
+          status: 400,
+          message: `Cannot move to ${status}. Incomplete checks: ${incomplete.join(", ")}`,
+        });
+      }
+    }
+
+    // ✅ If we reach here → status can be updated
+    order.status = status;
+    await order.save();
+
+    return sendSuccessResponse({
+      res,
+      status: 200,
       data: order,
       message: "Order status updated successfully",
-      status: 200
     });
 
   } catch (err) {
     console.error("Error updating order status:", err);
     return sendErrorResponse({
       res,
+      status: 500,
       message: "Failed to update order status",
-      status: 500
     });
   }
 };
+
 
 export default {
     createOrder,
     getAllOrders,
     updateOrderStatus,
-    getKanbanData
+    getKanbanData,
+    updateOrderChecklist
 }
