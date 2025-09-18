@@ -61,7 +61,8 @@ const orderSchema = new mongoose.Schema({
      },
      trackingId: {
           type: String,
-          default: ""
+          default: "",
+          unique: true,
      },
      courierCompany: {
           type: String,

@@ -1,6 +1,8 @@
 import Order from "../models/order.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import { ORDER_STATUS, DEFAULT_ORDER_STATUS, DEFAULT_TIME_STATUS, DEFAULT_PAYMENT_STATUS } from "../helper/enums.js";
+import Product from "../models/product.js";
+import User from "../models/user.js";
 
 export const createOrder = async (req, res, next) => {
   try {
@@ -17,6 +19,27 @@ export const createOrder = async (req, res, next) => {
       otherDetails
     } = req.body;
 
+
+    //  Validate client existence
+    const existingClient = await User.findOne({ name: clientName });
+    if (!existingClient) {
+      return sendErrorResponse({
+        res,
+        message: `Client "${clientName}" does not exist. Please add client first.`,
+        status: 400,
+      });
+    }
+
+    //  Validate product existence
+    const existingProduct = await Product.findOne({ name: product });
+    if (!existingProduct) {
+      return sendErrorResponse({
+        res,
+        message: `Product "${product}" does not exist. Please add product first.`,
+        status: 400,
+      });
+    }
+
     // The order status will automatically be set to 'pending' because we updated the enums file.
     const order = await Order.create({
       clientName,
@@ -30,8 +53,6 @@ export const createOrder = async (req, res, next) => {
       orderPlatform,
       otherDetails,
       status: DEFAULT_ORDER_STATUS,
-      timeStatus: DEFAULT_TIME_STATUS,
-      paymentStatus: DEFAULT_PAYMENT_STATUS,
     });
 
     return sendSuccessResponse({
@@ -82,7 +103,7 @@ const getAllOrders = async (req, res) => {
         { orderPlatform: new RegExp(search, "i") },
       ];
     }
-    
+
     // Add status filter if provided in the query
     if (status) {
       filter.status = status;
@@ -255,6 +276,16 @@ export const updateTrackingInfo = async (req, res) => {
       });
     }
 
+    //  Check if trackingId already exists in another order
+    const existingOrder = await Order.findOne({ trackingId, _id: { $ne: orderId } });
+    if (existingOrder) {
+      return sendErrorResponse({
+        res,
+        status: 400,
+        message: `Tracking ID "${trackingId}" is already assigned to another order.`,
+      });
+    }
+
     const order = await Order.findById(orderId);
     if (!order) {
       return sendErrorResponse({ res, status: 404, message: "Order not found" });
@@ -286,10 +317,10 @@ export const updateTrackingInfo = async (req, res) => {
 
 
 export default {
-    createOrder,
-    getAllOrders,
-    updateOrderStatus,
-    getKanbanData,
-    updateOrderChecklist,
-    updateTrackingInfo
+  createOrder,
+  getAllOrders,
+  updateOrderStatus,
+  getKanbanData,
+  updateOrderChecklist,
+  updateTrackingInfo
 }
