@@ -7,8 +7,7 @@ const platformSchema = new mongoose.Schema({
        trim: true
      },
      platformUsername: {
-       type: String,
-       required: true,
+       type: String,     
        trim: true
      }
    }, { _id: false });
@@ -19,33 +18,35 @@ const userSchema = new mongoose.Schema({
           type: String,
           required: [true, 'First name is required'],
           trim: true,
+          index: true,
      },
      lastName: {
           type: String,
           required: [true, 'Last name is required'],
           trim: true,
+          index: true,
      },
      address: {
           type: String,
-          required: [true, 'Address is required'],
           trim: true,
      },
      contactNumber: {
           type: String,
-          required: [true, 'Contact number is required'],
           trim: true,
+          unique: true,
+          index: true,
      },
      platforms: [platformSchema],
      company: {
           type: String,
-          required: [true, 'Company name is required'],
           trim: true,
+          index: true,
      },
      email: {
           type: String,
-          required: [true, 'Email is required'],
           trim: true,
           unique: true,
+          index: true,
      },
 }, {
      timestamps: true,
@@ -57,10 +58,6 @@ const userSchema = new mongoose.Schema({
 userSchema.virtual('fullName').get(function () {
      return `${this.firstName} ${this.lastName}`;
 });
-
-// Index for better query performance
-userSchema.index({ company: 1 });
-
 const User = mongoose.model("User", userSchema);
 
 export default User;
