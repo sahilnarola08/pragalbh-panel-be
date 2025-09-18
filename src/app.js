@@ -5,7 +5,9 @@ import connectDB from "./config/db.js";
 import routes from "./routes/allrouts.js";
 
 // Load environment variables
-dotenv.config();
+const envFile = process.env.NODE_ENV === 'production' ? 'env.prod' : 
+                process.env.NODE_ENV === 'staging' ? 'env.staging' : 'env.dev';
+dotenv.config({ path: envFile });
 
 const app = express();
 

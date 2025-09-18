@@ -5,11 +5,13 @@ const productSchema = new mongoose.Schema({
      type: String,
      required: true,
      trim: true,
+     index: true,
   },
   productName: {
      type: String,
      required: true,
      trim: true,
+     index: true,
   },
 }, {
   timestamps: true, 
