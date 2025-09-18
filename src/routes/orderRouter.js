@@ -19,4 +19,8 @@ router.patch("/update-checklist", orderController.updateOrderChecklist);
 // get kanban board data
 router.get("/kanban-board", orderController.getKanbanData);
 
+// update tracking info
+router.patch("/update-tracking-info", orderController.updateTrackingInfo);
+
 export default router;
+    
