@@ -1,7 +1,9 @@
 import dotenv from "dotenv";
 import app from "./app.js";
 
-dotenv.config();
+const envFile = process.env.NODE_ENV === 'production' ? 'env.prod' : 
+                process.env.NODE_ENV === 'staging' ? 'env.staging' : 'env.dev';
+dotenv.config({ path: envFile });
 
 const PORT = process.env.PORT || 5000;
 
