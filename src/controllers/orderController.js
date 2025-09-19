@@ -3,6 +3,7 @@ import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.
 import { ORDER_STATUS, DEFAULT_ORDER_STATUS, DEFAULT_TIME_STATUS, DEFAULT_PAYMENT_STATUS } from "../helper/enums.js";
 import Product from "../models/product.js";
 import User from "../models/user.js";
+import Supplier from "../models/supplier.js";
 
 export const createOrder = async (req, res, next) => {
   try {
@@ -20,8 +21,36 @@ export const createOrder = async (req, res, next) => {
     } = req.body;
 
 
-    //  Validate client existence
-    const existingClient = await User.findOne({ name: clientName });
+    // //  Validate client existence
+    // const existingClient = await User.findOne({ name: clientName });
+    // if (!existingClient) {
+    //   return sendErrorResponse({
+    //     res,
+    //     message: `Client "${clientName}" does not exist. Please add client first.`,
+    //     status: 400,
+    //   });
+    // }
+
+    // //  Validate product existence
+    // const existingProduct = await Product.findOne({ name: product });
+    // if (!existingProduct) {
+    //   return sendErrorResponse({
+    //     res,
+    //     message: `Product "${product}" does not exist. Please add product first.`,
+    //     status: 400,
+    //   });
+    // }
+
+
+    // ✅ Validate client existence
+    const existingClient = await User.findOne({
+      $or: [
+        { firstName: new RegExp(clientName, "i") },
+        { lastName: new RegExp(clientName, "i") },
+        { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: clientName, options: "i" } } }
+      ]
+    });
+
     if (!existingClient) {
       return sendErrorResponse({
         res,
@@ -30,14 +59,40 @@ export const createOrder = async (req, res, next) => {
       });
     }
 
-    //  Validate product existence
-    const existingProduct = await Product.findOne({ name: product });
+    // ✅ Validate product existence
+    const existingProduct = await Product.findOne({
+      productName: new RegExp(product, "i")
+    });
+
     if (!existingProduct) {
       return sendErrorResponse({
         res,
         message: `Product "${product}" does not exist. Please add product first.`,
         status: 400,
       });
+    }
+
+
+    let supplierName = supplier?.trim() || "";
+    let existingSupplier = null;
+
+    if (supplierName) {
+      existingSupplier = await Supplier.findOne({
+        $or: [
+          { firstName: new RegExp(supplierName, "i") },
+          { lastName: new RegExp(supplierName, "i") },
+          { company: new RegExp(supplierName, "i") },
+          { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: supplierName, options: "i" } } }
+        ]
+      });
+
+      if (!existingSupplier) {
+        return sendErrorResponse({
+          res,
+          message: `Supplier "${supplierName}" does not exist. Please add supplier first.`,
+          status: 400,
+        });
+      }
     }
 
     // The order status will automatically be set to 'pending' because we updated the enums file.
@@ -52,6 +107,8 @@ export const createOrder = async (req, res, next) => {
       supplier,
       orderPlatform,
       otherDetails,
+      trackingId: "",
+      courierCompany: "",
       status: DEFAULT_ORDER_STATUS,
     });
 
