@@ -61,7 +61,11 @@ const orderSchema = new mongoose.Schema({
      },
      trackingId: {
           type: String,
-          default: ""
+          default: "",
+          index: {
+               unique: true,
+               partialFilterExpression: { trackingId: { $ne: "" } }
+          }
      },
      courierCompany: {
           type: String,
@@ -69,17 +73,17 @@ const orderSchema = new mongoose.Schema({
      },
      checklist: {
           type: [
-            { id: String, label: String, checked: Boolean }
+               { id: String, label: String, checked: Boolean }
           ],
           default: [
-            { id: "diamonds", label: "Check Diamonds", checked: false },
-            { id: "movements", label: "Check Movements", checked: false },
-            { id: "crown", label: "Check Crown", checked: false },
-            { id: "datetime", label: "Check Day Date Time", checked: false },
-            { id: "rah", label: "Check RAH", checked: false },
+               { id: "diamonds", label: "Check Diamonds", checked: false },
+               { id: "movements", label: "Check Movements", checked: false },
+               { id: "crown", label: "Check Crown", checked: false },
+               { id: "datetime", label: "Check Day Date Time", checked: false },
+               { id: "rah", label: "Check RAH", checked: false },
           ]
-        },
-      trackingIdUpdatedAt: { type: Date },   
+     },
+     trackingIdUpdatedAt: { type: Date },
 }, {
      timestamps: true,
 });
