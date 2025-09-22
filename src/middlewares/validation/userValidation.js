@@ -12,7 +12,6 @@ const platformSchema = yup.object().shape({
     .string()
     .min(3, "Platform username must be at least 3 characters")
     .max(50, "Platform username must not exceed 50 characters")
-    .matches(/^[a-zA-Z0-9_]+$/, "Platform username can only contain letters, numbers, and underscores")
 });
 
 // User registration validation schema (NO password here)
