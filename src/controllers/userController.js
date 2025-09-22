@@ -71,14 +71,14 @@ const register = async (req, res, next) => {
 
     // Fetch users
     const users = await User
-      .find(filter)
+      .find({...filter ,isDeleted: false})
       .sort(sort)
       .skip(offset)
       .limit(limit)
       .select("-password -__v -createdAt -updatedAt");
 
 
-    const totalUsers = await User.countDocuments(filter);
+    const totalUsers = await User.countDocuments({...filter ,isDeleted: false});
 
     return sendSuccessResponse({
       status: 200,
@@ -102,9 +102,133 @@ const register = async (req, res, next) => {
   }
 }
 
+// Update user by ID
+const updateUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
 
+    // Check if user exists
+    const existingUser = await User.findById(id);
+    if (!existingUser) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "User not found."
+      });
+    }
+
+    // Check if email is being updated and already exists for another user
+    if (updateData.email) {
+      const existingUserByEmail = await User.findOne({ 
+        email: updateData.email,
+        _id: { $ne: id }
+      });
+      if (existingUserByEmail) {
+        return sendErrorResponse({
+          status: 400,
+          res,
+          message: "Email already exists for another user."
+        });
+      }
+    }
+
+    // Check if contact number is being updated and already exists for another user
+    if (updateData.contactNumber) {
+      const existingUserByContact = await User.findOne({ 
+        contactNumber: updateData.contactNumber,
+        _id: { $ne: id }
+      });
+      if (existingUserByContact) {
+        return sendErrorResponse({
+          status: 400,
+          res,
+          message: "Contact number already exists for another user."
+        });
+      }
+    }
+
+    // Update user
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select("-__v");
+
+    sendSuccessResponse({
+      res,
+      data: updatedUser,
+      message: "User updated successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Delete user by ID
+const deleteUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Check if user exists
+    const existingUser = await User.findById(id);
+    if (!existingUser) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "User not found."
+      });
+    }
+
+    // Delete user
+    await User.updateOne({_id: id}, {$set: {isDeleted: true}});
+    
+
+    sendSuccessResponse({
+      res,
+      data: null,
+      message: "User deleted successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get user by ID
+const getUserById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findById(id).select("-__v -createdAt -updatedAt ");
+    
+    if (!user) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "User not found."
+      });
+    }
+
+    sendSuccessResponse({
+      res,
+      data: user,
+      message: "User retrieved successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
 
 export default {
     register,
     getAllUsers,
+    updateUser,
+    deleteUser,
+    getUserById,
 };
