@@ -1,12 +1,22 @@
 import express from "express";
-import validateSupplierSchema from "../middlewares/validation/supplierSchema.js";
+import { validateSupplierSchema, validateSupplierUpdate, validateSupplierDelete } from "../middlewares/validation/supplierSchema.js";
 import supplierController from "../controllers/supplierController.js";
 
 const router = express.Router();
 
-router.post("/create", validateSupplierSchema,supplierController.createSupplier );
+// Create supplier
+router.post("/create", validateSupplierSchema, supplierController.createSupplier);
 
-// get all suppliers
+// Get all suppliers
 router.get("/all", supplierController.getAllSuppliers);
+
+// Get supplier by ID
+router.get("/get-supplier-by-id/:id", validateSupplierDelete, supplierController.getSupplierById);
+
+// Update supplier by ID
+router.put("/update-supplier/:id", validateSupplierUpdate, supplierController.updateSupplier);
+
+// Delete supplier by ID
+router.delete("/delete-supplier/:id", validateSupplierDelete, supplierController.deleteSupplier);
 
 export default router;
