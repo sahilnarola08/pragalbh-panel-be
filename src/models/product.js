@@ -13,6 +13,14 @@ const productSchema = new mongoose.Schema({
      trim: true,
      index: true,
   },
+  image: {
+   type: String,
+   default: "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product"
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false,
+  },
 }, {
   timestamps: true, 
 });

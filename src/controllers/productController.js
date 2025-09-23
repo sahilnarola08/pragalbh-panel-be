@@ -1,9 +1,10 @@
 import Product from "../models/product.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
-// create product contrtoller
- const createProduct = async (req, res) => {
+
+// create product controller
+const createProduct = async (req, res) => {
   try {
-    const { category, productName } = req.body;
+    const { category, productName, image } = req.body;
 
     // check if product already exists in same category
     const existing = await Product.findOne({ category, productName });
@@ -15,7 +16,7 @@ import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.
       });
     }
 
-    const newProduct = await Product.create({ category, productName });
+    const newProduct = await Product.create({ category, productName, image });
 
     return sendSuccessResponse({
       res,
@@ -52,12 +53,17 @@ const getAllProducts = async (req, res) => {
     const sort = {};
     sort[sortField] = sortOrder === "asc" ? 1 : -1;
 
-    // Search filter
-    const filter = {};
+    // Search filter - exclude deleted products
+    const filter = { isDeleted: { $ne: true } };
     if (search) {
-      filter.$or = [
-        { category: new RegExp(search, "i") },
-        { productName: new RegExp(search, "i") },
+      filter.$and = [
+        { isDeleted: { $ne: true } },
+        {
+          $or: [
+            { category: new RegExp(search, "i") },
+            { productName: new RegExp(search, "i") },
+          ]
+        }
       ];
     }
 
@@ -90,7 +96,122 @@ const getAllProducts = async (req, res) => {
   }
 };
 
+// Update product by ID
+const updateProduct = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    // Check if product exists
+    const existingProduct = await Product.findById(id);
+    if (!existingProduct) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "Product not found."
+      });
+    }
+
+    // Check if product with same category and name already exists (excluding current product)
+    if (updateData.category && updateData.productName) {
+      const existingProductByCategoryAndName = await Product.findOne({ 
+        category: updateData.category,
+        productName: updateData.productName,
+        _id: { $ne: id }
+      });
+      if (existingProductByCategoryAndName) {
+        return sendErrorResponse({
+          status: 400,
+          res,
+          message: "Product with this name already exists in this category."
+        });
+      }
+    }
+
+    // Update product
+    const updatedProduct = await Product.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select("-__v");
+
+    sendSuccessResponse({
+      res,
+      data: updatedProduct,
+      message: "Product updated successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Delete product by ID
+const deleteProduct = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Check if product exists
+    const existingProduct = await Product.findById(id);
+    if (!existingProduct) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "Product not found."
+      });
+    }
+
+    // Soft delete - set isDeleted to true
+    const deletedProduct = await Product.findByIdAndUpdate(
+      id,
+      { isDeleted: true },
+      { new: true }
+    );
+
+    sendSuccessResponse({
+      res,
+      data: deletedProduct,
+      message: "Product deleted successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get product by ID
+const getProductById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const product = await Product.findById(id).select("-__v -createdAt -updatedAt");
+    
+    if (!product) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "Product not found."
+      });
+    }
+
+    sendSuccessResponse({
+      res,
+      data: product,
+      message: "Product retrieved successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
 export default {
   createProduct,
   getAllProducts,
+  updateProduct,
+  deleteProduct,
+  getProductById,
 };
