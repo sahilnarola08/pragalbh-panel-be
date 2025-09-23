@@ -48,6 +48,10 @@ const userSchema = new mongoose.Schema({
           unique: true,
           index: true,
      },
+     isDeleted: {
+          type: Boolean,
+          default: false,
+     },
 }, {
      timestamps: true,
      toJSON: { virtuals: true },

@@ -20,28 +20,6 @@ export const createOrder = async (req, res, next) => {
       otherDetails
     } = req.body;
 
-
-    // //  Validate client existence
-    // const existingClient = await User.findOne({ name: clientName });
-    // if (!existingClient) {
-    //   return sendErrorResponse({
-    //     res,
-    //     message: `Client "${clientName}" does not exist. Please add client first.`,
-    //     status: 400,
-    //   });
-    // }
-
-    // //  Validate product existence
-    // const existingProduct = await Product.findOne({ name: product });
-    // if (!existingProduct) {
-    //   return sendErrorResponse({
-    //     res,
-    //     message: `Product "${product}" does not exist. Please add product first.`,
-    //     status: 400,
-    //   });
-    // }
-
-
     // ✅ Validate client existence
     const existingClient = await User.findOne({
       $or: [
@@ -71,7 +49,6 @@ export const createOrder = async (req, res, next) => {
         status: 400,
       });
     }
-
 
     let supplierName = supplier?.trim() || "";
     let existingSupplier = null;
@@ -128,8 +105,7 @@ export const createOrder = async (req, res, next) => {
   }
 };
 
-
-//  Get All Orders
+// Get All Orders
 const getAllOrders = async (req, res) => {
   try {
     const {
@@ -192,6 +168,152 @@ const getAllOrders = async (req, res) => {
       message: "Internal Server Error",
       error: error.message,
     });
+  }
+};
+
+// Update order by ID
+const updateOrder = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    // Check if order exists
+    const existingOrder = await Order.findById(id);
+    if (!existingOrder) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "Order not found."
+      });
+    }
+
+    // Validate client existence if clientName is being updated
+    if (updateData.clientName) {
+      const existingClient = await User.findOne({
+        $or: [
+          { firstName: new RegExp(updateData.clientName, "i") },
+          { lastName: new RegExp(updateData.clientName, "i") },
+          { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.clientName, options: "i" } } }
+        ]
+      });
+
+      if (!existingClient) {
+        return sendErrorResponse({
+          res,
+          message: `Client "${updateData.clientName}" does not exist. Please add client first.`,
+          status: 400,
+        });
+      }
+    }
+
+    // Validate product existence if product is being updated
+    if (updateData.product) {
+      const existingProduct = await Product.findOne({
+        productName: new RegExp(updateData.product, "i")
+      });
+
+      if (!existingProduct) {
+        return sendErrorResponse({
+          res,
+          message: `Product "${updateData.product}" does not exist. Please add product first.`,
+          status: 400,
+        });
+      }
+    }
+
+    // Validate supplier existence if supplier is being updated
+    if (updateData.supplier && updateData.supplier.trim()) {
+      const existingSupplier = await Supplier.findOne({
+        $or: [
+          { firstName: new RegExp(updateData.supplier, "i") },
+          { lastName: new RegExp(updateData.supplier, "i") },
+          { company: new RegExp(updateData.supplier, "i") },
+          { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.supplier, options: "i" } } }
+        ]
+      });
+
+      if (!existingSupplier) {
+        return sendErrorResponse({
+          res,
+          message: `Supplier "${updateData.supplier}" does not exist. Please add supplier first.`,
+          status: 400,
+        });
+      }
+    }
+
+    // Update order
+    const updatedOrder = await Order.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select("-__v");
+
+    sendSuccessResponse({
+      res,
+      data: updatedOrder,
+      message: "Order updated successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Delete order by ID
+const deleteOrder = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Check if order exists
+    const existingOrder = await Order.findById(id);
+    if (!existingOrder) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "Order not found."
+      });
+    }
+
+    // Hard delete the order
+    await Order.findByIdAndDelete(id);
+
+    sendSuccessResponse({
+      res,
+      data: null,
+      message: "Order deleted successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get order by ID
+const getOrderById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const order = await Order.findById(id).select("-__v");
+    
+    if (!order) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "Order not found."
+      });
+    }
+
+    sendSuccessResponse({
+      res,
+      data: order,
+      message: "Order retrieved successfully",
+      status: 200
+    });
+
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -333,7 +455,7 @@ export const updateTrackingInfo = async (req, res) => {
       });
     }
 
-    //  Check if trackingId already exists in another order
+    // Check if trackingId already exists in another order
     const existingOrder = await Order.findOne({ trackingId, _id: { $ne: orderId } });
     if (existingOrder) {
       return sendErrorResponse({
@@ -371,11 +493,12 @@ export const updateTrackingInfo = async (req, res) => {
   }
 };
 
-
-
 export default {
   createOrder,
   getAllOrders,
+  updateOrder,
+  deleteOrder,
+  getOrderById,
   updateOrderStatus,
   getKanbanData,
   updateOrderChecklist,

@@ -38,6 +38,10 @@ const supplierSchema = new mongoose.Schema({
           trim: true,
           default: 0,
      },
+     isDeleted: {
+          type: Boolean,
+          default: false,
+     },
 }, {
      timestamps: true,
      toJSON: { virtuals: true },
