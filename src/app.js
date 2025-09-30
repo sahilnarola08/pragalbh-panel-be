@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import connectDB from "./config/db.js";
 import routes from "./routes/allrouts.js";
+import { startSchedulers } from "./services/schedulerService.js";
 
 // Load environment variables
 const envFile = process.env.NODE_ENV === 'production' ? 'env.prod' : 
@@ -27,6 +28,9 @@ app.use((req, res, next) => {
 
 // Routes
 routes(app);
+
+// order Schedulers services 
+startSchedulers();
 
 // Global error handler
 app.use((error, req, res, next) => {
