@@ -442,7 +442,7 @@ export const updateOrderStatus = async (req, res) => {
 // Update Tracking Info
 export const updateTrackingInfo = async (req, res) => {
   try {
-    const { orderId, trackingId, courierCompany } = req.body;
+    const { orderId, trackingId, courierCompany, shippingCost } = req.body;
 
     if (!orderId) {
       return sendErrorResponse({ res, status: 400, message: "orderId is required" });
@@ -474,7 +474,7 @@ export const updateTrackingInfo = async (req, res) => {
     order.courierCompany = courierCompany;
     order.status = ORDER_STATUS.UPDATED_TRACKING_ID;
     order.trackingIdUpdatedAt = new Date();
-
+    order.shippingCost = shippingCost;
     await order.save();
 
     return sendSuccessResponse({

@@ -48,6 +48,7 @@ const updateTrackingInfoSchema = yup.object().shape({
     orderId: yup.string().required("Order ID is required"),
     trackingId: yup.string().required("Tracking ID is required"),
     courierCompany: yup.string().required("Courier company is required"),
+    shippingCost: yup.number().min(0, "Shipping cost must be greater than or equal to 0").optional(),
 });
 
 // Update order checklist validation schema
