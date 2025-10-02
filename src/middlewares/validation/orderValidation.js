@@ -13,6 +13,7 @@ const orderSchema = yup.object().shape({
     supplier: yup.string().optional(),
     orderPlatform: yup.string().required("Order platform is required").min(2, "Order platform must be at least 2 characters").max(100, "Order platform must not exceed 100 characters"),
     otherDetails: yup.string().optional(),
+    shippingCost: yup.number().min(0, "Shipping cost must be greater than or equal to 0").optional(),
 });
 
 // Order update validation schema (all fields optional)

@@ -15,6 +15,7 @@ export const createOrder = async (req, res, next) => {
       dispatchDate,
       purchasePrice,
       sellingPrice,
+      initialPayment,
       supplier,
       orderPlatform,
       otherDetails
@@ -81,6 +82,7 @@ export const createOrder = async (req, res, next) => {
       dispatchDate,
       purchasePrice,
       sellingPrice,
+      initialPayment,
       supplier,
       orderPlatform,
       otherDetails,
