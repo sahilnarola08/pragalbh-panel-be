@@ -4,6 +4,7 @@ import { ORDER_STATUS, DEFAULT_ORDER_STATUS, DEFAULT_TIME_STATUS, DEFAULT_PAYMEN
 import Product from "../models/product.js";
 import User from "../models/user.js";
 import Supplier from "../models/supplier.js";
+import mongoose from "mongoose";
 
 export const createOrder = async (req, res, next) => {
   try {
@@ -15,6 +16,7 @@ export const createOrder = async (req, res, next) => {
       dispatchDate,
       purchasePrice,
       sellingPrice,
+      initialPayment,
       supplier,
       orderPlatform,
       otherDetails
@@ -81,6 +83,7 @@ export const createOrder = async (req, res, next) => {
       dispatchDate,
       purchasePrice,
       sellingPrice,
+      initialPayment,
       supplier,
       orderPlatform,
       otherDetails,
@@ -419,6 +422,18 @@ export const updateOrderStatus = async (req, res) => {
       }
     }
 
+    // Validate payment is complete before moving to DISPATCH
+    if (status === ORDER_STATUS.DISPATCH) {
+      const initialPayment = order.initialPayment || 0;
+      if (initialPayment !== order.sellingPrice) {
+        return sendErrorResponse({
+          res,
+          status: 400,
+          message: `Cannot move to dispatch. Payment incomplete. Initial payment: ${initialPayment}, Selling price: ${order.sellingPrice}`,
+        });
+      }
+    }
+
     order.status = status;
     await order.save();
 
@@ -442,7 +457,7 @@ export const updateOrderStatus = async (req, res) => {
 // Update Tracking Info
 export const updateTrackingInfo = async (req, res) => {
   try {
-    const { orderId, trackingId, courierCompany } = req.body;
+    const { orderId, trackingId, courierCompany, shippingCost } = req.body;
 
     if (!orderId) {
       return sendErrorResponse({ res, status: 400, message: "orderId is required" });
@@ -474,7 +489,7 @@ export const updateTrackingInfo = async (req, res) => {
     order.courierCompany = courierCompany;
     order.status = ORDER_STATUS.UPDATED_TRACKING_ID;
     order.trackingIdUpdatedAt = new Date();
-
+    order.shippingCost = shippingCost;
     await order.save();
 
     return sendSuccessResponse({
@@ -493,6 +508,152 @@ export const updateTrackingInfo = async (req, res) => {
   }
 };
 
+// Update Initial Payment
+// export const updateInitialPayment = async (req, res) => {
+//   try {
+//     const { orderId, initialPayment } = req.body;
+
+//     if (!orderId) {
+//       return sendErrorResponse({ res, status: 400, message: "orderId is required" });
+//     }
+//     if (initialPayment === undefined || initialPayment === null) {
+//       return sendErrorResponse({
+//         res,
+//         status: 400,
+//         message: "initialPayment is required",
+//       });
+//     }
+//     if (typeof initialPayment !== 'number' || initialPayment < 0) {
+//       return sendErrorResponse({
+//         res,
+//         status: 400,
+//         message: "initialPayment must be a positive number",
+//       });
+//     }
+
+//     let order = null;
+//     if (Mongoose.Types.ObjectId.isValid(orderId)) {
+//       order = await Order.findById(orderId);
+//     }
+//     if (!order) {
+//       order = await Order.findOne({ orderId: orderId });
+//     }
+//     if (!order) {
+//       return sendErrorResponse({ res, status: 404, message: "Order not found" });
+//     }
+
+//     // Validate that initialPayment doesn't exceed sellingPrice
+//     const sellingPrice = Number(order.sellingPrice || 0);
+//     if (initialPayment > sellingPrice) {
+//       return sendErrorResponse({
+//         res,
+//         status: 400,
+//         message: `Initial payment (${initialPayment}) cannot exceed selling price (${sellingPrice})`,
+//       });
+//     }
+
+//     order.initialPayment = initialPayment;
+
+//     // Check if payment is complete and automatically set to DISPATCH
+//     const isPaymentComplete = Number(initialPayment) === sellingPrice;
+//     if (isPaymentComplete && order.status !== ORDER_STATUS.DISPATCH) {
+//       order.status = ORDER_STATUS.DISPATCH;
+//     }
+
+//     await order.save();
+
+//     return sendSuccessResponse({
+//       res,
+//       status: 200,
+//       data: order,
+//       message: "Initial payment updated successfully.",
+//     });
+//   } catch (error) {
+//     console.error("Error updating initial payment:", error);
+//     return sendErrorResponse({
+//       res,
+//       status: 500,
+//       message: "Failed to update initial payment",
+//     });
+//   }
+// };
+
+// Update Initial Payment
+export const updateInitialPayment = async (req, res) => {
+  try {
+    const { orderId, initialPayment } = req.body;
+
+    // --- Basic validations ---
+    if (!orderId) {
+      return sendErrorResponse({ res, status: 400, message: "_id (orderId) is required" });
+    }
+    if (initialPayment === undefined || initialPayment === null) {
+      return sendErrorResponse({
+        res,
+        status: 400,
+        message: "initialPayment is required",
+      });
+    }
+    if (typeof initialPayment !== "number" || initialPayment < 0) {
+      return sendErrorResponse({
+        res,
+        status: 400,
+        message: "initialPayment must be a positive number",
+      });
+    }
+
+    // --- Validate and find by _id ---
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return sendErrorResponse({
+        res,
+        status: 400,
+        message: "Invalid MongoDB _id provided",
+      });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return sendErrorResponse({ res, status: 404, message: "Order not found" });
+    }
+
+    // --- Validate against sellingPrice ---
+    const sellingPrice = Number(order.sellingPrice || 0);
+    if (initialPayment > sellingPrice) {
+      return sendErrorResponse({
+        res,
+        status: 400,
+        message: `Initial payment (${initialPayment}) cannot exceed selling price (${sellingPrice})`,
+      });
+    }
+
+    // --- Update payment ---
+    order.initialPayment = initialPayment;
+
+    // --- Auto update status if fully paid ---
+    const isPaymentComplete = Number(initialPayment) === sellingPrice;
+    if (isPaymentComplete && order.status !== ORDER_STATUS.DISPATCH) {
+      order.status = ORDER_STATUS.DISPATCH;
+    }
+
+    await order.save();
+
+    return sendSuccessResponse({
+      res,
+      status: 200,
+      data: order,
+      message: "Initial payment updated successfully.",
+    });
+  } catch (error) {
+    console.error("Error updating initial payment:", error);
+    return sendErrorResponse({
+      res,
+      status: 500,
+      message: "Failed to update initial payment",
+    });
+  }
+};
+
+
 export default {
   createOrder,
   getAllOrders,
@@ -502,5 +663,6 @@ export default {
   updateOrderStatus,
   getKanbanData,
   updateOrderChecklist,
-  updateTrackingInfo
+  updateTrackingInfo,
+  updateInitialPayment
 }

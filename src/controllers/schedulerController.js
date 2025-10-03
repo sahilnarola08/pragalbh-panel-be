@@ -1,5 +1,6 @@
 import Order from "../models/order.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
+import { ORDER_STATUS } from "../helper/enums.js";
 
 const checkOverDue = async (req, res, next) => {
      try {
@@ -8,7 +9,7 @@ const checkOverDue = async (req, res, next) => {
         // Find overdue orders
         const overdueOrders = await Order.find({
             dispatchDate: { $lt: currentDate }, 
-            status: { $in: ["pending", "factory_process"] }
+            status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.FACTORY_PROCESS, ORDER_STATUS.VIDEO_CONFIRMATION] }
         });
         
         if(overdueOrders.length > 0){
@@ -16,10 +17,10 @@ const checkOverDue = async (req, res, next) => {
             const updateResult = await Order.updateMany(
                 {
                     dispatchDate: { $lt: currentDate }, 
-                    status: { $in: ["pending", "factory_process"] }
+                    status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.FACTORY_PROCESS, ORDER_STATUS.VIDEO_CONFIRMATION] }
                 },
                 {
-                    $set: { status: "over_due" }
+                    $set: { status: ORDER_STATUS.OVER_DUE }
                 }
             );
             

@@ -1,6 +1,7 @@
 import express from "express";
 import orderController from "../controllers/orderController.js";
 import { orderValidationSchema, validateOrderUpdate, validateOrderDelete } from "../middlewares/validation/orderValidation.js";
+import { validateUpdateInitialPayment } from "../middlewares/validation/updateInitialPayment.js";
 
 const router = express.Router();
 
@@ -30,6 +31,9 @@ router.get("/kanban-board", orderController.getKanbanData);
 
 // Update tracking info
 router.patch("/update-tracking-info", orderController.updateTrackingInfo);
+
+// Update initial payment
+router.patch("/update-initial-payment", validateUpdateInitialPayment, orderController.updateInitialPayment);
 
 export default router;
     
