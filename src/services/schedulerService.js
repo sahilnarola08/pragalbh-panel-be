@@ -11,14 +11,14 @@ export const startSchedulers = () => {
       // Find overdue orders
       const overdueOrders = await Order.find({
         dispatchDate: { $lt: currentDate },
-        status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.FACTORY_PROCESS] },
+        status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.FACTORY_PROCESS, ORDER_STATUS.VIDEO_CONFIRMATION] },
       });
 
       if (overdueOrders.length > 0) {
         const updateResult = await Order.updateMany(
           {
             dispatchDate: { $lt: currentDate },
-            status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.FACTORY_PROCESS] },
+            status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.FACTORY_PROCESS, ORDER_STATUS.VIDEO_CONFIRMATION] },
           },
           { $set: { status: ORDER_STATUS.OVER_DUE } }
         );
