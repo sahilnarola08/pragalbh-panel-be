@@ -1,10 +1,13 @@
 import Order from "../models/order.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
-import { ORDER_STATUS, DEFAULT_ORDER_STATUS, DEFAULT_TIME_STATUS, DEFAULT_PAYMENT_STATUS } from "../helper/enums.js";
+import { ORDER_STATUS, DEFAULT_ORDER_STATUS} from "../helper/enums.js";
 import Product from "../models/product.js";
 import User from "../models/user.js";
 import Supplier from "../models/supplier.js";
 import mongoose from "mongoose";
+import Income from "../models/income.js";
+import ExpanseIncome from "../models/expance_inc.js";
+import { DEFAULT_PAYMENT_STATUS } from "../helper/enums.js";
 
 export const createOrder = async (req, res, next) => {
   try {
@@ -91,6 +94,30 @@ export const createOrder = async (req, res, next) => {
       courierCompany: "",
       status: DEFAULT_ORDER_STATUS,
     });
+
+    // Create related Income record
+    await Income.create({
+      date: new Date(), 
+      orderId: order._id, 
+      Description: order.product, 
+      sellingPrice: order.sellingPrice,
+      costPrice: order.purchasePrice,
+      receivedAmount: 0, 
+      clientId: existingClient._id,
+      status: DEFAULT_PAYMENT_STATUS,
+    });
+
+
+     // Create ExpenseIncome record (supplier side)
+     if (existingSupplier) {
+      await ExpanseIncome.create({
+        orderId: order._id,
+        description: order.product,
+        paidAmount: 0, 
+        supplierId: existingSupplier._id,
+        status: DEFAULT_PAYMENT_STATUS,
+      });
+    }
 
     return sendSuccessResponse({
       res,
@@ -508,75 +535,7 @@ export const updateTrackingInfo = async (req, res) => {
   }
 };
 
-// Update Initial Payment
-// export const updateInitialPayment = async (req, res) => {
-//   try {
-//     const { orderId, initialPayment } = req.body;
 
-//     if (!orderId) {
-//       return sendErrorResponse({ res, status: 400, message: "orderId is required" });
-//     }
-//     if (initialPayment === undefined || initialPayment === null) {
-//       return sendErrorResponse({
-//         res,
-//         status: 400,
-//         message: "initialPayment is required",
-//       });
-//     }
-//     if (typeof initialPayment !== 'number' || initialPayment < 0) {
-//       return sendErrorResponse({
-//         res,
-//         status: 400,
-//         message: "initialPayment must be a positive number",
-//       });
-//     }
-
-//     let order = null;
-//     if (Mongoose.Types.ObjectId.isValid(orderId)) {
-//       order = await Order.findById(orderId);
-//     }
-//     if (!order) {
-//       order = await Order.findOne({ orderId: orderId });
-//     }
-//     if (!order) {
-//       return sendErrorResponse({ res, status: 404, message: "Order not found" });
-//     }
-
-//     // Validate that initialPayment doesn't exceed sellingPrice
-//     const sellingPrice = Number(order.sellingPrice || 0);
-//     if (initialPayment > sellingPrice) {
-//       return sendErrorResponse({
-//         res,
-//         status: 400,
-//         message: `Initial payment (${initialPayment}) cannot exceed selling price (${sellingPrice})`,
-//       });
-//     }
-
-//     order.initialPayment = initialPayment;
-
-//     // Check if payment is complete and automatically set to DISPATCH
-//     const isPaymentComplete = Number(initialPayment) === sellingPrice;
-//     if (isPaymentComplete && order.status !== ORDER_STATUS.DISPATCH) {
-//       order.status = ORDER_STATUS.DISPATCH;
-//     }
-
-//     await order.save();
-
-//     return sendSuccessResponse({
-//       res,
-//       status: 200,
-//       data: order,
-//       message: "Initial payment updated successfully.",
-//     });
-//   } catch (error) {
-//     console.error("Error updating initial payment:", error);
-//     return sendErrorResponse({
-//       res,
-//       status: 500,
-//       message: "Failed to update initial payment",
-//     });
-//   }
-// };
 
 // Update Initial Payment
 export const updateInitialPayment = async (req, res) => {
