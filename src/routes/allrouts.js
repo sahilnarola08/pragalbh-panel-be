@@ -4,6 +4,7 @@ import supplierRouter from "./supplierRoute.js";
 import orderRouter from "./orderRouter.js";
 import productRouter from "./productRoute.js";
 import schedulerRouter from "./schedulerRouter.js";
+import incomeExpRouter from "./incomeExpRouts.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
@@ -12,6 +13,7 @@ const routes = (app) => {
   app.use("/order", orderRouter);
   app.use("/product", productRouter);
   app.use("/scheduler", schedulerRouter);
+  app.use("/income-expance", incomeExpRouter);
 };
 
 export default routes;
