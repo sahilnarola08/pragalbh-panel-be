@@ -18,6 +18,10 @@ const expanseIncomeSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    dueAmount: {
+      type: Number,
+      default: 0,
+    },
     supplierId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Supplier",
