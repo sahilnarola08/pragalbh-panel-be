@@ -16,10 +16,13 @@ const supplierSchema = yup.object().shape({
           .matches(/^[0-9]{10,15}$/, "Contact number must be 10-15 digits"),
      company: yup.string().required("Company is required")
           .min(2, "Company must be at least 2 characters")
-          .max(50, "Company must not exceed 50 characters")
-          .matches(/^[a-zA-Z\s]+$/, "Company can only contain letters and spaces"),
-     advancePayment: yup.number().required("Advance payment is required")
-          .min(0, "Advance payment must be greater than 0"),
+          .max(100, "Company must not exceed 100 characters"),
+     advancePayment: yup.array().of(
+          yup.object().shape({
+               bankId: yup.mixed().required("Bank ID is required"),
+               amount: yup.number().required("Amount is required").min(0, "Amount must be greater than or equal to 0")
+          })
+     ).optional(),
 });
 
 // Supplier update validation schema (all fields optional)
@@ -40,12 +43,14 @@ const supplierUpdateSchema = yup.object().shape({
           .optional(),
      company: yup.string()
           .min(2, "Company must be at least 2 characters")
-          .max(50, "Company must not exceed 50 characters")
-          .matches(/^[a-zA-Z\s]+$/, "Company can only contain letters and spaces")
+          .max(100, "Company must not exceed 100 characters")
           .optional(),
-     advancePayment: yup.number()
-          .min(0, "Advance payment must be greater than 0")
-          .optional(),
+     advancePayment: yup.array().of(
+          yup.object().shape({
+               bankId: yup.mixed().required("Bank ID is required"),
+               amount: yup.number().required("Amount is required").min(0, "Amount must be greater than or equal to 0")
+          })
+     ).optional(),
 });
 
 // Supplier ID validation schema

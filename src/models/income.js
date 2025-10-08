@@ -12,7 +12,7 @@ const incomeSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Order",
       required: true,
-      unique: true,
+      index: true,
     },
     Description: {
       type: String,
@@ -39,6 +39,10 @@ const incomeSchema = new mongoose.Schema(
       default: DEFAULT_PAYMENT_STATUS,
       required: true,
       enum: Object.values(PAYMENT_STATUS),
+    },
+    bankId: {
+      type: String,
+      trim: true,
     },
   },
   {
