@@ -6,7 +6,7 @@ const expanseIncomeSchema = new mongoose.Schema(
     orderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Order",
-      required: true,
+      required: false,  // Changed to false to allow standalone expenses
       index: true,
     },
     description: {
@@ -25,8 +25,16 @@ const expanseIncomeSchema = new mongoose.Schema(
     supplierId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Supplier",
-      required: true,
+      required: false,  // Changed to false to allow standalone expenses
       index: true,
+    },
+    date: {
+      type: Date,
+      default: Date.now,
+    },
+    bankId: {
+      type: String,
+      trim: true,
     },
     status: {
       type: String,
