@@ -209,6 +209,7 @@ export const markPaymentDone = async (req, res) => {
     expense.paidAmount = dueAmount;
     expense.dueAmount = 0;
     expense.status = PAYMENT_STATUS.PAID;
+    expense.bankId = bankId; // Store bank ID in expense
     await expense.save();
 
     return res.status(200).json({
