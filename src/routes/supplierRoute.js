@@ -19,4 +19,8 @@ router.put("/update-supplier/:id", validateSupplierUpdate, supplierController.up
 // Delete supplier by ID
 router.delete("/delete-supplier/:id", validateSupplierDelete, supplierController.deleteSupplier);
 
+
+// update supplier advance payment
+router.put("/update-balance", supplierController.updateSupplierBalance);
+
 export default router;

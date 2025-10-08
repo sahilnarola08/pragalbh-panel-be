@@ -20,6 +20,8 @@ export const createOrder = async (req, res, next) => {
       purchasePrice,
       sellingPrice,
       initialPayment,
+      bankName,
+      paymentAmount,
       supplier,
       orderPlatform,
       otherDetails
@@ -87,6 +89,8 @@ export const createOrder = async (req, res, next) => {
       purchasePrice,
       sellingPrice,
       initialPayment,
+      bankName,
+      paymentAmount,
       supplier,
       orderPlatform,
       otherDetails,
@@ -113,7 +117,8 @@ export const createOrder = async (req, res, next) => {
       await ExpanseIncome.create({
         orderId: order._id,
         description: order.product,
-        paidAmount: 0, 
+        paidAmount: 0,
+        dueAmount: order.purchasePrice,
         supplierId: existingSupplier._id,
         status: DEFAULT_PAYMENT_STATUS,
       });
@@ -540,7 +545,7 @@ export const updateTrackingInfo = async (req, res) => {
 // Update Initial Payment
 export const updateInitialPayment = async (req, res) => {
   try {
-    const { orderId, initialPayment } = req.body;
+    const { orderId, initialPayment, bankName, paymentAmount } = req.body;
 
     // --- Basic validations ---
     if (!orderId) {
@@ -587,6 +592,16 @@ export const updateInitialPayment = async (req, res) => {
 
     // --- Update payment ---
     order.initialPayment = initialPayment;
+    
+    // Update bank name if provided
+    if (bankName) {
+      order.bankName = bankName;
+    }
+    
+    // Update payment amount if provided
+    if (paymentAmount !== undefined && paymentAmount !== null) {
+      order.paymentAmount = paymentAmount;
+    }
 
     // --- Auto update status if fully paid ---
     const isPaymentComplete = Number(initialPayment) === sellingPrice;

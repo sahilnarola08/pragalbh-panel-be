@@ -1,5 +1,6 @@
 import Supplier from "../models/supplier.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
+import mongoose from "mongoose";
 
 // create supplier
 const createSupplier = async (req, res, next) => {
@@ -12,6 +13,7 @@ const createSupplier = async (req, res, next) => {
             company,
             advancePayment
         } = req.body;
+        
         const existingSupplier = await Supplier.findOne({ company });
         // check if supplier already exists
         if (existingSupplier) {
@@ -21,13 +23,41 @@ const createSupplier = async (req, res, next) => {
                 status: 400
             });
         }
+
+        // Validate advancePayment array if provided
+        if (advancePayment && Array.isArray(advancePayment)) {
+            for (let payment of advancePayment) {
+                if (!payment.bankId) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Each advance payment must have a bankId",
+                        status: 400
+                    });
+                }
+                if (payment.amount === undefined || payment.amount === null) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Each advance payment must have an amount",
+                        status: 400
+                    });
+                }
+                if (typeof payment.amount !== 'number' || payment.amount < 0) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Payment amount must be a positive number",
+                        status: 400
+                    });
+                }
+            }
+        }
+
         const supplier = await Supplier.create({
             firstName,
             lastName,
             address,
             contactNumber,
             company,
-            advancePayment
+            advancePayment: advancePayment || []
         });
 
         sendSuccessResponse({
@@ -57,32 +87,69 @@ const getAllSuppliers = async (req, res) => {
         const limitNum = parseInt(limit, 10);
         const offset = (pageNum - 1) * limitNum;
 
-        // Sorting
-        const sort = {};
-        sort[sortField] = sortOrder === "asc" ? 1 : -1;
-
-        // Search filter - exclude deleted suppliers
-        const filter = { isDeleted: { $ne: true } };
+        // Build match stage for filtering
+        const matchStage = { isDeleted: false };
         if (search) {
-            filter.$and = [
-                { isDeleted: { $ne: true } },
-                {
-                    $or: [
-                        { firstName: new RegExp(search, "i") },
-                        { lastName: new RegExp(search, "i") },
-                        { company: new RegExp(search, "i") },
-                        { contactNumber: new RegExp(search, "i") },
-                    ]
-                }
+            matchStage.$or = [
+                { firstName: new RegExp(search, "i") },
+                { lastName: new RegExp(search, "i") },
+                { company: new RegExp(search, "i") },
+                { contactNumber: new RegExp(search, "i") },
             ];
         }
 
-        const suppliers = await Supplier.find({...filter ,isDeleted: false})
-            .sort(sort)
-            .skip(offset)
-            .limit(limitNum);
+        // Build sort object
+        const sortObj = {};
+        sortObj[sortField] = sortOrder === "asc" ? 1 : -1;
 
-        const totalSuppliers = await Supplier.countDocuments({...filter ,isDeleted: false});
+        // Aggregation pipeline to calculate total advance payment at database level
+        const pipeline = [
+            { $match: matchStage },
+            {
+                $addFields: {
+                    advancePayment: {
+                        $cond: {
+                            if: { $isArray: "$advancePayment" },
+                            then: {
+                                $sum: {
+                                    $map: {
+                                        input: "$advancePayment",
+                                        as: "payment",
+                                        in: "$$payment.amount"
+                                    }
+                                }
+                            },
+                            else: { $ifNull: ["$advancePayment", 0] }
+                        }
+                    },
+                    fullName: {
+                        $concat: ["$firstName", " ", "$lastName"]
+                    }
+                }
+            },
+            {
+                $project: {
+                    firstName: 1,
+                    lastName: 1,
+                    fullName: 1,
+                    address: 1,
+                    contactNumber: 1,
+                    company: 1,
+                    advancePayment: 1,
+                    isDeleted: 1,
+                    createdAt: 1,
+                    updatedAt: 1
+                }
+            },
+            { $sort: sortObj },
+            { $skip: offset },
+            { $limit: limitNum }
+        ];
+
+        const suppliers = await Supplier.aggregate(pipeline);
+
+        // Get total count
+        const totalSuppliers = await Supplier.countDocuments(matchStage);
 
         return sendSuccessResponse({
             status: 200,
@@ -152,6 +219,33 @@ const updateSupplier = async (req, res, next) => {
             }
         }
 
+        // Validate advancePayment array if provided
+        if (updateData.advancePayment && Array.isArray(updateData.advancePayment)) {
+            for (let payment of updateData.advancePayment) {
+                if (!payment.bankId) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Each advance payment must have a bankId",
+                        status: 400
+                    });
+                }
+                if (payment.amount === undefined || payment.amount === null) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Each advance payment must have an amount",
+                        status: 400
+                    });
+                }
+                if (typeof payment.amount !== 'number' || payment.amount < 0) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Payment amount must be a positive number",
+                        status: 400
+                    });
+                }
+            }
+        }
+
         // Update supplier
         const updatedSupplier = await Supplier.findByIdAndUpdate(
             id,
@@ -210,9 +304,41 @@ const getSupplierById = async (req, res, next) => {
     try {
         const { id } = req.params;
 
-        const supplier = await Supplier.findById(id).select("-__v -createdAt -updatedAt");
+        // Use aggregation to calculate total advance payment
+        const supplierData = await Supplier.aggregate([
+            { $match: { _id: new mongoose.Types.ObjectId(id) } },
+            {
+                $addFields: {
+                    advancePayment: {
+                        $cond: {
+                            if: { $isArray: "$advancePayment" },
+                            then: {
+                                $sum: {
+                                    $map: {
+                                        input: "$advancePayment",
+                                        as: "payment",
+                                        in: "$$payment.amount"
+                                    }
+                                }
+                            },
+                            else: { $ifNull: ["$advancePayment", 0] }
+                        }
+                    },
+                    fullName: {
+                        $concat: ["$firstName", " ", "$lastName"]
+                    }
+                }
+            },
+            {
+                $project: {
+                    __v: 0,
+                    createdAt: 0,
+                    updatedAt: 0
+                }
+            }
+        ]);
         
-        if (!supplier) {
+        if (!supplierData || supplierData.length === 0) {
             return sendErrorResponse({
                 status: 404,
                 res,
@@ -222,7 +348,7 @@ const getSupplierById = async (req, res, next) => {
 
         sendSuccessResponse({
             res,
-            data: supplier,
+            data: supplierData[0],
             message: "Supplier retrieved successfully",
             status: 200
         });
@@ -232,10 +358,117 @@ const getSupplierById = async (req, res, next) => {
     }
 };
 
+
+
+
+// Add or Update Advance Payment for Supplier
+export const updateSupplierBalance = async (req, res) => {
+    try {
+      const { supplierId, advancePayment } = req.body;
+  
+      if (!supplierId) {
+        return sendErrorResponse({
+          res,
+          status: 400,
+          message: "supplierId is required",
+        });
+      }
+      
+      if (!advancePayment || !Array.isArray(advancePayment)) {
+        return sendErrorResponse({
+          res,
+          status: 400,
+          message: "advancePayment array is required",
+        });
+      }
+
+      // Validate advancePayment array
+      for (let payment of advancePayment) {
+        if (!payment.bankId) {
+          return sendErrorResponse({
+            res,
+            message: "Each advance payment must have a bankId",
+            status: 400
+          });
+        }
+        if (payment.amount === undefined || payment.amount === null) {
+          return sendErrorResponse({
+            res,
+            message: "Each advance payment must have an amount",
+            status: 400
+          });
+        }
+        if (typeof payment.amount !== 'number' || payment.amount < 0) {
+          return sendErrorResponse({
+            res,
+            message: "Payment amount must be a positive number",
+            status: 400
+          });
+        }
+      }
+
+      const supplier = await Supplier.findById(supplierId);
+      if (!supplier) {
+        return sendErrorResponse({
+          res,
+          status: 404,
+          message: "Supplier not found",
+        });
+      }
+
+      // Update the advancePayment array directly
+      supplier.advancePayment = advancePayment;
+      await supplier.save();
+
+      // Get updated supplier with calculated total using aggregation
+      const supplierData = await Supplier.aggregate([
+        { $match: { _id: new mongoose.Types.ObjectId(supplierId) } },
+        {
+          $addFields: {
+            advancePayment: {
+              $cond: {
+                if: { $isArray: "$advancePayment" },
+                then: {
+                  $sum: {
+                    $map: {
+                      input: "$advancePayment",
+                      as: "payment",
+                      in: "$$payment.amount"
+                    }
+                  }
+                },
+                else: { $ifNull: ["$advancePayment", 0] }
+              }
+            },
+            fullName: {
+              $concat: ["$firstName", " ", "$lastName"]
+            }
+          }
+        }
+      ]);
+  
+      return sendSuccessResponse({
+        res,
+        status: 200,
+        message: "Supplier advance payment updated successfully",
+        data: supplierData[0],
+      });
+    } catch (error) {
+      console.error("Error updating supplier balance:", error);
+      return sendErrorResponse({
+        res,
+        status: 500,
+        message: "Internal Server Error",
+        error: error.message,
+      });
+    }
+  };
+
 export default {
     createSupplier,
     getAllSuppliers,
     updateSupplier,
     deleteSupplier,
     getSupplierById,
+    updateSupplierBalance,
 };

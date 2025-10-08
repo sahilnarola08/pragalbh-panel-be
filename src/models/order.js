@@ -47,6 +47,14 @@ const orderSchema = new mongoose.Schema({
           type: Number,
           default: 0,
      },
+     bankName: {
+          type: String,
+          default: "",
+     },
+     paymentAmount: {
+          type: Number,
+          default: 0,
+     },
      supplier: {
           type: String,
      },

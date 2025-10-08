@@ -33,10 +33,20 @@ const supplierSchema = new mongoose.Schema({
           index: true,
      },
      advancePayment: {
-          type: Number,
-          required: true,
-          trim: true,
-          default: 0,
+          type: [
+               {
+                    bankId: {
+                         type: mongoose.Schema.Types.Mixed,
+                         required: true,
+                    },
+                    amount: {
+                         type: Number,
+                         required: true,
+                         default: 0,
+                    }
+               }
+          ],
+          default: [],
      },
      isDeleted: {
           type: Boolean,
