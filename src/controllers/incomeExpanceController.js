@@ -612,6 +612,179 @@ export const getExpenseById = async (req, res) => {
   }
 };
 
+// Add Extra Income (without order/client)
+export const addExtraIncome = async (req, res) => {
+  try {
+    const { date, description, receivedAmount, bankId } = req.body;
+
+    // Validate required fields
+    if (!description) {
+      return res.status(400).json({
+        status: 400,
+        message: "description is required",
+      });
+    }
+
+    if (receivedAmount === undefined || receivedAmount === null) {
+      return res.status(400).json({
+        status: 400,
+        message: "receivedAmount is required",
+      });
+    }
+
+    // Validate receivedAmount
+    if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
+      return res.status(400).json({
+        status: 400,
+        message: "receivedAmount must be a positive number",
+      });
+    }
+
+    // Create new income entry without orderId and clientId
+    const newIncome = await Income.create({
+      date: date || new Date(),
+      Description: description,
+      receivedAmount: receivedAmount,
+      sellingPrice: receivedAmount, // Set sellingPrice equal to receivedAmount for standalone income
+      bankId: bankId || null,
+      status: "paid", // Automatically set status to paid
+    });
+
+    return res.status(201).json({
+      status: 201,
+      message: "Extra income added successfully",
+      data: newIncome,
+    });
+  } catch (error) {
+    console.error("Error adding extra income:", error);
+    return res.status(500).json({
+      status: 500,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+};
+
+// Edit Extra Income (only if orderId doesn't exist)
+export const editExtraIncome = async (req, res) => {
+  try {
+    const { incomeId } = req.params;
+    const { date, description, receivedAmount, bankId } = req.body;
+
+    if (!incomeId) {
+      return res.status(400).json({
+        status: 400,
+        message: "incomeId is required",
+      });
+    }
+
+    // Find income entry
+    const income = await Income.findById(incomeId);
+    if (!income) {
+      return res.status(404).json({
+        status: 404,
+        message: "Income entry not found",
+      });
+    }
+
+    // Check if orderId exists - if yes, cannot edit
+    if (income.orderId) {
+      return res.status(400).json({
+        status: 400,
+        message: "Cannot edit this income. This income is linked to an order. Only standalone income can be edited.",
+      });
+    }
+
+    // Update fields if provided
+    if (date) income.date = date;
+    if (description) income.Description = description;
+    if (bankId !== undefined) income.bankId = bankId;
+    
+    if (receivedAmount !== undefined) {
+      if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
+        return res.status(400).json({
+          status: 400,
+          message: "receivedAmount must be a positive number",
+        });
+      }
+      income.receivedAmount = receivedAmount;
+      income.sellingPrice = receivedAmount; // Keep sellingPrice in sync
+    }
+
+    await income.save();
+
+    return res.status(200).json({
+      status: 200,
+      message: "Extra income updated successfully",
+      data: income,
+    });
+  } catch (error) {
+    console.error("Error updating extra income:", error);
+    return res.status(500).json({
+      status: 500,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+};
+
+// Get Single Income by ID
+export const getIncomeById = async (req, res) => {
+  try {
+    const { incomeId } = req.params;
+
+    if (!incomeId) {
+      return res.status(400).json({
+        status: 400,
+        message: "incomeId is required",
+      });
+    }
+
+    // Find income entry and populate related data
+    const income = await Income.findById(incomeId)
+      .populate("orderId", "product clientName sellingPrice orderId")
+      .populate("clientId", "firstName lastName");
+
+    if (!income) {
+      return res.status(404).json({
+        status: 404,
+        message: "Income entry not found",
+      });
+    }
+
+    // Format response
+    const formattedIncome = {
+      _id: income._id,
+      date: income.date,
+      orderId: income.orderId,
+      description: income.Description,
+      sellingPrice: income.sellingPrice || 0,
+      receivedAmount: income.receivedAmount || 0,
+      clientId: income.clientId,
+      clientName: income.orderId?.clientName ||
+        (income.clientId ? `${income.clientId.firstName || ""} ${income.clientId.lastName || ""}`.trim() : ""),
+      product: income.orderId?.product || "",
+      status: income.status,
+      bankId: income.bankId || null,
+      createdAt: income.createdAt,
+      updatedAt: income.updatedAt,
+    };
+
+    return res.status(200).json({
+      status: 200,
+      message: "Income fetched successfully",
+      data: formattedIncome,
+    });
+  } catch (error) {
+    console.error("Error fetching income by ID:", error);
+    return res.status(500).json({
+      status: 500,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+};
+
 export default { 
   getIncomeExpance, 
   addIncomeEntry, 
@@ -619,5 +792,8 @@ export default {
   updateIncomePaymentStatus,
   addExtraExpense,
   editExtraExpense,
-  getExpenseById
+  getExpenseById,
+  addExtraIncome,
+  editExtraIncome,
+  getIncomeById
 };
