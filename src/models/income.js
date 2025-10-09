@@ -11,7 +11,7 @@ const incomeSchema = new mongoose.Schema(
     orderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Order",
-      required: true,
+      required: false, // Optional - for extra income without order
       index: true,
     },
     Description: {
@@ -21,7 +21,8 @@ const incomeSchema = new mongoose.Schema(
     },
     sellingPrice: {
       type: Number,
-      required: true,
+      required: false, // Optional - for extra income calculated from receivedAmount
+      default: 0,
     },
     receivedAmount: {
       type: Number,
@@ -31,7 +32,7 @@ const incomeSchema = new mongoose.Schema(
     clientId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: false, // Optional - for extra income without client
       index: true,
     },
     status: {
