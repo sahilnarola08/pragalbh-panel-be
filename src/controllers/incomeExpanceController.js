@@ -1,6 +1,200 @@
 import Income from "../models/income.js";
 import ExpanceIncome from "../models/expance_inc.js";
 
+// export const getIncomeExpance = async (req, res) => {
+//   try {
+//     let {
+//       incExpType = 3,
+//       page = 1,
+//       limit = 10,
+//       sortBy = "createdAt",
+//       sortOrder = "desc",
+//       search = "",
+//       orderId = "",
+//     } = req.query;
+
+//     page = parseInt(page);
+//     limit = parseInt(limit);
+//     const skip = (page - 1) * limit;
+//     const sortQuery = { [sortBy]: sortOrder === "asc" ? 1 : -1 };
+
+//     // Build search query
+//     const searchQuery = {};
+    
+//     // Add text search if provided
+//     if (search) {
+//       searchQuery.$or = [
+//         { Description: { $regex: search, $options: "i" } },
+//         { description: { $regex: search, $options: "i" } },
+//       ];
+//     }
+    
+//     // Filter by orderId if provided
+//     let orderFilter = {};
+//     if (orderId) {
+//       // Find order by orderId field
+//       const Order = (await import("../models/order.js")).default;
+//       const order = await Order.findOne({ orderId: orderId });
+//       if (order) {
+//         orderFilter = { orderId: order._id };
+//       } else {
+//         // If order not found, return empty result
+//         return res.status(200).json({
+//           status: 200,
+//           message: "No records found for the given orderId",
+//           data: {
+//             total: 0,
+//             page,
+//             limit,
+//             items: [],
+//           },
+//         });
+//       }
+//     }
+
+//     let data = [];
+//     let total = 0;
+
+//     // Case 1: Income Only
+//     if (incExpType == 1) {
+//       const incomeData = await Income.find(searchQuery)
+//         .populate("orderId", "product clientName sellingPrice orderId initialPayment")
+//         .populate("clientId", "firstName lastName")
+//         .sort(sortQuery)
+//         .skip(skip)
+//         .limit(limit);
+
+//       const count = await Income.countDocuments(searchQuery);
+
+//       data = incomeData.map((item) => ({
+//         _id: item._id,
+//         incExpType: 1,
+//         date: item.date,
+//         orderId: item.orderId,
+//         description: item.Description || item.orderId?.product || "",
+//         product: item.orderId?.product || "",
+//         sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
+//         receivedAmount: item.orderId?.sellingPrice || item.receivedAmount || 0,
+//         initialPayment: item.orderId?.initialPayment || 0,
+//         clientName:
+//           item.orderId?.clientName ||
+//           `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
+//         status: item.status,
+//         bankId: item.bankId || null,
+//       }));
+
+//       total = count;
+//     }
+
+//     // Case 2: Expense Only
+//     else if (incExpType == 2) {
+//       const expanceData = await ExpanceIncome.find(searchQuery)
+//         .populate("orderId", "product clientName purchasePrice orderId")
+//         .populate("supplierId", "firstName lastName company")
+//         .sort(sortQuery)
+//         .skip(skip)
+//         .limit(limit);
+
+//       const count = await ExpanceIncome.countDocuments(searchQuery);
+//       data = expanceData.map((item) => ({
+//         _id: item._id,
+//         incExpType: 2,
+//         date: item.date || item.createdAt,
+//         orderId: item.orderId,
+//         description: item.description || item.orderId?.product || "",
+//         dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
+//         clientName: item.orderId?.clientName || "",
+//         paidAmount: item.paidAmount || 0,
+//         supplierName:
+//           `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
+//           item.supplierId?.company ||
+//           "",
+//         status: item.status,
+//         bankId: item.bankId || null,
+//       }));
+
+//       total = count;
+//     }
+
+//     // Case 3: Income + Expense Both
+//     else if (incExpType == 3) {
+//       const finalQuery = { ...searchQuery, ...orderFilter };
+//       const [incomeData, expanceData] = await Promise.all([
+//         Income.find(finalQuery)
+//           .populate("orderId", "product clientName sellingPrice orderId initialPayment")
+//           .populate("clientId", "firstName lastName")
+//           .sort(sortQuery),
+//         ExpanceIncome.find(finalQuery)
+//           .populate("orderId", "product clientName purchasePrice orderId ")
+//           .populate("supplierId", "firstName lastName company")
+//           .sort(sortQuery),
+//       ]);
+
+//       const incomeList = incomeData.map((item) => ({
+//         _id: item._id,
+//         incExpType: 1,
+//         date: item.date,
+//         orderId: item.orderId,
+//         description: item.Description || item.orderId?.product || "",
+//         product: item.orderId?.product || "",
+//         sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
+//         receivedAmount: item.orderId?.sellingPrice ||item.receivedAmount || 0,
+//         initialPayment: item.orderId?.initialPayment || 0,
+//         clientName:
+//           item.orderId?.clientName ||
+//           `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
+//         status: item.status,
+//         bankId: item.bankId || null,
+//       }));
+
+//       const expanceList = expanceData.map((item) => ({
+//         _id: item._id,
+//         incExpType: 2,
+//         date: item.date || item.createdAt,
+//         orderId: item.orderId,
+//         description: item.description || item.orderId?.product || "",
+//         dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
+//         clientName: item.orderId?.clientName || "",
+//         paidAmount: item.paidAmount || 0,
+//         supplierName:
+//           `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
+//           item.supplierId?.company ||
+//           "",
+//         status: item.status,
+//         bankId: item.bankId || null,
+//       }));
+
+//       const merged = [...incomeList, ...expanceList].sort((a, b) => {
+//         const da = new Date(a.date);
+//         const db = new Date(b.date);
+//         return sortOrder === "asc" ? da - db : db - da;
+//       });
+      
+//       total = merged.length;
+//       data = merged.slice(skip, skip + limit);
+//     }
+
+//     res.status(200).json({
+//       status: 200,
+//       message: "Income and Expense fetched successfully",
+//       data: {
+//         total,
+//         page,
+//         limit,
+//         items: data,
+//       },
+//     });
+//   } catch (error) {
+//     console.error("Error fetching income and expance:", error);
+//     res.status(500).json({
+//       status: 500,
+//       message: "Internal Server Error",
+//       error: error.message,
+//     });
+//   }
+// };
+
+// get income and expence 
 export const getIncomeExpance = async (req, res) => {
   try {
     let {
@@ -18,36 +212,21 @@ export const getIncomeExpance = async (req, res) => {
     const skip = (page - 1) * limit;
     const sortQuery = { [sortBy]: sortOrder === "asc" ? 1 : -1 };
 
-    // Build search query
+    // Base query
     const searchQuery = {};
-    
-    // Add text search if provided
-    if (search) {
-      searchQuery.$or = [
-        { Description: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
-    }
-    
-    // Filter by orderId if provided
     let orderFilter = {};
+
+    // 🔍 Filter by Order ID (custom orderId)
     if (orderId) {
-      // Find order by orderId field
       const Order = (await import("../models/order.js")).default;
-      const order = await Order.findOne({ orderId: orderId });
+      const order = await Order.findOne({ orderId });
       if (order) {
         orderFilter = { orderId: order._id };
       } else {
-        // If order not found, return empty result
         return res.status(200).json({
           status: 200,
           message: "No records found for the given orderId",
-          data: {
-            total: 0,
-            page,
-            limit,
-            items: [],
-          },
+          data: { total: 0, page, limit, items: [] },
         });
       }
     }
@@ -55,18 +234,37 @@ export const getIncomeExpance = async (req, res) => {
     let data = [];
     let total = 0;
 
-    // Case 1: Income Only
+    // ====================== CASE 1: INCOME ======================
     if (incExpType == 1) {
-      const incomeData = await Income.find(searchQuery)
-        .populate("orderId", "product clientName sellingPrice orderId")
+      const incomeData = await Income.find({ ...searchQuery, ...orderFilter })
+        .populate("orderId", "product clientName sellingPrice orderId initialPayment")
         .populate("clientId", "firstName lastName")
         .sort(sortQuery)
-        .skip(skip)
-        .limit(limit);
+        .lean();
 
-      const count = await Income.countDocuments(searchQuery);
+      // 🔍 Apply full text filtering manually
+      const filtered = incomeData.filter((item) => {
+        const clientName =
+          item.orderId?.clientName?.toLowerCase() ||
+          `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.toLowerCase().trim();
 
-      data = incomeData.map((item) => ({
+        const fields = [
+          item.Description || "",
+          item.orderId?.orderId || "",
+          item.status || "",
+          clientName || "",
+          item.date ? new Date(item.date).toLocaleDateString("en-GB") : "",
+        ];
+
+        return search
+          ? fields.some((f) => f.toLowerCase().includes(search.toLowerCase()))
+          : true;
+      });
+
+      const count = filtered.length;
+      const sliced = filtered.slice(skip, skip + limit);
+
+      data = sliced.map((item) => ({
         _id: item._id,
         incExpType: 1,
         date: item.date,
@@ -74,7 +272,8 @@ export const getIncomeExpance = async (req, res) => {
         description: item.Description || item.orderId?.product || "",
         product: item.orderId?.product || "",
         sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
-        receivedAmount: item.receivedAmount || 0,
+        receivedAmount: item.receivedAmount || item.orderId?.sellingPrice ||  0,
+        initialPayment: item.orderId?.initialPayment || 0,
         clientName:
           item.orderId?.clientName ||
           `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
@@ -85,17 +284,37 @@ export const getIncomeExpance = async (req, res) => {
       total = count;
     }
 
-    // Case 2: Expense Only
+    // ====================== CASE 2: EXPENSE ======================
     else if (incExpType == 2) {
-      const expanceData = await ExpanceIncome.find(searchQuery)
+      const expanceData = await ExpanceIncome.find({ ...searchQuery, ...orderFilter })
         .populate("orderId", "product clientName purchasePrice orderId")
         .populate("supplierId", "firstName lastName company")
         .sort(sortQuery)
-        .skip(skip)
-        .limit(limit);
+        .lean();
 
-      const count = await ExpanceIncome.countDocuments(searchQuery);
-      data = expanceData.map((item) => ({
+      // 🔍 Apply full text filtering manually
+      const filtered = expanceData.filter((item) => {
+        const supplierName =
+          item.supplierId?.company?.toLowerCase() ||
+          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.toLowerCase().trim();
+
+        const fields = [
+          item.description || "",
+          item.orderId?.orderId || "",
+          item.status || "",
+          supplierName || "",
+          item.date ? new Date(item.date).toLocaleDateString("en-GB") : "",
+        ];
+
+        return search
+          ? fields.some((f) => f.toLowerCase().includes(search.toLowerCase()))
+          : true;
+      });
+
+      const count = filtered.length;
+      const sliced = filtered.slice(skip, skip + limit);
+
+      data = sliced.map((item) => ({
         _id: item._id,
         incExpType: 2,
         date: item.date || item.createdAt,
@@ -105,9 +324,8 @@ export const getIncomeExpance = async (req, res) => {
         clientName: item.orderId?.clientName || "",
         paidAmount: item.paidAmount || 0,
         supplierName:
-          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
-          item.supplierId?.company ||
-          "",
+          item.supplierId?.fullname ||
+          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim(),
         status: item.status,
         bankId: item.bankId || null,
       }));
@@ -115,18 +333,21 @@ export const getIncomeExpance = async (req, res) => {
       total = count;
     }
 
-    // Case 3: Income + Expense Both
+    // ====================== CASE 3: BOTH ======================
     else if (incExpType == 3) {
       const finalQuery = { ...searchQuery, ...orderFilter };
+
       const [incomeData, expanceData] = await Promise.all([
         Income.find(finalQuery)
-          .populate("orderId", "product clientName sellingPrice orderId")
+          .populate("orderId", "product clientName sellingPrice orderId initialPayment")
           .populate("clientId", "firstName lastName")
-          .sort(sortQuery),
+          .sort(sortQuery)
+          .lean(),
         ExpanceIncome.find(finalQuery)
           .populate("orderId", "product clientName purchasePrice orderId")
           .populate("supplierId", "firstName lastName company")
-          .sort(sortQuery),
+          .sort(sortQuery)
+          .lean(),
       ]);
 
       const incomeList = incomeData.map((item) => ({
@@ -137,7 +358,8 @@ export const getIncomeExpance = async (req, res) => {
         description: item.Description || item.orderId?.product || "",
         product: item.orderId?.product || "",
         sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
-        receivedAmount: item.receivedAmount || 0,
+        receivedAmount: item.receivedAmount || item.orderId?.sellingPrice ||  0,
+        initialPayment: item.orderId?.initialPayment || 0,
         clientName:
           item.orderId?.clientName ||
           `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
@@ -155,23 +377,40 @@ export const getIncomeExpance = async (req, res) => {
         clientName: item.orderId?.clientName || "",
         paidAmount: item.paidAmount || 0,
         supplierName:
-          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
-          item.supplierId?.company ||
-          "",
+          item.supplierId?.fullname ||
+          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim(),
         status: item.status,
         bankId: item.bankId || null,
       }));
 
-      const merged = [...incomeList, ...expanceList].sort((a, b) => {
+      // 🔍 Combined filtering
+      const merged = [...incomeList, ...expanceList].filter((item) => {
+        const name =
+          item.clientName?.toLowerCase() || item.supplierName?.toLowerCase() || "";
+        const fields = [
+          item.description || "",
+          item.orderId?.orderId || "",
+          item.status || "",
+          name || "",
+          item.date ? new Date(item.date).toLocaleDateString("en-GB") : "",
+        ];
+        return search
+          ? fields.some((f) => f.toLowerCase().includes(search.toLowerCase()))
+          : true;
+      });
+
+      // Sorting + pagination
+      const sorted = merged.sort((a, b) => {
         const da = new Date(a.date);
         const db = new Date(b.date);
         return sortOrder === "asc" ? da - db : db - da;
       });
-      
+
       total = merged.length;
-      data = merged.slice(skip, skip + limit);
+      data = sorted.slice(skip, skip + limit);
     }
 
+    // ✅ Final Response
     res.status(200).json({
       status: 200,
       message: "Income and Expense fetched successfully",
@@ -191,7 +430,6 @@ export const getIncomeExpance = async (req, res) => {
     });
   }
 };
-
 // Add New Income Entry
 export const addIncomeEntry = async (req, res) => {
   try {
