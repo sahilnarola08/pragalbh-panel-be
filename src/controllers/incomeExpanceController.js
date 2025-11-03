@@ -272,7 +272,7 @@ export const getIncomeExpance = async (req, res) => {
         description: item.Description || item.orderId?.product || "",
         product: item.orderId?.product || "",
         sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
-        receivedAmount: item.receivedAmount || item.orderId?.sellingPrice ||  0,
+        receivedAmount: item.receivedAmount || 0,
         initialPayment: item.orderId?.initialPayment || 0,
         clientName:
           item.orderId?.clientName ||
@@ -358,7 +358,7 @@ export const getIncomeExpance = async (req, res) => {
         description: item.Description || item.orderId?.product || "",
         product: item.orderId?.product || "",
         sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
-        receivedAmount: item.receivedAmount || item.orderId?.sellingPrice ||  0,
+        receivedAmount: item.receivedAmount || 0,
         initialPayment: item.orderId?.initialPayment || 0,
         clientName:
           item.orderId?.clientName ||
