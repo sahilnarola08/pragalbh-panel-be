@@ -51,21 +51,45 @@ export const getIncomeExpance = async (req, res) => {
 
       // 🔍 Apply full text filtering manually
       const filtered = incomeData.filter((item) => {
+        if (!search) return true;
+
+        const searchLower = search.toLowerCase().trim();
+
+        // Client Name
         const clientName =
           item.orderId?.clientName?.toLowerCase() ||
           `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.toLowerCase().trim();
 
-        const fields = [
-          item.Description || "",
-          item.orderId?.orderId || "",
-          item.status || "",
-          clientName || "",
-          item.date ? new Date(item.date).toLocaleDateString("en-GB") : "",
-        ];
+        // Product Name
+        const productName = (item.orderId?.product || "").toLowerCase();
 
-        return search
-          ? fields.some((f) => f.toLowerCase().includes(search.toLowerCase()))
-          : true;
+        // Description
+        const description = (item.Description || "").toLowerCase();
+
+        // Order ID
+        const orderId = (item.orderId?.orderId || "").toLowerCase();
+
+        // Status
+        const status = (item.status || "").toLowerCase();
+
+        // Date - multiple formats
+        let dateStr = "";
+        if (item.date) {
+          const dateObj = new Date(item.date);
+          dateStr = dateObj.toLocaleDateString("en-GB").toLowerCase() + " " +
+            dateObj.toLocaleDateString("en-US").toLowerCase() + " " +
+            dateObj.toISOString().split("T")[0].toLowerCase();
+        }
+
+        // Check if search matches any field
+        return (
+          clientName.includes(searchLower) ||
+          productName.includes(searchLower) ||
+          description.includes(searchLower) ||
+          orderId.includes(searchLower) ||
+          status.includes(searchLower) ||
+          dateStr.includes(searchLower)
+        );
       });
 
       const count = filtered.length;
@@ -101,21 +125,52 @@ export const getIncomeExpance = async (req, res) => {
 
       // 🔍 Apply full text filtering manually
       const filtered = expanceData.filter((item) => {
-        const supplierName =
-          item.supplierId?.company?.toLowerCase() ||
-          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.toLowerCase().trim();
+        if (!search) return true;
 
-        const fields = [
-          item.description || "",
-          item.orderId?.orderId || "",
-          item.status || "",
-          supplierName || "",
-          item.date ? new Date(item.date).toLocaleDateString("en-GB") : "",
-        ];
+        const searchLower = search.toLowerCase().trim();
 
-        return search
-          ? fields.some((f) => f.toLowerCase().includes(search.toLowerCase()))
-          : true;
+        // Supplier Name - prioritize full name (firstName + lastName), also check company
+        let supplierFullName = "";
+        let supplierCompany = "";
+        if (item.supplierId) {
+          const firstName = (item.supplierId.firstName || "").toLowerCase();
+          const lastName = (item.supplierId.lastName || "").toLowerCase();
+          supplierFullName = `${firstName} ${lastName}`.trim();
+          supplierCompany = (item.supplierId.company || "").toLowerCase();
+        }
+
+        // Product Name
+        const productName = (item.orderId?.product || "").toLowerCase();
+
+        // Description
+        const description = (item.description || "").toLowerCase();
+
+        // Order ID
+        const orderId = (item.orderId?.orderId || "").toLowerCase();
+
+        // Status
+        const status = (item.status || "").toLowerCase();
+
+        // Date - multiple formats
+        let dateStr = "";
+        const dateToUse = item.date || item.createdAt;
+        if (dateToUse) {
+          const dateObj = new Date(dateToUse);
+          dateStr = dateObj.toLocaleDateString("en-GB").toLowerCase() + " " +
+            dateObj.toLocaleDateString("en-US").toLowerCase() + " " +
+            dateObj.toISOString().split("T")[0].toLowerCase();
+        }
+
+        // Check if search matches any field (prioritize full name, but also check company)
+        return (
+          supplierFullName.includes(searchLower) ||
+          supplierCompany.includes(searchLower) ||
+          productName.includes(searchLower) ||
+          description.includes(searchLower) ||
+          orderId.includes(searchLower) ||
+          status.includes(searchLower) ||
+          dateStr.includes(searchLower)
+        );
       });
 
       const count = filtered.length;
@@ -131,8 +186,9 @@ export const getIncomeExpance = async (req, res) => {
         clientName: item.orderId?.clientName || "",
         paidAmount: item.paidAmount || 0,
         supplierName:
-          item.supplierId?.fullname ||
-          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim(),
+          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
+          item.supplierId?.company ||
+          "",
         status: item.status,
         bankId: item.bankId || null,
       }));
@@ -184,26 +240,54 @@ export const getIncomeExpance = async (req, res) => {
         clientName: item.orderId?.clientName || "",
         paidAmount: item.paidAmount || 0,
         supplierName:
-          item.supplierId?.fullname ||
-          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim(),
+          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
+          item.supplierId?.company ||
+          "",
         status: item.status,
         bankId: item.bankId || null,
       }));
 
       // 🔍 Combined filtering
       const merged = [...incomeList, ...expanceList].filter((item) => {
+        if (!search) return true;
+
+        const searchLower = search.toLowerCase().trim();
+
+        // Name (Client or Supplier)
         const name =
-          item.clientName?.toLowerCase() || item.supplierName?.toLowerCase() || "";
-        const fields = [
-          item.description || "",
-          item.orderId?.orderId || "",
-          item.status || "",
-          name || "",
-          item.date ? new Date(item.date).toLocaleDateString("en-GB") : "",
-        ];
-        return search
-          ? fields.some((f) => f.toLowerCase().includes(search.toLowerCase()))
-          : true;
+          item.clientName?.toLowerCase() ||
+          item.supplierName?.toLowerCase() || "";
+
+        // Product Name
+        const productName = (item.product || item.orderId?.product || "").toLowerCase();
+
+        // Description
+        const description = (item.description || "").toLowerCase();
+
+        // Order ID
+        const orderId = (item.orderId?.orderId || "").toLowerCase();
+
+        // Status
+        const status = (item.status || "").toLowerCase();
+
+        // Date - multiple formats
+        let dateStr = "";
+        if (item.date) {
+          const dateObj = new Date(item.date);
+          dateStr = dateObj.toLocaleDateString("en-GB").toLowerCase() + " " +
+            dateObj.toLocaleDateString("en-US").toLowerCase() + " " +
+            dateObj.toISOString().split("T")[0].toLowerCase();
+        }
+
+        // Check if search matches any field
+        return (
+          name.includes(searchLower) ||
+          productName.includes(searchLower) ||
+          description.includes(searchLower) ||
+          orderId.includes(searchLower) ||
+          status.includes(searchLower) ||
+          dateStr.includes(searchLower)
+        );
       });
 
       // Sorting + pagination
@@ -259,7 +343,7 @@ export const addIncomeEntry = async (req, res) => {
     // Find order by orderId field
     const Order = (await import("../models/order.js")).default;
     const order = await Order.findOne({ orderId: orderId });
-    
+
     if (!order) {
       return res.status(404).json({
         status: 404,
@@ -450,7 +534,7 @@ export const editIncomeEntry = async (req, res) => {
     if (date) income.date = date;
     if (description) income.Description = description;
     if (receivedAmount !== undefined) income.receivedAmount = receivedAmount;
-    
+
     // Auto-set receivedAmount when status is updated to paid or done
     if (status) {
       income.status = status;
@@ -691,7 +775,7 @@ export const editExtraExpense = async (req, res) => {
     if (date) expense.date = date;
     if (description) expense.description = description;
     if (bankId !== undefined) expense.bankId = bankId;
-    
+
     if (paidAmount !== undefined) {
       if (typeof paidAmount !== 'number' || paidAmount < 0) {
         return res.status(400).json({
@@ -754,8 +838,8 @@ export const getExpenseById = async (req, res) => {
       supplierId: expense.supplierId,
       supplierName: expense.supplierId
         ? `${expense.supplierId.firstName || ""} ${expense.supplierId.lastName || ""}`.trim() ||
-          expense.supplierId.company ||
-          ""
+        expense.supplierId.company ||
+        ""
         : "",
       clientName: expense.orderId?.clientName || "",
       product: expense.orderId?.product || "",
@@ -867,7 +951,7 @@ export const editExtraIncome = async (req, res) => {
     if (date) income.date = date;
     if (description) income.Description = description;
     if (bankId !== undefined) income.bankId = bankId;
-    
+
     if (receivedAmount !== undefined) {
       if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
         return res.status(400).json({
@@ -953,11 +1037,11 @@ export const getIncomeById = async (req, res) => {
   }
 };
 
-export default { 
-  getIncomeExpance, 
-  addIncomeEntry, 
+export default {
+  getIncomeExpance,
+  addIncomeEntry,
   addExpanseEntry,
-  editIncomeEntry, 
+  editIncomeEntry,
   editExpanseEntry,
   updateIncomePaymentStatus,
   addExtraExpense,
