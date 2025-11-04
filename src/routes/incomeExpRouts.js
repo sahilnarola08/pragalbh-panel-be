@@ -4,11 +4,19 @@ import supOrdDetailsController from "../controllers/supOrdDetailsController.js";
 
 const router = express.Router();
 
-// Income routes
+// Income Expanse both get apis 
 router.get("/get-income-expance", incomeExpController.getIncomeExpance);
+
+// Income routes  
 router.post("/add-income", incomeExpController.addIncomeEntry);
 router.put("/edit-income/:incomeId", incomeExpController.editIncomeEntry);
 router.put("/update-payment-status", incomeExpController.updateIncomePaymentStatus);
+
+
+// Expnase routes  
+router.post("/add-expense", incomeExpController.addExpanseEntry);
+router.put("/update-expense/:ExpId",incomeExpController.editExpanseEntry);
+
 
 // Extra Income routes (without order/client)
 router.post("/add-extra-income", incomeExpController.addExtraIncome);
