@@ -55,7 +55,7 @@ const register = async (req, res, next) => {
     const { page = 1, limit = 10, search, sortField = 'createdAt', sortOrder = 'desc' } = req.query;
     const offset = (page - 1) * limit;
     const sort = {};
-    sort[sortField] = sortOrder === "asc" ? 1 : -1;1
+    sort[sortField] = sortOrder === "asc" ? 1 : -1;
 
     // Search filter
     const filter = {};
@@ -65,7 +65,8 @@ const register = async (req, res, next) => {
         { lastName: new RegExp(search, "i") },
         { email: new RegExp(search, "i") },
         { contactNumber: new RegExp(search, "i") },
-        { company: new RegExp(search, "i") }
+        { company: new RegExp(search, "i") },
+        { clientType: new RegExp(search, "i") }
       ];
     }
 
