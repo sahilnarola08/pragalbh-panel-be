@@ -183,8 +183,214 @@ const getAllMasters = async (req, res, next) => {
     }
 };
 
+// Get master by ID
+const getMasterById = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        const master = await Master.findOne({ 
+            _id: id, 
+            isDeleted: false 
+        }).select("-__v");
+        
+        if (!master) {
+            return sendErrorResponse({
+                status: 404,
+                res,
+                message: "Master not found."
+            });
+        }
+
+        // Convert to plain object and add id field
+        const masterObj = master.toObject();
+        masterObj.id = masterObj._id.toString();
+
+        sendSuccessResponse({
+            res,
+            data: masterObj,
+            message: "Master retrieved successfully",
+            status: 200
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Update master by ID
+const updateMaster = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { name, masterType, isActive } = req.body;
+
+        // Check if master exists
+        const existingMaster = await Master.findOne({ 
+            _id: id, 
+            isDeleted: false 
+        });
+        
+        if (!existingMaster) {
+            return sendErrorResponse({
+                status: 404,
+                res,
+                message: "Master not found."
+            });
+        }
+
+        // Build update object
+        const updateData = {};
+
+        // Validate and update name if provided
+        if (name !== undefined) {
+            if (!name || typeof name !== 'string' || name.trim().length === 0) {
+                return sendErrorResponse({
+                    res,
+                    message: "Name cannot be empty",
+                    status: 400
+                });
+            }
+            
+            // Check if name already exists for the same masterType (excluding current master)
+            const nameToCheck = name.trim();
+            const masterTypeToCheck = masterType !== undefined ? Number(masterType) : existingMaster.masterType;
+            
+            const duplicateMaster = await Master.findOne({
+                name: nameToCheck,
+                masterType: masterTypeToCheck,
+                _id: { $ne: id },
+                isDeleted: false
+            });
+
+            if (duplicateMaster) {
+                return sendErrorResponse({
+                    res,
+                    message: `"${nameToCheck}" already exists for ${MASTER_TYPE_LABELS[masterTypeToCheck]} (type ${masterTypeToCheck})`,
+                    status: 400
+                });
+            }
+
+            updateData.name = nameToCheck;
+        }
+
+        // Validate and update masterType if provided
+        if (masterType !== undefined) {
+            if (!Object.values(MASTER_TYPE).includes(Number(masterType))) {
+                return sendErrorResponse({
+                    res,
+                    message: "Master type must be 1, 2, 3, or 4",
+                    status: 400
+                });
+            }
+
+            // If masterType is being changed, check if name conflicts with new type
+            if (Number(masterType) !== existingMaster.masterType) {
+                const nameToCheck = name !== undefined ? name.trim() : existingMaster.name;
+                const duplicateMaster = await Master.findOne({
+                    name: nameToCheck,
+                    masterType: Number(masterType),
+                    _id: { $ne: id },
+                    isDeleted: false
+                });
+
+                if (duplicateMaster) {
+                    return sendErrorResponse({
+                        res,
+                        message: `"${nameToCheck}" already exists for ${MASTER_TYPE_LABELS[Number(masterType)]} (type ${masterType})`,
+                        status: 400
+                    });
+                }
+            }
+
+            updateData.masterType = Number(masterType);
+        }
+
+        // Validate and update isActive if provided
+        if (isActive !== undefined) {
+            if (typeof isActive !== 'boolean') {
+                return sendErrorResponse({
+                    res,
+                    message: "isActive must be a boolean",
+                    status: 400
+                });
+            }
+            updateData.isActive = isActive;
+        }
+
+        // Update master
+        const updatedMaster = await Master.findByIdAndUpdate(
+            id,
+            updateData,
+            { new: true, runValidators: true }
+        ).select("-__v");
+
+        // Convert to plain object and add id field
+        const masterObj = updatedMaster.toObject();
+        masterObj.id = masterObj._id.toString();
+
+        sendSuccessResponse({
+            res,
+            data: masterObj,
+            message: "Master updated successfully",
+            status: 200
+        });
+    } catch (error) {
+        // Handle duplicate key error
+        if (error.code === 11000) {
+            return sendErrorResponse({
+                res,
+                message: "Duplicate entry detected. This master already exists.",
+                status: 400
+            });
+        }
+        next(error);
+    }
+};
+
+// Delete master by ID (soft delete - sets isDeleted to true)
+const deleteMaster = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Check if master exists and is not already deleted
+        const existingMaster = await Master.findOne({ 
+            _id: id, 
+            isDeleted: false 
+        });
+        
+        if (!existingMaster) {
+            return sendErrorResponse({
+                status: 404,
+                res,
+                message: "Master not found or already deleted."
+            });
+        }
+
+        // Soft delete - set isDeleted to true and isActive to false
+        const deletedMaster = await Master.findByIdAndUpdate(
+            id,
+            { isDeleted: true, isActive: false },
+            { new: true }
+        ).select("-__v");
+
+        // Convert to plain object and add id field
+        const masterObj = deletedMaster.toObject();
+        masterObj.id = masterObj._id.toString();
+
+        sendSuccessResponse({
+            res,
+            data: masterObj,
+            message: "Master deleted successfully",
+            status: 200
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export default {
     createMaster,
     getAllMasters,
+    getMasterById,
+    updateMaster,
+    deleteMaster,
 };
 
