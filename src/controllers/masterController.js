@@ -430,6 +430,194 @@ const getAllMasterAssets = async (req, res, next) => {
     }
 };
 
+// Get master asset by ID
+const getMasterAssetById = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Validate ID format
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return sendErrorResponse({
+                res,
+                message: "Invalid master asset ID format",
+                status: 400
+            });
+        }
+
+        // Find master asset by ID
+        const masterAsset = await MasterAssets.findOne({
+            _id: id,
+            isDeleted: false
+        }).select("_id name isDeleted");
+
+        if (!masterAsset) {
+            return sendErrorResponse({
+                res,
+                message: "Master asset not found",
+                status: 404
+            });
+        }
+
+        const responseData = {
+            _id: masterAsset._id,
+            name: masterAsset.name,
+            isDeleted: masterAsset.isDeleted
+        };
+
+        sendSuccessResponse({
+            res,
+            data: responseData,
+            message: "Master asset retrieved successfully",
+            status: 200
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// Update master asset
+const updateMasterAsset = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { masterName } = req.body;
+
+        // Validate ID format
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return sendErrorResponse({
+                res,
+                message: "Invalid master asset ID format",
+                status: 400
+            });
+        }
+
+        // Validate master name
+        if (!masterName || typeof masterName !== 'string' || masterName.trim().length === 0) {
+            return sendErrorResponse({
+                res,
+                message: "Master name is required",
+                status: 400
+            });
+        }
+
+        const assetName = masterName.trim();
+
+        // Check if master asset exists and is not deleted
+        const existingAsset = await MasterAssets.findOne({
+            _id: id,
+            isDeleted: false
+        });
+
+        if (!existingAsset) {
+            return sendErrorResponse({
+                res,
+                message: "Master asset not found",
+                status: 404
+            });
+        }
+
+        // Check if another master asset with same name exists (excluding current one)
+        const duplicateAsset = await MasterAssets.findOne({
+            name: assetName,
+            isDeleted: false,
+            _id: { $ne: id }
+        });
+
+        if (duplicateAsset) {
+            return sendErrorResponse({
+                res,
+                message: `Master asset with name "${assetName}" already exists`,
+                status: 400
+            });
+        }
+
+        // Update master asset
+        const updatedAsset = await MasterAssets.findByIdAndUpdate(
+            id,
+            { name: assetName },
+            { new: true, runValidators: true }
+        ).select("_id name isDeleted");
+
+        const responseData = {
+            _id: updatedAsset._id,
+            masterName: updatedAsset.name,
+            isDeleted: updatedAsset.isDeleted
+        };
+
+        sendSuccessResponse({
+            res,
+            data: responseData,
+            message: "Master asset updated successfully",
+            status: 200
+        });
+    } catch (error) {
+        // Handle duplicate key error
+        if (error.code === 11000) {
+            return sendErrorResponse({
+                res,
+                message: "Duplicate entry detected. This master asset already exists.",
+                status: 400
+            });
+        }
+        next(error);
+    }
+};
+
+// Delete master asset (soft delete)
+const deleteMasterAsset = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Validate ID format
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return sendErrorResponse({
+                res,
+                message: "Invalid master asset ID format",
+                status: 400
+            });
+        }
+
+        // Check if master asset exists and is not already deleted
+        const masterAsset = await MasterAssets.findOne({
+            _id: id,
+            isDeleted: false
+        });
+
+        if (!masterAsset) {
+            return sendErrorResponse({
+                res,
+                message: "Master asset not found",
+                status: 404
+            });
+        }
+
+        // Check if any masters are using this master asset
+        const mastersUsingAsset = await Master.findOne({
+            master: id,
+            isDeleted: false
+        });
+
+        if (mastersUsingAsset) {
+            return sendErrorResponse({
+                res,
+                message: "Cannot delete master asset. It is being used by one or more masters",
+                status: 400
+            });
+        }
+
+        // Soft delete the master asset
+        await MasterAssets.findByIdAndUpdate(id, { isDeleted: true });
+
+        sendSuccessResponse({
+            res,
+            data: { _id: id },
+            message: "Master asset deleted successfully",
+            status: 200
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 
 export default {
     createMaster,
@@ -439,5 +627,8 @@ export default {
     deleteMaster,
     createMasterAsset,
     getAllMasterAssets,
+    getMasterAssetById,
+    updateMasterAsset,
+    deleteMasterAsset,
 };
 

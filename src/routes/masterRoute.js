@@ -26,6 +26,15 @@ router.post("/assets/create", masterController.createMasterAsset);
 // Get all master assets sorted alphabetically
 router.get("/assets/get", masterController.getAllMasterAssets);
 
+// Get master asset by ID
+router.get("/assets/get-by-id/:id", masterController.getMasterAssetById);
+
+// Update master asset by ID
+router.put("/assets/update/:id", masterController.updateMasterAsset);
+
+// Delete master asset by ID (soft delete)
+router.delete("/assets/delete/:id", masterController.deleteMasterAsset);
+
 
 export default router;
 
