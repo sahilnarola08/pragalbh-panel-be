@@ -25,4 +25,3 @@ export const ORDER_STATUS = {
   // Default values - Changed to PENDING
   export const DEFAULT_ORDER_STATUS = ORDER_STATUS.PENDING;
   export const DEFAULT_PAYMENT_STATUS = PAYMENT_STATUS.PENDING;
-  ;
