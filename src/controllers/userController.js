@@ -1,6 +1,8 @@
 import bcrypt from 'bcryptjs';
 import User from '../models/user.js';
+import Master from '../models/master.js';
 import { sendSuccessResponse, sendErrorResponse } from '../util/commonResponses.js';
+import mongoose from 'mongoose';
 
 // Register new user
 const register = async (req, res, next) => {
@@ -16,6 +18,36 @@ const register = async (req, res, next) => {
         company
       } = req.body;
   
+      // Validate platforms if provided
+      if (platforms && Array.isArray(platforms)) {
+        for (const platform of platforms) {
+          if (platform.platformName) {
+            // Validate ObjectId format
+            if (!mongoose.Types.ObjectId.isValid(platform.platformName)) {
+              return sendErrorResponse({
+                status: 400,
+                res,
+                message: `Invalid platform name ID format: ${platform.platformName}`
+              });
+            }
+
+            // Validate platform name exists in Master
+            const platformExists = await Master.findOne({
+              _id: platform.platformName,
+              isDeleted: false
+            });
+
+            if (!platformExists) {
+              return sendErrorResponse({
+                status: 400,
+                res,
+                message: `Platform name not found or is inactive: ${platform.platformName}`
+              });
+            }
+          }
+        }
+      }
+
       // Check if user already exists by email
       const existingUserByEmail = await User.findOne({ email });
       if (existingUserByEmail) {
@@ -35,6 +67,16 @@ const register = async (req, res, next) => {
         email,
         clientType,
         company
+      });
+
+      // Populate clientType and platforms in response
+      await user.populate({
+        path: 'clientType',
+        select: '_id name'
+      });
+      await user.populate({
+        path: 'platforms.platformName',
+        select: '_id name'
       });
   
       sendSuccessResponse({ 
@@ -70,13 +112,23 @@ const register = async (req, res, next) => {
       ];
     }
 
-    // Fetch users
+    // Fetch users with populated clientType and platforms
     const users = await User
       .find({...filter ,isDeleted: false})
       .sort(sort)
       .skip(offset)
       .limit(limit)
-      .select("-password -__v -createdAt -updatedAt");
+      .select("-password -__v -createdAt -updatedAt")
+      .populate({
+        path: 'clientType',
+        select: '_id name',
+        match: { isDeleted: false }
+      })
+      .populate({
+        path: 'platforms.platformName',
+        select: '_id name',
+        match: { isDeleted: false }
+      });
 
 
     const totalUsers = await User.countDocuments({...filter ,isDeleted: false});
@@ -149,12 +201,51 @@ const updateUser = async (req, res, next) => {
       }
     }
 
+    // Validate platforms if provided
+    if (updateData.platforms && Array.isArray(updateData.platforms)) {
+      for (const platform of updateData.platforms) {
+        if (platform.platformName) {
+          // Validate ObjectId format
+          if (!mongoose.Types.ObjectId.isValid(platform.platformName)) {
+            return sendErrorResponse({
+              status: 400,
+              res,
+              message: `Invalid platform name ID format: ${platform.platformName}`
+            });
+          }
+
+          // Validate platform name exists in Master
+          const platformExists = await Master.findOne({
+            _id: platform.platformName,
+            isDeleted: false
+          });
+
+          if (!platformExists) {
+            return sendErrorResponse({
+              status: 400,
+              res,
+              message: `Platform name not found or is inactive: ${platform.platformName}`
+            });
+          }
+        }
+      }
+    }
+
     // Update user
     const updatedUser = await User.findByIdAndUpdate(
       id,
       updateData,
       { new: true, runValidators: true }
-    ).select("-__v");
+    ).select("-__v")
+    .populate({
+      path: 'clientType',
+      select: '_id name'
+    })
+    .populate({
+      path: 'platforms.platformName',
+      select: '_id name',
+      match: { isDeleted: false }
+    });
 
     sendSuccessResponse({
       res,
@@ -204,7 +295,18 @@ const getUserById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const user = await User.findById(id).select("-__v -createdAt -updatedAt ");
+    const user = await User.findById(id)
+      .select("-__v -createdAt -updatedAt")
+      .populate({
+        path: 'clientType',
+        select: '_id name',
+        match: { isDeleted: false }
+      })
+      .populate({
+        path: 'platforms.platformName',
+        select: '_id name',
+        match: { isDeleted: false }
+      });
     
     if (!user) {
       return sendErrorResponse({
