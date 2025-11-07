@@ -25,19 +25,3 @@ export const ORDER_STATUS = {
   // Default values - Changed to PENDING
   export const DEFAULT_ORDER_STATUS = ORDER_STATUS.PENDING;
   export const DEFAULT_PAYMENT_STATUS = PAYMENT_STATUS.PENDING;
-  
-  // Master Type Enum
-  export const MASTER_TYPE = {
-    CLIENT_TYPE: 1,
-    BANK_TYPE: 2,
-    SOCIAL_MEDIA: 3,
-    PRODUCT_TYPE: 4
-  };
-  
-  // Master Type Labels
-  export const MASTER_TYPE_LABELS = {
-    1: "clientType",
-    2: "bankType",
-    3: "socialMedia",
-    4: "productType"
-  };

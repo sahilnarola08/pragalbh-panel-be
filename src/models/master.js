@@ -1,5 +1,4 @@
 import mongoose from "mongoose";
-import { MASTER_TYPE } from "../helper/enums.js";
 
 const masterSchema = new mongoose.Schema({
      name: {
@@ -8,10 +7,9 @@ const masterSchema = new mongoose.Schema({
           trim: true,
           index: true,
      },
-     masterType: {
-          type: Number,
-          required: [true, 'Master type is required'],
-          enum: Object.values(MASTER_TYPE),
+     master: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "masterassets",
           index: true,
      },
      isActive: {
@@ -30,13 +28,13 @@ const masterSchema = new mongoose.Schema({
      toObject: { virtuals: true }
 });
 
-// Compound index to ensure unique name per masterType (excluding deleted records)
-masterSchema.index({ name: 1, masterType: 1, isDeleted: 1 }, { 
+// Compound index to ensure unique name (excluding deleted records)
+masterSchema.index({ name: 1, isDeleted: 1 }, { 
      unique: true,
      partialFilterExpression: { isDeleted: false }
 });
 
-const Master = mongoose.model("Master", masterSchema);
+const Master = mongoose.model("master", masterSchema);
 
 export default Master;
 

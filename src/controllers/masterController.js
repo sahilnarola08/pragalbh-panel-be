@@ -1,11 +1,12 @@
 import Master from "../models/master.js";
+import MasterAssets from "../models/masterAssets.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
-import { MASTER_TYPE, MASTER_TYPE_LABELS } from "../helper/enums.js";
+import mongoose from "mongoose";
 
 // Create master - accepts single object
 const createMaster = async (req, res, next) => {
     try {
-        const { name, masterType, isActive } = req.body;
+        const { name, master, isActive } = req.body;
 
         // Validate name
         if (!name || typeof name !== 'string' || name.trim().length === 0) {
@@ -16,21 +17,15 @@ const createMaster = async (req, res, next) => {
             });
         }
 
-        // Validate masterType
-        if (masterType === undefined || masterType === null) {
-            return sendErrorResponse({
-                res,
-                message: "Master type is required",
-                status: 400
-            });
-        }
-
-        if (!Object.values(MASTER_TYPE).includes(Number(masterType))) {
-            return sendErrorResponse({
-                res,
-                message: "Master type must be 1, 2, 3, or 4",
-                status: 400
-            });
+        // Validate master (ObjectId) if provided
+        if (master !== undefined && master !== null) {
+            if (!mongoose.Types.ObjectId.isValid(master)) {
+                return sendErrorResponse({
+                    res,
+                    message: "Invalid master ID format",
+                    status: 400
+                });
+            }
         }
 
         // Validate isActive (optional, default true)
@@ -45,28 +40,27 @@ const createMaster = async (req, res, next) => {
         // Check if master already exists
         const existingMaster = await Master.findOne({
             name: name.trim(),
-            masterType: Number(masterType),
             isDeleted: false
         });
 
         if (existingMaster) {
             return sendErrorResponse({
                 res,
-                message: `"${name}" already exists for ${MASTER_TYPE_LABELS[Number(masterType)]} (type ${masterType})`,
+                message: `"${name}" already exists`,
                 status: 400
             });
         }
 
         // Create master
-        const master = await Master.create({
+        const newMaster = await Master.create({
             name: name.trim(),
-            masterType: Number(masterType),
+            master: master && mongoose.Types.ObjectId.isValid(master) ? master : undefined,
             isActive: isActive !== undefined ? isActive : true
         });
 
         sendSuccessResponse({
             res,
-            data: master,
+            data: newMaster,
             message: "Master created successfully",
             status: 200
         });
@@ -90,74 +84,50 @@ const getAllMasters = async (req, res, next) => {
             page = 1,
             limit = 10,
             search = "",
-            masterType = 0, // 0 = all types, 1-4 = specific type
-            sortField = "masterType",
-            sortOrder = "asc"
+            sortField = "name",
+            sortOrder = "asc",
+            masterType = "" // Add master type filter
         } = req.query;
 
         const pageNum = parseInt(page, 10);
         const limitNum = parseInt(limit, 10);
         const offset = (pageNum - 1) * limitNum;
 
-        // Build match stage for filtering
+        // Build match stage for filtering - only not deleted masters
         const matchStage = { isDeleted: false };
 
-        // Filter by masterType (0 = all, 1-4 = specific type)
-        const masterTypeNum = Number(masterType);
-        if (masterTypeNum !== 0) {
-            if (!Object.values(MASTER_TYPE).includes(masterTypeNum)) {
-                return sendErrorResponse({
-                    res,
-                    message: "Invalid master type. Must be 0 (all), 1, 2, 3, or 4",
-                    status: 400
-                });
-            }
-            matchStage.masterType = masterTypeNum;
+        // Filter by master type (master asset ID)
+        if (masterType && masterType.trim().length > 0) {
+            matchStage.master = masterType.trim();
         }
 
         // Search by name (case-insensitive)
         if (search && search.trim().length > 0) {
-            // Use case-insensitive regex - "i" flag makes it case-insensitive
-            // This will match "SBI", "sbi", "Sbi", "SbI", etc.
             const searchPattern = search.trim();
             matchStage.name = { $regex: searchPattern, $options: "i" };
         }
 
-        // Build sort object - default: sort by masterType first, then by name
+        // Build sort object
         const sortObj = {};
-        if (sortField === "masterType") {
-            sortObj.masterType = sortOrder === "asc" ? 1 : -1;
-            sortObj.name = 1; // Secondary sort by name
-        } else {
-            sortObj[sortField] = sortOrder === "asc" ? 1 : -1;
-            sortObj.masterType = 1; // Secondary sort by masterType
-        }
+        sortObj[sortField] = sortOrder === "asc" ? 1 : -1;
 
-        // Get masters with pagination - sorted by masterType (1,2,3,4) then by name
-        const sortByTypeAndName = {
-            masterType: 1, // Sort by masterType ascending (1, 2, 3, 4)
-            name: 1        // Then sort by name ascending
-        };
-
+        // Query masters: not deleted, with pagination, desired sort
         const masters = await Master.find(matchStage)
-            .sort(sortByTypeAndName)
+            .sort(sortObj)
             .skip(offset)
             .limit(limitNum)
-            .select("-__v");
+            .select("name master isActive") // Only select name, master, isActive
+            .populate({
+                path: 'master',
+                select: 'name'
+            });
 
-        // Convert to plain objects and add id field
-        const mastersList = masters.map(master => {
-            const masterObj = master.toObject();
-            masterObj.id = masterObj._id.toString();
-            return masterObj;
-        });
-
-        // Get total count
+        // Get total count (no skip/limit)
         const totalMasters = await Master.countDocuments(matchStage);
 
         // Build response data with masters array and pagination fields
         const responseData = {
-            masters: mastersList,
+            masters: masters,
             totalCount: totalMasters,
             page: pageNum,
             limit: limitNum,
@@ -191,7 +161,9 @@ const getMasterById = async (req, res, next) => {
         const master = await Master.findOne({ 
             _id: id, 
             isDeleted: false 
-        }).select("-__v");
+        })
+        .select("-__v")
+        .populate('master', 'name');
         
         if (!master) {
             return sendErrorResponse({
@@ -220,7 +192,7 @@ const getMasterById = async (req, res, next) => {
 const updateMaster = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { name, masterType, isActive } = req.body;
+        const { name, master, isActive } = req.body;
 
         // Check if master exists
         const existingMaster = await Master.findOne({ 
@@ -249,13 +221,11 @@ const updateMaster = async (req, res, next) => {
                 });
             }
             
-            // Check if name already exists for the same masterType (excluding current master)
+            // Check if name already exists (excluding current master)
             const nameToCheck = name.trim();
-            const masterTypeToCheck = masterType !== undefined ? Number(masterType) : existingMaster.masterType;
             
             const duplicateMaster = await Master.findOne({
                 name: nameToCheck,
-                masterType: masterTypeToCheck,
                 _id: { $ne: id },
                 isDeleted: false
             });
@@ -263,7 +233,7 @@ const updateMaster = async (req, res, next) => {
             if (duplicateMaster) {
                 return sendErrorResponse({
                     res,
-                    message: `"${nameToCheck}" already exists for ${MASTER_TYPE_LABELS[masterTypeToCheck]} (type ${masterTypeToCheck})`,
+                    message: `"${nameToCheck}" already exists`,
                     status: 400
                 });
             }
@@ -271,36 +241,16 @@ const updateMaster = async (req, res, next) => {
             updateData.name = nameToCheck;
         }
 
-        // Validate and update masterType if provided
-        if (masterType !== undefined) {
-            if (!Object.values(MASTER_TYPE).includes(Number(masterType))) {
+        // Validate and update master (ObjectId) if provided
+        if (master !== undefined) {
+            if (master !== null && !mongoose.Types.ObjectId.isValid(master)) {
                 return sendErrorResponse({
                     res,
-                    message: "Master type must be 1, 2, 3, or 4",
+                    message: "Invalid master ID format",
                     status: 400
                 });
             }
-
-            // If masterType is being changed, check if name conflicts with new type
-            if (Number(masterType) !== existingMaster.masterType) {
-                const nameToCheck = name !== undefined ? name.trim() : existingMaster.name;
-                const duplicateMaster = await Master.findOne({
-                    name: nameToCheck,
-                    masterType: Number(masterType),
-                    _id: { $ne: id },
-                    isDeleted: false
-                });
-
-                if (duplicateMaster) {
-                    return sendErrorResponse({
-                        res,
-                        message: `"${nameToCheck}" already exists for ${MASTER_TYPE_LABELS[Number(masterType)]} (type ${masterType})`,
-                        status: 400
-                    });
-                }
-            }
-
-            updateData.masterType = Number(masterType);
+            updateData.master = master && mongoose.Types.ObjectId.isValid(master) ? master : null;
         }
 
         // Validate and update isActive if provided
@@ -320,7 +270,9 @@ const updateMaster = async (req, res, next) => {
             id,
             updateData,
             { new: true, runValidators: true }
-        ).select("-__v");
+        )
+        .select("-__v")
+        .populate('master', 'name');
 
         // Convert to plain object and add id field
         const masterObj = updatedMaster.toObject();
@@ -386,11 +338,106 @@ const deleteMaster = async (req, res, next) => {
     }
 };
 
+// ==================== Master Assets Controllers ====================
+
+// Create master asset
+const createMasterAsset = async (req, res, next) => {
+    try {
+        const { masterName } = req.body;
+
+        // Validate master name
+        if (!masterName || typeof masterName !== 'string' || masterName.trim().length === 0) {
+            return sendErrorResponse({
+                res,
+                message: "Master name is required",
+                status: 400
+            });
+        }
+
+        const assetName = masterName.trim();
+
+        // Check if master asset with this name already exists (unique name check)
+        const existingAsset = await MasterAssets.findOne({
+            name: assetName,
+            isDeleted: false
+        });
+
+        if (existingAsset) {
+            return sendErrorResponse({
+                res,
+                message: `Master asset with name "${assetName}" already exists`,
+                status: 400
+            });
+        }
+
+        // Create master asset with masterName as name
+        const masterAsset = await MasterAssets.create({
+            name: assetName
+        });
+
+        // Return required fields: _id, masterName, isDeleted
+        const responseData = {
+            _id: masterAsset._id,
+            masterName: assetName,
+            isDeleted: masterAsset.isDeleted
+        };
+
+        sendSuccessResponse({
+            res,
+            data: responseData,
+            message: "Master asset created successfully",
+            status: 200
+        });
+    } catch (error) {
+        // Handle duplicate key error
+        if (error.code === 11000) {
+            return sendErrorResponse({
+                res,
+                message: "Duplicate entry detected. This master asset already exists.",
+                status: 400
+            });
+        }
+        next(error);
+    }
+};
+
+// Get all master assets sorted alphabetically
+const getAllMasterAssets = async (req, res, next) => {
+    try {
+        // Get all master assets that are not deleted, sorted alphabetically by name
+        const masterAssets = await MasterAssets.find({ isDeleted: false })
+            .sort({ name: 1 }) // Sort alphabetically ascending (a, b, c, d...)
+            .select("_id name isDeleted");
+
+        // Convert to plain objects
+        const assetsList = masterAssets.map(asset => {
+            const assetObj = asset.toObject();
+            return {
+                _id: assetObj._id,
+                name: assetObj.name,
+                isDeleted: assetObj.isDeleted
+            };
+        });
+
+        sendSuccessResponse({
+            res,
+            data: assetsList,
+            message: "Master assets retrieved successfully",
+            status: 200
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+
 export default {
     createMaster,
     getAllMasters,
     getMasterById,
     updateMaster,
     deleteMaster,
+    createMasterAsset,
+    getAllMasterAssets,
 };
 
