@@ -2,9 +2,9 @@ import mongoose from "mongoose";
 
 const platformSchema = new mongoose.Schema({
      platformName: {
-       type: String,
+       type: mongoose.Schema.Types.ObjectId,
+       ref: "master",
        required: true,
-       trim: true
      },
      platformUsername: {
        type: String,     
@@ -49,8 +49,8 @@ const userSchema = new mongoose.Schema({
           index: true,
      },
      clientType: {
-          type: String,
-          trim: true,
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "master",
           index: true,
      },
      isDeleted: {
