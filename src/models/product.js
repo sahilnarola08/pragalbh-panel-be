@@ -2,9 +2,9 @@ import mongoose from "mongoose";
 
 const productSchema = new mongoose.Schema({
   category: {
-     type: String,
+     type: mongoose.Schema.Types.ObjectId,
+     ref: "master",
      required: true,
-     trim: true,
      index: true,
   },
   productName: {
