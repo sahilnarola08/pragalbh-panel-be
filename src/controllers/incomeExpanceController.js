@@ -1,5 +1,60 @@
 import Income from "../models/income.js";
 import ExpanceIncome from "../models/expance_inc.js";
+import Master from "../models/master.js";
+import mongoose from "mongoose";
+
+const normalizeBankIdOrThrow = async (bankId) => {
+  if (bankId === undefined || bankId === null || bankId === "") {
+    return null;
+  }
+
+  const rawId =
+    typeof bankId === "object" && bankId !== null
+      ? bankId._id || bankId.id || bankId.toString()
+      : bankId;
+
+  if (!mongoose.Types.ObjectId.isValid(rawId)) {
+    const error = new Error("Invalid bank ID format");
+    error.status = 400;
+    throw error;
+  }
+
+  const bank = await Master.findOne({
+    _id: rawId,
+    isDeleted: false,
+  }).select("_id name");
+
+  if (!bank) {
+    const error = new Error("Bank not found or is inactive");
+    error.status = 404;
+    throw error;
+  }
+
+  return bank._id;
+};
+
+const buildBankResponse = (bank) => {
+  if (!bank || typeof bank !== "object") {
+    return { bankId: null, bank: null };
+  }
+  const bankId = bank._id ? bank._id : bank;
+  const bankInfo =
+    bank && typeof bank === "object" && bank.name
+      ? { _id: bankId, name: bank.name }
+      : null;
+  return { bankId, bank: bankInfo };
+};
+
+const docToPlainWithBank = (doc) => {
+  if (!doc) return doc;
+  const plain = doc.toObject ? doc.toObject({ virtuals: true }) : doc;
+  const { bankId, bank } = buildBankResponse(plain?.bankId);
+  return {
+    ...plain,
+    bankId,
+    bank,
+  };
+};
 
 // get income and expence 
 export const getIncomeExpance = async (req, res) => {
@@ -46,6 +101,11 @@ export const getIncomeExpance = async (req, res) => {
       const incomeData = await Income.find({ ...searchQuery, ...orderFilter })
         .populate("orderId", "product clientName sellingPrice orderId initialPayment")
         .populate("clientId", "firstName lastName")
+        .populate({
+          path: "bankId",
+          select: "_id name",
+          match: { isDeleted: false },
+        })
         .sort(sortQuery)
         .lean();
 
@@ -69,6 +129,9 @@ export const getIncomeExpance = async (req, res) => {
         // Order ID
         const orderId = (item.orderId?.orderId || "").toLowerCase();
 
+        // Bank Name
+        const bankName = (item.bankId?.name || "").toLowerCase();
+
         // Status
         const status = (item.status || "").toLowerCase();
 
@@ -86,6 +149,7 @@ export const getIncomeExpance = async (req, res) => {
           clientName.includes(searchLower) ||
           productName.includes(searchLower) ||
           description.includes(searchLower) ||
+          bankName.includes(searchLower) ||
           orderId.includes(searchLower) ||
           status.includes(searchLower) ||
           dateStr.includes(searchLower)
@@ -95,22 +159,26 @@ export const getIncomeExpance = async (req, res) => {
       const count = filtered.length;
       const sliced = filtered.slice(skip, skip + limit);
 
-      data = sliced.map((item) => ({
-        _id: item._id,
-        incExpType: 1,
-        date: item.date,
-        orderId: item.orderId,
-        description: item.Description || item.orderId?.product || "",
-        product: item.orderId?.product || "",
-        sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
-        receivedAmount: item.receivedAmount || 0,
-        initialPayment: item.orderId?.initialPayment || 0,
-        clientName:
-          item.orderId?.clientName ||
-          `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
-        status: item.status,
-        bankId: item.bankId || null,
-      }));
+      data = sliced.map((item) => {
+        const { bankId, bank } = buildBankResponse(item.bankId);
+        return {
+          _id: item._id,
+          incExpType: 1,
+          date: item.date,
+          orderId: item.orderId,
+          description: item.Description || item.orderId?.product || "",
+          product: item.orderId?.product || "",
+          sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
+          receivedAmount: item.receivedAmount || 0,
+          initialPayment: item.orderId?.initialPayment || 0,
+          clientName:
+            item.orderId?.clientName ||
+            `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
+          status: item.status,
+          bankId,
+          bank,
+        };
+      });
 
       total = count;
     }
@@ -120,6 +188,11 @@ export const getIncomeExpance = async (req, res) => {
       const expanceData = await ExpanceIncome.find({ ...searchQuery, ...orderFilter })
         .populate("orderId", "product clientName purchasePrice orderId")
         .populate("supplierId", "firstName lastName company")
+        .populate({
+          path: "bankId",
+          select: "_id name",
+          match: { isDeleted: false },
+        })
         .sort(sortQuery)
         .lean();
 
@@ -148,6 +221,9 @@ export const getIncomeExpance = async (req, res) => {
         // Order ID
         const orderId = (item.orderId?.orderId || "").toLowerCase();
 
+        // Bank Name
+        const bankName = (item.bankId?.name || "").toLowerCase();
+
         // Status
         const status = (item.status || "").toLowerCase();
 
@@ -167,6 +243,7 @@ export const getIncomeExpance = async (req, res) => {
           supplierCompany.includes(searchLower) ||
           productName.includes(searchLower) ||
           description.includes(searchLower) ||
+          bankName.includes(searchLower) ||
           orderId.includes(searchLower) ||
           status.includes(searchLower) ||
           dateStr.includes(searchLower)
@@ -176,22 +253,26 @@ export const getIncomeExpance = async (req, res) => {
       const count = filtered.length;
       const sliced = filtered.slice(skip, skip + limit);
 
-      data = sliced.map((item) => ({
-        _id: item._id,
-        incExpType: 2,
-        date: item.date || item.createdAt,
-        orderId: item.orderId,
-        description: item.description || item.orderId?.product || "",
-        dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
-        clientName: item.orderId?.clientName || "",
-        paidAmount: item.paidAmount || 0,
-        supplierName:
-          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
-          item.supplierId?.company ||
-          "",
-        status: item.status,
-        bankId: item.bankId || null,
-      }));
+      data = sliced.map((item) => {
+        const { bankId, bank } = buildBankResponse(item.bankId);
+        return {
+          _id: item._id,
+          incExpType: 2,
+          date: item.date || item.createdAt,
+          orderId: item.orderId,
+          description: item.description || item.orderId?.product || "",
+          dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
+          clientName: item.orderId?.clientName || "",
+          paidAmount: item.paidAmount || 0,
+          supplierName:
+            `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
+            item.supplierId?.company ||
+            "",
+          status: item.status,
+          bankId,
+          bank,
+        };
+      });
 
       total = count;
     }
@@ -204,48 +285,66 @@ export const getIncomeExpance = async (req, res) => {
         Income.find(finalQuery)
           .populate("orderId", "product clientName sellingPrice orderId initialPayment")
           .populate("clientId", "firstName lastName")
+          .populate({
+            path: "bankId",
+            select: "_id name",
+            match: { isDeleted: false },
+          })
           .sort(sortQuery)
           .lean(),
         ExpanceIncome.find(finalQuery)
           .populate("orderId", "product clientName purchasePrice orderId")
           .populate("supplierId", "firstName lastName company")
+          .populate({
+            path: "bankId",
+            select: "_id name",
+            match: { isDeleted: false },
+          })
           .sort(sortQuery)
           .lean(),
       ]);
 
-      const incomeList = incomeData.map((item) => ({
-        _id: item._id,
-        incExpType: 1,
-        date: item.date,
-        orderId: item.orderId,
-        description: item.Description || item.orderId?.product || "",
-        product: item.orderId?.product || "",
-        sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
-        receivedAmount: item.receivedAmount || 0,
-        initialPayment: item.orderId?.initialPayment || 0,
-        clientName:
-          item.orderId?.clientName ||
-          `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
-        status: item.status,
-        bankId: item.bankId || null,
-      }));
+      const incomeList = incomeData.map((item) => {
+        const { bankId, bank } = buildBankResponse(item.bankId);
+        return {
+          _id: item._id,
+          incExpType: 1,
+          date: item.date,
+          orderId: item.orderId,
+          description: item.Description || item.orderId?.product || "",
+          product: item.orderId?.product || "",
+          sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
+          receivedAmount: item.receivedAmount || 0,
+          initialPayment: item.orderId?.initialPayment || 0,
+          clientName:
+            item.orderId?.clientName ||
+            `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
+          status: item.status,
+          bankId,
+          bank,
+        };
+      });
 
-      const expanceList = expanceData.map((item) => ({
-        _id: item._id,
-        incExpType: 2,
-        date: item.date || item.createdAt,
-        orderId: item.orderId,
-        description: item.description || item.orderId?.product || "",
-        dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
-        clientName: item.orderId?.clientName || "",
-        paidAmount: item.paidAmount || 0,
-        supplierName:
-          `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
-          item.supplierId?.company ||
-          "",
-        status: item.status,
-        bankId: item.bankId || null,
-      }));
+      const expanceList = expanceData.map((item) => {
+        const { bankId, bank } = buildBankResponse(item.bankId);
+        return {
+          _id: item._id,
+          incExpType: 2,
+          date: item.date || item.createdAt,
+          orderId: item.orderId,
+          description: item.description || item.orderId?.product || "",
+          dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
+          clientName: item.orderId?.clientName || "",
+          paidAmount: item.paidAmount || 0,
+          supplierName:
+            `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
+            item.supplierId?.company ||
+            "",
+          status: item.status,
+          bankId,
+          bank,
+        };
+      });
 
       // 🔍 Combined filtering
       const merged = [...incomeList, ...expanceList].filter((item) => {
@@ -267,6 +366,9 @@ export const getIncomeExpance = async (req, res) => {
         // Order ID
         const orderId = (item.orderId?.orderId || "").toLowerCase();
 
+        // Bank Name
+        const bankName = (item.bank?.name || "").toLowerCase();
+
         // Status
         const status = (item.status || "").toLowerCase();
 
@@ -284,6 +386,7 @@ export const getIncomeExpance = async (req, res) => {
           name.includes(searchLower) ||
           productName.includes(searchLower) ||
           description.includes(searchLower) ||
+          bankName.includes(searchLower) ||
           orderId.includes(searchLower) ||
           status.includes(searchLower) ||
           dateStr.includes(searchLower)
@@ -330,6 +433,7 @@ export const addIncomeEntry = async (req, res) => {
       description,
       receivedAmount,
       status,
+      bankId,
     } = req.body;
 
     // Validate required fields
@@ -368,6 +472,16 @@ export const addIncomeEntry = async (req, res) => {
       });
     }
 
+    let normalizedBankId = null;
+    try {
+      normalizedBankId = await normalizeBankIdOrThrow(bankId);
+    } catch (error) {
+      return res.status(error.status || 400).json({
+        status: error.status || 400,
+        message: error.message || "Invalid bank ID",
+      });
+    }
+
     // Create new income entry - automatically use order's data
     // Multiple income entries allowed per order (for installment payments)
     const newIncome = await Income.create({
@@ -378,16 +492,24 @@ export const addIncomeEntry = async (req, res) => {
       receivedAmount: receivedAmount || 0,
       clientId: client._id,
       status: status || "pending",
+      bankId: normalizedBankId,
     });
 
     const populatedIncome = await Income.findById(newIncome._id)
       .populate("orderId", "product clientName sellingPrice orderId")
-      .populate("clientId", "firstName lastName");
+      .populate("clientId", "firstName lastName")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
+    const incomeResponse = docToPlainWithBank(populatedIncome);
 
     return res.status(201).json({
       status: 201,
       message: "Income entry added successfully",
-      data: populatedIncome,
+      data: incomeResponse,
     });
   } catch (error) {
     console.error("Error adding income entry:", error);
@@ -402,7 +524,7 @@ export const addIncomeEntry = async (req, res) => {
 // Add Expense Entry (linked to order & supplier)
 export const addExpanseEntry = async (req, res) => {
   try {
-    const { orderId, date, description, paidAmount, status } = req.body;
+    const { orderId, date, description, paidAmount, status, bankId } = req.body;
 
     // ✅ Validate required fields
     if (!orderId) {
@@ -449,6 +571,16 @@ export const addExpanseEntry = async (req, res) => {
       });
     }
 
+    let normalizedBankId = null;
+    try {
+      normalizedBankId = await normalizeBankIdOrThrow(bankId);
+    } catch (error) {
+      return res.status(error.status || 400).json({
+        status: error.status || 400,
+        message: error.message || "Invalid bank ID",
+      });
+    }
+
     // ✅ Create new expense entry (supports multiple per order)
     const newExpense = await ExpanceIncome.create({
       date: date || new Date(),
@@ -458,17 +590,25 @@ export const addExpanseEntry = async (req, res) => {
       paidAmount: paidAmount || 0,
       supplierId: supplier._id,
       status: status || "pending",
+      bankId: normalizedBankId,
     });
 
     // ✅ Populate for response
     const populatedExpense = await ExpanceIncome.findById(newExpense._id)
       .populate("orderId", "product clientName purchasePrice orderId")
-      .populate("supplierId", "firstName lastName company");
+      .populate("supplierId", "firstName lastName company")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
+    const expenseResponse = docToPlainWithBank(populatedExpense);
 
     return res.status(201).json({
       status: 201,
       message: "Expense entry added successfully",
-      data: populatedExpense,
+      data: expenseResponse,
     });
   } catch (error) {
     console.error("Error adding expense entry:", error);
@@ -484,7 +624,7 @@ export const addExpanseEntry = async (req, res) => {
 export const editIncomeEntry = async (req, res) => {
   try {
     const { incomeId } = req.params;
-    const { date, description, receivedAmount, status, orderId, clientId } = req.body;
+    const { date, description, receivedAmount, status, orderId, clientId, bankId } = req.body;
 
     if (!incomeId) {
       return res.status(400).json({
@@ -530,6 +670,18 @@ export const editIncomeEntry = async (req, res) => {
       income.clientId = client._id;
     }
 
+    // Update bank if provided
+    if (bankId !== undefined) {
+      try {
+        income.bankId = await normalizeBankIdOrThrow(bankId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid bank ID",
+        });
+      }
+    }
+
     // Update fields if provided
     if (date) income.date = date;
     if (description) income.Description = description;
@@ -547,12 +699,19 @@ export const editIncomeEntry = async (req, res) => {
 
     const populatedIncome = await Income.findById(income._id)
       .populate("orderId", "product clientName sellingPrice orderId")
-      .populate("clientId", "firstName lastName");
+      .populate("clientId", "firstName lastName")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
+    const incomeResponse = docToPlainWithBank(populatedIncome);
 
     return res.status(200).json({
       status: 200,
       message: "Income entry updated successfully",
-      data: populatedIncome,
+      data: incomeResponse,
     });
   } catch (error) {
     console.error("Error updating income entry:", error);
@@ -568,10 +727,12 @@ export const editIncomeEntry = async (req, res) => {
 export const editExpanseEntry = async (req, res) => {
   try {
     const { ExpId } = req.params;
-    const { date, description, paidAmount, status } = req.body;
+    const { date, description, paidAmount, status, bankId } = req.body;
 
     // Find existing expense
-    const existingExpense = await ExpanceIncome.findById(ExpId).populate("orderId").populate("supplierId");
+    const existingExpense = await ExpanceIncome.findById(ExpId)
+      .populate("orderId")
+      .populate("supplierId");
 
     if (!existingExpense) {
       return res.status(404).json({ message: "Expense entry not found" });
@@ -588,16 +749,38 @@ export const editExpanseEntry = async (req, res) => {
     if (paidAmount !== undefined) existingExpense.paidAmount = paidAmount;
     if (status) existingExpense.status = status;
 
+    if (bankId !== undefined) {
+      try {
+        existingExpense.bankId = await normalizeBankIdOrThrow(bankId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid bank ID",
+        });
+      }
+    }
+
     // Recalculate remaining amount
     existingExpense.remainingAmount =
       (existingExpense.dueAmount || 0) - (existingExpense.paidAmount || 0);
 
     // Save updated document
-    const updatedExpense = await existingExpense.save();
+    await existingExpense.save();
+
+    const populatedExpense = await ExpanceIncome.findById(ExpId)
+      .populate("orderId", "product clientName purchasePrice orderId")
+      .populate("supplierId", "firstName lastName company")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
+    const expenseResponse = docToPlainWithBank(populatedExpense);
 
     return res.status(200).json({
       message: "Expense entry updated successfully",
-      data: updatedExpense,
+      data: expenseResponse,
     });
   } catch (error) {
     console.error("Error updating expense:", error);
@@ -662,7 +845,16 @@ export const updateIncomePaymentStatus = async (req, res) => {
     // Update fields if provided
     if (date) income.date = date;
     if (description) income.Description = description;
-    if (bankId) income.bankId = bankId;
+    if (bankId !== undefined) {
+      try {
+        income.bankId = await normalizeBankIdOrThrow(bankId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid bank ID",
+        });
+      }
+    }
 
     // Update status from "pending" to "reserved"
     income.status = "reserved";
@@ -671,12 +863,19 @@ export const updateIncomePaymentStatus = async (req, res) => {
 
     const populatedIncome = await Income.findById(income._id)
       .populate("orderId", "product clientName sellingPrice orderId")
-      .populate("clientId", "firstName lastName");
+      .populate("clientId", "firstName lastName")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
+    const incomeResponse = docToPlainWithBank(populatedIncome);
 
     return res.status(200).json({
       status: 200,
       message: "Income payment status updated to RESERVED successfully",
-      data: populatedIncome,
+      data: incomeResponse,
     });
   } catch (error) {
     console.error("Error updating income payment status:", error);
@@ -716,20 +915,39 @@ export const addExtraExpense = async (req, res) => {
       });
     }
 
+    let normalizedBankId = null;
+    try {
+      normalizedBankId = await normalizeBankIdOrThrow(bankId);
+    } catch (error) {
+      return res.status(error.status || 400).json({
+        status: error.status || 400,
+        message: error.message || "Invalid bank ID",
+      });
+    }
+
     // Create new expense entry without orderId and supplierId
     const newExpense = await ExpanceIncome.create({
       date: date || new Date(),
       description: description,
       paidAmount: paidAmount,
       dueAmount: 0,
-      bankId: bankId || null,
+      bankId: normalizedBankId,
       status: "paid", // Direct paid status
     });
+
+    const populatedExpense = await ExpanceIncome.findById(newExpense._id)
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
+    const expenseResponse = docToPlainWithBank(populatedExpense);
 
     return res.status(201).json({
       status: 201,
       message: "Extra expense added successfully",
-      data: newExpense,
+      data: expenseResponse,
     });
   } catch (error) {
     console.error("Error adding extra expense:", error);
@@ -774,7 +992,16 @@ export const editExtraExpense = async (req, res) => {
     // Update fields if provided
     if (date) expense.date = date;
     if (description) expense.description = description;
-    if (bankId !== undefined) expense.bankId = bankId;
+    if (bankId !== undefined) {
+      try {
+        expense.bankId = await normalizeBankIdOrThrow(bankId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid bank ID",
+        });
+      }
+    }
 
     if (paidAmount !== undefined) {
       if (typeof paidAmount !== 'number' || paidAmount < 0) {
@@ -788,10 +1015,19 @@ export const editExtraExpense = async (req, res) => {
 
     await expense.save();
 
+    const populatedExpense = await ExpanceIncome.findById(expenseId)
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
+    const expenseResponse = docToPlainWithBank(populatedExpense);
+
     return res.status(200).json({
       status: 200,
       message: "Extra expense updated successfully",
-      data: expense,
+      data: expenseResponse,
     });
   } catch (error) {
     console.error("Error updating extra expense:", error);
@@ -818,7 +1054,12 @@ export const getExpenseById = async (req, res) => {
     // Find expense entry and populate related data
     const expense = await ExpanceIncome.findById(expenseId)
       .populate("orderId", "product clientName purchasePrice orderId")
-      .populate("supplierId", "firstName lastName company");
+      .populate("supplierId", "firstName lastName company")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
 
     if (!expense) {
       return res.status(404).json({
@@ -828,6 +1069,8 @@ export const getExpenseById = async (req, res) => {
     }
 
     // Format response
+    const { bankId: expenseBankId, bank: expenseBank } = buildBankResponse(expense.bankId);
+
     const formattedExpense = {
       _id: expense._id,
       date: expense.date || expense.createdAt,
@@ -844,7 +1087,8 @@ export const getExpenseById = async (req, res) => {
       clientName: expense.orderId?.clientName || "",
       product: expense.orderId?.product || "",
       status: expense.status,
-      bankId: expense.bankId || null,
+      bankId: expenseBankId,
+      bank: expenseBank,
       createdAt: expense.createdAt,
       updatedAt: expense.updatedAt,
     };
@@ -892,20 +1136,39 @@ export const addExtraIncome = async (req, res) => {
       });
     }
 
+    let normalizedBankId = null;
+    try {
+      normalizedBankId = await normalizeBankIdOrThrow(bankId);
+    } catch (error) {
+      return res.status(error.status || 400).json({
+        status: error.status || 400,
+        message: error.message || "Invalid bank ID",
+      });
+    }
+
     // Create new income entry without orderId and clientId
     const newIncome = await Income.create({
       date: date || new Date(),
       Description: description,
       receivedAmount: receivedAmount,
       sellingPrice: receivedAmount, // Set sellingPrice equal to receivedAmount for standalone income
-      bankId: bankId || null,
+      bankId: normalizedBankId,
       status: "paid", // Automatically set status to paid
     });
+
+    const populatedIncome = await Income.findById(newIncome._id)
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
+    const incomeResponse = docToPlainWithBank(populatedIncome);
 
     return res.status(201).json({
       status: 201,
       message: "Extra income added successfully",
-      data: newIncome,
+      data: incomeResponse,
     });
   } catch (error) {
     console.error("Error adding extra income:", error);
@@ -950,7 +1213,16 @@ export const editExtraIncome = async (req, res) => {
     // Update fields if provided
     if (date) income.date = date;
     if (description) income.Description = description;
-    if (bankId !== undefined) income.bankId = bankId;
+    if (bankId !== undefined) {
+      try {
+        income.bankId = await normalizeBankIdOrThrow(bankId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid bank ID",
+        });
+      }
+    }
 
     if (receivedAmount !== undefined) {
       if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
@@ -965,10 +1237,18 @@ export const editExtraIncome = async (req, res) => {
 
     await income.save();
 
+    const populatedIncome = await Income.findById(incomeId).populate({
+      path: "bankId",
+      select: "_id name",
+      match: { isDeleted: false },
+    });
+
+    const incomeResponse = docToPlainWithBank(populatedIncome);
+
     return res.status(200).json({
       status: 200,
       message: "Extra income updated successfully",
-      data: income,
+      data: incomeResponse,
     });
   } catch (error) {
     console.error("Error updating extra income:", error);
@@ -995,7 +1275,12 @@ export const getIncomeById = async (req, res) => {
     // Find income entry and populate related data
     const income = await Income.findById(incomeId)
       .populate("orderId", "product clientName sellingPrice orderId")
-      .populate("clientId", "firstName lastName");
+      .populate("clientId", "firstName lastName")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
 
     if (!income) {
       return res.status(404).json({
@@ -1005,6 +1290,8 @@ export const getIncomeById = async (req, res) => {
     }
 
     // Format response
+    const { bankId: incomeBankId, bank: incomeBank } = buildBankResponse(income.bankId);
+
     const formattedIncome = {
       _id: income._id,
       date: income.date,
@@ -1017,7 +1304,8 @@ export const getIncomeById = async (req, res) => {
         (income.clientId ? `${income.clientId.firstName || ""} ${income.clientId.lastName || ""}`.trim() : ""),
       product: income.orderId?.product || "",
       status: income.status,
-      bankId: income.bankId || null,
+      bankId: incomeBankId,
+      bank: incomeBank,
       createdAt: income.createdAt,
       updatedAt: income.updatedAt,
     };

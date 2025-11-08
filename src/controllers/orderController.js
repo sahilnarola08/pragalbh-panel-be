@@ -8,6 +8,44 @@ import mongoose from "mongoose";
 import Income from "../models/income.js";
 import ExpanseIncome from "../models/expance_inc.js";
 import { DEFAULT_PAYMENT_STATUS } from "../helper/enums.js";
+import Master from "../models/master.js";
+
+const sanitizeOrderPlatformValues = async () => {
+  await Order.updateMany(
+    { orderPlatform: { $type: "string" } },
+    { $unset: { orderPlatform: "" } }
+  );
+};
+
+const normalizeMasterIdOrThrow = async (id, fieldName = "masterId") => {
+  if (!id) {
+    const error = new Error(`${fieldName} is required`);
+    error.status = 400;
+    throw error;
+  }
+
+  const rawId =
+    typeof id === "object" && id !== null ? id._id || id.id || id.toString() : id;
+
+  if (!mongoose.Types.ObjectId.isValid(rawId)) {
+    const error = new Error(`${fieldName} must be a valid ObjectId`);
+    error.status = 400;
+    throw error;
+  }
+
+  const master = await Master.findOne({
+    _id: rawId,
+    isDeleted: false,
+  }).select("_id name");
+
+  if (!master) {
+    const error = new Error(`${fieldName} not found or inactive`);
+    error.status = 404;
+    throw error;
+  }
+
+  return master;
+};
 
 export const createOrder = async (req, res, next) => {
   try {
@@ -79,6 +117,17 @@ export const createOrder = async (req, res, next) => {
       }
     }
 
+    let orderPlatformMaster;
+    try {
+      orderPlatformMaster = await normalizeMasterIdOrThrow(orderPlatform, "orderPlatform");
+    } catch (error) {
+      return sendErrorResponse({
+        res,
+        message: error.message || "Invalid order platform",
+        status: error.status || 400,
+      });
+    }
+
     // The order status will automatically be set to 'pending' because we updated the enums file.
     const order = await Order.create({
       clientName,
@@ -92,7 +141,7 @@ export const createOrder = async (req, res, next) => {
       bankName,
       paymentAmount,
       supplier,
-      orderPlatform,
+      orderPlatform: orderPlatformMaster._id,
       otherDetails,
       trackingId: "",
       courierCompany: "",
@@ -124,9 +173,16 @@ export const createOrder = async (req, res, next) => {
       });
     }
 
+    const populatedOrder = await Order.findById(order._id)
+      .populate({
+        path: "orderPlatform",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
     return sendSuccessResponse({
       res,
-      data: order,
+      data: populatedOrder,
       message: "Order created successfully",
       status: 200
     });
@@ -143,6 +199,8 @@ export const createOrder = async (req, res, next) => {
 // Get All Orders
 const getAllOrders = async (req, res) => {
   try {
+    await sanitizeOrderPlatformValues();
+
     const {
       page = 1,
       limit = 10,
@@ -162,14 +220,34 @@ const getAllOrders = async (req, res) => {
 
     // Search filter
     const filter = {};
-    if (search) {
-      filter.$or = [
-        { clientName: new RegExp(search, "i") },
-        { address: new RegExp(search, "i") },
-        { product: new RegExp(search, "i") },
-        { supplier: new RegExp(search, "i") },
-        { orderPlatform: new RegExp(search, "i") },
+    const trimmedSearch = (search || "").trim();
+    let matchingPlatformIds = [];
+
+    if (trimmedSearch) {
+      matchingPlatformIds = await Master.find({
+        name: new RegExp(trimmedSearch, "i"),
+        isDeleted: false,
+      }).select("_id");
+
+      const searchRegex = new RegExp(trimmedSearch, "i");
+      const orConditions = [
+        { clientName: searchRegex },
+        { address: searchRegex },
+        { product: searchRegex },
+        { supplier: searchRegex },
       ];
+
+      if (mongoose.Types.ObjectId.isValid(trimmedSearch)) {
+        orConditions.push({ orderPlatform: trimmedSearch });
+      }
+
+      if (matchingPlatformIds.length > 0) {
+        orConditions.push({
+          orderPlatform: { $in: matchingPlatformIds.map((item) => item._id) },
+        });
+      }
+
+      filter.$or = orConditions;
     }
 
     // Add status filter if provided in the query
@@ -180,15 +258,32 @@ const getAllOrders = async (req, res) => {
     const orders = await Order.find(filter)
       .sort(sort)
       .skip(offset)
-      .limit(limitNum);
+      .limit(limitNum)
+      .populate({
+        path: "orderPlatform",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .lean();
 
     const totalOrders = await Order.countDocuments(filter);
+
+    const formattedOrders = orders.map((order) => {
+      const platform =
+        order.orderPlatform && typeof order.orderPlatform === "object"
+          ? { _id: order.orderPlatform._id, name: order.orderPlatform.name }
+          : null;
+      return {
+        ...order,
+        orderPlatform: platform,
+      };
+    });
 
     return sendSuccessResponse({
       status: 200,
       res,
       data: {
-        orders,
+        orders: formattedOrders,
         totalCount: totalOrders,
         page: pageNum,
         limit: limitNum,
@@ -209,6 +304,8 @@ const getAllOrders = async (req, res) => {
 // Update order by ID
 const updateOrder = async (req, res, next) => {
   try {
+    await sanitizeOrderPlatformValues();
+
     const { id } = req.params;
     const updateData = req.body;
 
@@ -276,12 +373,34 @@ const updateOrder = async (req, res, next) => {
       }
     }
 
+    if (updateData.orderPlatform !== undefined) {
+      try {
+        const master = await normalizeMasterIdOrThrow(
+          updateData.orderPlatform,
+          "orderPlatform"
+        );
+        updateData.orderPlatform = master._id;
+      } catch (error) {
+        return sendErrorResponse({
+          res,
+          message: error.message || "Invalid order platform",
+          status: error.status || 400,
+        });
+      }
+    }
+
     // Update order
     const updatedOrder = await Order.findByIdAndUpdate(
       id,
       updateData,
       { new: true, runValidators: true }
-    ).select("-__v");
+    )
+      .select("-__v")
+      .populate({
+        path: "orderPlatform",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
 
     sendSuccessResponse({
       res,
@@ -328,9 +447,17 @@ const deleteOrder = async (req, res, next) => {
 // Get order by ID
 const getOrderById = async (req, res, next) => {
   try {
+    await sanitizeOrderPlatformValues();
+
     const { id } = req.params;
 
-    const order = await Order.findById(id).select("-__v");
+    const order = await Order.findById(id)
+      .select("-__v")
+      .populate({
+        path: "orderPlatform",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
     
     if (!order) {
       return sendErrorResponse({
