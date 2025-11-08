@@ -59,9 +59,10 @@ const orderSchema = new mongoose.Schema({
           type: String,
      },
      orderPlatform: {
-          type: String,
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "master",
           required: true,
-          trim: true,
+          index: true,
      },
      otherDetails: {
           type: String,

@@ -19,7 +19,9 @@ const supplierSchema = yup.object().shape({
           .max(100, "Company must not exceed 100 characters"),
      advancePayment: yup.array().of(
           yup.object().shape({
-               bankId: yup.mixed().required("Bank ID is required"),
+               bankId: yup.string()
+                    .required("Bank ID is required")
+                    .matches(/^[0-9a-fA-F]{24}$/, "Bank ID must be a valid ObjectId"),
                amount: yup.number().required("Amount is required").min(0, "Amount must be greater than or equal to 0")
           })
      ).optional(),
@@ -47,7 +49,9 @@ const supplierUpdateSchema = yup.object().shape({
           .optional(),
      advancePayment: yup.array().of(
           yup.object().shape({
-               bankId: yup.mixed().required("Bank ID is required"),
+               bankId: yup.string()
+                    .required("Bank ID is required")
+                    .matches(/^[0-9a-fA-F]{24}$/, "Bank ID must be a valid ObjectId"),
                amount: yup.number().required("Amount is required").min(0, "Amount must be greater than or equal to 0")
           })
      ).optional(),

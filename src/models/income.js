@@ -42,8 +42,9 @@ const incomeSchema = new mongoose.Schema(
       enum: Object.values(PAYMENT_STATUS),
     },
     bankId: {
-      type: String,
-      trim: true,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "master",
+      index: true,
     },
   },
   {

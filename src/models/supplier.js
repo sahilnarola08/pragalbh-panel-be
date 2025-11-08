@@ -36,7 +36,8 @@ const supplierSchema = new mongoose.Schema({
           type: [
                {
                     bankId: {
-                         type: mongoose.Schema.Types.Mixed,
+                         type: mongoose.Schema.Types.ObjectId,
+                         ref: "master",
                          required: true,
                     },
                     amount: {
