@@ -6,9 +6,7 @@ const productSchema = yup.object().shape({
   category: yup
     .string()
     .required('Category is required')
-    .min(2, 'Category must be at least 2 characters')
-    .max(50, 'Category must not exceed 50 characters')
-    .matches(/^[a-zA-Z0-9\s&.-]+$/, 'Category can only contain letters, numbers, spaces, &, ., and -'),
+    .matches(/^[0-9a-fA-F]{24}$/, 'Category must be a valid ObjectId'),
 
   productName: yup
     .string()
@@ -27,9 +25,7 @@ const productSchema = yup.object().shape({
 const productUpdateSchema = yup.object().shape({
   category: yup
     .string()
-    .min(2, 'Category must be at least 2 characters')
-    .max(50, 'Category must not exceed 50 characters')
-    .matches(/^[a-zA-Z0-9\s&.-]+$/, 'Category can only contain letters, numbers, spaces, &, ., and -')
+    .matches(/^[0-9a-fA-F]{24}$/, 'Category must be a valid ObjectId')
     .optional(),
 
   productName: yup

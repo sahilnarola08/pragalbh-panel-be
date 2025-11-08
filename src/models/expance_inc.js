@@ -33,8 +33,9 @@ const expanseIncomeSchema = new mongoose.Schema(
       default: Date.now,
     },
     bankId: {
-      type: String,
-      trim: true,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "master",
+      index: true,
     },
     status: {
       type: String,

@@ -1,11 +1,61 @@
 import { PAYMENT_STATUS } from "../helper/enums.js";
 import ExpanceIncome from "../models/expance_inc.js";
 import Supplier from "../models/supplier.js";
+import Master from "../models/master.js";
 import mongoose from "mongoose";
+
+const normalizeObjectIdOrThrow = (value, fieldName) => {
+  if (!value || !mongoose.Types.ObjectId.isValid(value)) {
+    const error = new Error(`${fieldName} must be a valid ObjectId`);
+    error.status = 400;
+    throw error;
+  }
+  return new mongoose.Types.ObjectId(value);
+};
+
+const normalizeBankIdOrThrow = async (bankId) => {
+  const normalized = normalizeObjectIdOrThrow(bankId, "bankId");
+
+  const bank = await Master.findOne({
+    _id: normalized,
+    isDeleted: false,
+  }).select("_id name");
+
+  if (!bank) {
+    const error = new Error("Bank not found or is inactive");
+    error.status = 404;
+    throw error;
+  }
+
+  return bank._id;
+};
+
+const buildBankResponse = (bank) => {
+  if (!bank || typeof bank !== "object") {
+    return { bankId: null, bank: null };
+  }
+  const bankId = bank._id ? bank._id : bank;
+  const bankInfo =
+    bank && typeof bank === "object" && bank.name
+      ? { _id: bankId, name: bank.name }
+      : null;
+  return { bankId, bank: bankInfo };
+};
 
 export const getSupplierOrderDetails = async (req, res) => {
   try {
-    const supplierId = req.params.id.trim();
+    let supplierId = req.params.id?.trim();
+
+    try {
+      supplierId = normalizeObjectIdOrThrow(supplierId, "supplierId");
+    } catch (error) {
+      return res.status(error.status || 400).json({
+        success: false,
+        status: error.status || 400,
+        message: error.message || "Invalid supplier ID",
+      });
+    }
+
     const {
       page = 1,
       limit = 10,
@@ -32,6 +82,11 @@ export const getSupplierOrderDetails = async (req, res) => {
     })
       .populate("supplierId", "firstName lastName email phone advancePayment")
       .populate("orderId", "product orderDate dispatchDate orderId purchasePrice")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
       .sort(sortObj)
       .skip(offset)
       .limit(limitNum)
@@ -45,14 +100,32 @@ export const getSupplierOrderDetails = async (req, res) => {
       });
     }
 
-    // extract supplier details from first record
-    const supplierInfo = supplierExpanseData[0].supplierId;
+    const supplier = await Supplier.findById(supplierId)
+      .populate({
+        path: "advancePayment.bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .lean();
+
+    if (!supplier) {
+      return res.status(404).json({
+        success: false,
+        status: 404,
+        message: "Supplier not found",
+      });
+    }
 
     // Calculate totals from ALL records (not just paginated ones)
     const allExpenseData = await ExpanceIncome.find({
       supplierId: supplierId,
     })
       .populate("orderId", "purchasePrice")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
       .lean();
 
     const purchaseTotal = allExpenseData.reduce((sum, item) => {
@@ -69,32 +142,48 @@ export const getSupplierOrderDetails = async (req, res) => {
 
     // Calculate total advance payment (handle both array and number formats)
     let totalBalance = 0;
-    if (Array.isArray(supplierInfo?.advancePayment)) {
-      totalBalance = supplierInfo.advancePayment.reduce((sum, payment) => sum + (payment.amount || 0), 0);
+    let advancePaymentDetails = [];
+    if (Array.isArray(supplier?.advancePayment)) {
+      advancePaymentDetails = supplier.advancePayment.map((payment) => {
+        const { bankId, bank } = buildBankResponse(payment.bankId);
+        const amount = payment.amount || 0;
+        totalBalance += amount;
+        return {
+          bankId,
+          bank,
+          amount,
+        };
+      });
     } else {
-      totalBalance = supplierInfo?.advancePayment || 0;
+      totalBalance = supplier?.advancePayment || 0;
     }
 
-    const formattedData = supplierExpanseData.map((item) => ({
-      _id: item._id,
-      orderId: item.orderId,
-      paidAmount: item.paidAmount,
-      purchasePrice: item.orderId?.purchasePrice || 0,
-      dueAmount: (item.dueAmount !== undefined && item.dueAmount !== null) 
-        ? item.dueAmount 
-        : (item.orderId?.purchasePrice || 0),
-      status: item.status,
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-    }));
+    const formattedData = supplierExpanseData.map((item) => {
+      const { bankId, bank } = buildBankResponse(item.bankId);
+      return {
+        _id: item._id,
+        orderId: item.orderId,
+        paidAmount: item.paidAmount,
+        purchasePrice: item.orderId?.purchasePrice || 0,
+        dueAmount:
+          item.dueAmount !== undefined && item.dueAmount !== null
+            ? item.dueAmount
+            : item.orderId?.purchasePrice || 0,
+        status: item.status,
+        bankId,
+        bank,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      };
+    });
 
     return res.status(200).json({
       success: true,
       status: 200,
       message: "Supplier expenses fetched successfully",
       data: {
-        supplierName: `${supplierInfo?.firstName} ${supplierInfo?.lastName}` || "Unknown Supplier",
-        supplierId: supplierInfo?._id,
+        supplierName: `${supplier?.firstName || ""} ${supplier?.lastName || ""}`.trim() || "Unknown Supplier",
+        supplierId: supplier?._id,
         orders: formattedData,
         totalCount: totalCount,
         page: pageNum,
@@ -104,6 +193,7 @@ export const getSupplierOrderDetails = async (req, res) => {
           purchaseTotal,
           dueTotal,
         },
+        advancePayments: advancePaymentDetails,
       },
     });
   } catch (error) {
@@ -131,8 +221,23 @@ export const markPaymentDone = async (req, res) => {
       });
     }
 
+    let normalizedExpenseId;
+    let normalizedSupplierId;
+    let normalizedBankId;
+    try {
+      normalizedExpenseId = normalizeObjectIdOrThrow(expenseId, "expenseId");
+      normalizedSupplierId = normalizeObjectIdOrThrow(supplierId, "supplierId");
+      normalizedBankId = await normalizeBankIdOrThrow(bankId);
+    } catch (error) {
+      return res.status(error.status || 400).json({
+        success: false,
+        status: error.status || 400,
+        message: error.message || "Invalid identifiers provided",
+      });
+    }
+
     // Find the expense record
-    const expense = await ExpanceIncome.findById(expenseId);
+    const expense = await ExpanceIncome.findById(normalizedExpenseId);
     if (!expense) {
       return res.status(404).json({
         success: false,
@@ -151,7 +256,7 @@ export const markPaymentDone = async (req, res) => {
     }
 
     // Find the supplier
-    const supplier = await Supplier.findById(supplierId);
+    const supplier = await Supplier.findById(normalizedSupplierId);
     if (!supplier) {
       return res.status(404).json({
         success: false,
@@ -170,9 +275,16 @@ export const markPaymentDone = async (req, res) => {
     }
 
     // Find the bank payment entry
-    const bankPaymentIndex = supplier.advancePayment.findIndex(
-      (payment) => payment.bankId.toString() === bankId.toString()
-    );
+    const bankPaymentIndex = supplier.advancePayment.findIndex((payment) => {
+      if (!payment.bankId) {
+        return false;
+      }
+      const storedBankId =
+        typeof payment.bankId === "object"
+          ? payment.bankId.toString()
+          : payment.bankId;
+      return storedBankId === normalizedBankId.toString();
+    });
 
     if (bankPaymentIndex === -1) {
       return res.status(404).json({
@@ -209,15 +321,31 @@ export const markPaymentDone = async (req, res) => {
     expense.paidAmount = dueAmount;
     expense.dueAmount = 0;
     expense.status = PAYMENT_STATUS.PAID;
-    expense.bankId = bankId; // Store bank ID in expense
+    expense.bankId = normalizedBankId; // Store bank ID in expense
     await expense.save();
+
+    const populatedExpense = await ExpanceIncome.findById(expense._id)
+      .populate("orderId", "product clientName orderId purchasePrice")
+      .populate("supplierId", "firstName lastName company")
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .lean();
+
+    const { bankId: expenseBankId, bank } = buildBankResponse(populatedExpense?.bankId);
 
     return res.status(200).json({
       success: true,
       status: 200,
       message: "Payment marked as paid successfully",
       data: {
-        expense,
+        expense: {
+          ...populatedExpense,
+          bankId: expenseBankId,
+          bank,
+        },
         remainingBalance: remainingBalance,
       },
     });

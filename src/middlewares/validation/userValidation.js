@@ -5,8 +5,8 @@ import { sendErrorResponse } from '../../util/commonResponses.js';
 const platformSchema = yup.object().shape({
   platformName: yup
     .string()
-    .min(2, "Platform name must be at least 2 characters")
-    .max(100, "Platform name must not exceed 100 characters"),
+    .required("Platform name is required")
+    .matches(/^[0-9a-fA-F]{24}$/, "Platform name must be a valid ObjectId"),
 
   platformUsername: yup
     .string()

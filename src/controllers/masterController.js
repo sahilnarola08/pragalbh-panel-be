@@ -37,23 +37,39 @@ const createMaster = async (req, res, next) => {
             });
         }
 
-        // Check if master already exists
+        const trimmedName = name.trim();
+
+        // Check if master already exists and is not deleted
         const existingMaster = await Master.findOne({
-            name: name.trim(),
+            name: trimmedName,
             isDeleted: false
         });
 
         if (existingMaster) {
             return sendErrorResponse({
                 res,
-                message: `"${name}" already exists`,
+                message: `"${trimmedName}" already exists`,
+                status: 400
+            });
+        }
+
+        // Check if master exists but is deleted (inactive)
+        const deletedMaster = await Master.findOne({
+            name: trimmedName,
+            isDeleted: true
+        });
+
+        if (deletedMaster) {
+            return sendErrorResponse({
+                res,
+                message: `This master name "${trimmedName}" is inactive. Please activate it and use it instead of creating a new one.`,
                 status: 400
             });
         }
 
         // Create master
         const newMaster = await Master.create({
-            name: name.trim(),
+            name: trimmedName,
             master: master && mongoose.Types.ObjectId.isValid(master) ? master : undefined,
             isActive: isActive !== undefined ? isActive : true
         });

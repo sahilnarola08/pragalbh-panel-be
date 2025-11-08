@@ -1,35 +1,76 @@
 import Product from "../models/product.js";
+import Master from "../models/master.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
+import mongoose from "mongoose";
 
 // create product controller
 const createProduct = async (req, res) => {
   try {
     const { category, productName, image } = req.body;
 
+    // Validate category ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(category)) {
+      return sendErrorResponse({
+        res,
+        message: "Invalid category ID format.",
+        status: 400,
+      });
+    }
+
+    // Ensure category exists and is active (not deleted)
+    const categoryMaster = await Master.findOne({
+      _id: category,
+      isDeleted: false,
+    }).select("_id name");
+
+    if (!categoryMaster) {
+      return sendErrorResponse({
+        res,
+        message: "Category not found or is inactive.",
+        status: 400,
+      });
+    }
+
+    const trimmedProductName = productName.trim();
+
     // check if product already exists in same category
-    const existing = await Product.findOne({ category, productName });
+    const existing = await Product.findOne({
+      category,
+      productName: trimmedProductName,
+      isDeleted: { $ne: true },
+    });
     if (existing) {
       return sendErrorResponse({
         res,
         message: "Product already exists in this category",
-        status: 400
+        status: 400,
       });
     }
 
-    const newProduct = await Product.create({ category, productName, image });
+    const newProduct = await Product.create({
+      category,
+      productName: trimmedProductName,
+      image,
+    });
+
+    await newProduct.populate({
+      path: "category",
+      select: "_id name",
+      match: { isDeleted: false },
+    });
 
     return sendSuccessResponse({
       res,
       data: newProduct,
       message: "Product created successfully",
-      status: 200
+      status: 200,
     });
   } catch (err) {
     console.error("Error creating product:", err);
     return sendErrorResponse({
       res,
       message: "Failed to create product",
-      status: 500
+      status: 500,
     });
   }
 };
@@ -54,23 +95,41 @@ const getAllProducts = async (req, res) => {
     sort[sortField] = sortOrder === "asc" ? 1 : -1;
 
     // Search filter - exclude deleted products
-    const filter = { isDeleted: { $ne: true } };
-    if (search) {
-      filter.$and = [
-        { isDeleted: { $ne: true } },
-        {
-          $or: [
-            { category: new RegExp(search, "i") },
-            { productName: new RegExp(search, "i") },
-          ]
-        }
+    const filter = { isDeleted: false };
+    if (search && search.trim().length > 0) {
+      const searchRegex = new RegExp(search.trim(), "i");
+      const orConditions = [
+        { productName: searchRegex },
       ];
+
+      // If search is a valid ObjectId, include category match
+      if (mongoose.Types.ObjectId.isValid(search.trim())) {
+        orConditions.push({ category: search.trim() });
+      }
+
+      // Search category names in Master collection
+      const matchingCategories = await Master.find({
+        name: searchRegex,
+        isDeleted: false,
+      }).select("_id");
+
+      if (matchingCategories.length > 0) {
+        const categoryIds = matchingCategories.map((cat) => cat._id);
+        orConditions.push({ category: { $in: categoryIds } });
+      }
+
+      filter.$or = orConditions;
     }
 
     const products = await Product.find(filter)
       .sort(sort)
       .skip(offset)
-      .limit(limitNum);
+      .limit(limitNum)
+      .populate({
+        path: "category",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
 
     const totalProducts = await Product.countDocuments(filter);
 
@@ -102,9 +161,9 @@ const updateProduct = async (req, res, next) => {
     const { id } = req.params;
     const updateData = req.body;
 
-    // Check if product exists
+    // Check if product exists and is not deleted
     const existingProduct = await Product.findById(id);
-    if (!existingProduct) {
+    if (!existingProduct || existingProduct.isDeleted) {
       return sendErrorResponse({
         status: 404,
         res,
@@ -112,20 +171,59 @@ const updateProduct = async (req, res, next) => {
       });
     }
 
-    // Check if product with same category and name already exists (excluding current product)
-    if (updateData.category && updateData.productName) {
-      const existingProductByCategoryAndName = await Product.findOne({ 
-        category: updateData.category,
-        productName: updateData.productName,
-        _id: { $ne: id }
-      });
-      if (existingProductByCategoryAndName) {
+    // Validate category if provided
+    if (updateData.category !== undefined) {
+      if (updateData.category && !mongoose.Types.ObjectId.isValid(updateData.category)) {
         return sendErrorResponse({
           status: 400,
           res,
-          message: "Product with this name already exists in this category."
+          message: "Invalid category ID format.",
         });
       }
+
+      if (updateData.category) {
+        const categoryMaster = await Master.findOne({
+          _id: updateData.category,
+          isDeleted: false,
+        });
+
+        if (!categoryMaster) {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Category not found or is inactive.",
+          });
+        }
+      }
+    }
+
+    // Trim productName if provided
+    if (updateData.productName) {
+      updateData.productName = updateData.productName.trim();
+    }
+
+    const categoryToCheck =
+      updateData.category !== undefined && updateData.category !== null
+        ? updateData.category
+        : existingProduct.category;
+    const productNameToCheck =
+      updateData.productName !== undefined && updateData.productName !== null
+        ? updateData.productName
+        : existingProduct.productName;
+
+    // Check if product with same category and name already exists (excluding current product)
+    const existingProductByCategoryAndName = await Product.findOne({
+      category: categoryToCheck,
+      productName: productNameToCheck,
+      _id: { $ne: id },
+      isDeleted: { $ne: true },
+    });
+    if (existingProductByCategoryAndName) {
+      return sendErrorResponse({
+        status: 400,
+        res,
+        message: "Product with this name already exists in this category.",
+      });
     }
 
     // Update product
@@ -133,7 +231,13 @@ const updateProduct = async (req, res, next) => {
       id,
       updateData,
       { new: true, runValidators: true }
-    ).select("-__v");
+    )
+      .select("-__v")
+      .populate({
+        path: "category",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
 
     sendSuccessResponse({
       res,
@@ -154,7 +258,7 @@ const deleteProduct = async (req, res, next) => {
 
     // Check if product exists
     const existingProduct = await Product.findById(id);
-    if (!existingProduct) {
+    if (!existingProduct || existingProduct.isDeleted) {
       return sendErrorResponse({
         status: 404,
         res,
@@ -186,9 +290,15 @@ const getProductById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const product = await Product.findById(id).select("-__v -createdAt -updatedAt");
+    const product = await Product.findById(id)
+      .select("-__v -createdAt -updatedAt")
+      .populate({
+        path: "category",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
     
-    if (!product) {
+    if (!product || product.isDeleted) {
       return sendErrorResponse({
         status: 404,
         res,
