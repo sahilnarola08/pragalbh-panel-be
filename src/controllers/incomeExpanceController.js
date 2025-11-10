@@ -187,7 +187,7 @@ export const getIncomeExpance = async (req, res) => {
     else if (incExpType == 2) {
       const expanceData = await ExpanceIncome.find({ ...searchQuery, ...orderFilter })
         .populate("orderId", "product clientName purchasePrice orderId")
-        .populate("supplierId", "firstName lastName company")
+        .populate("supplierId", "firstName lastName company supplierId ")
         .populate({
           path: "bankId",
           select: "_id name",
@@ -294,7 +294,7 @@ export const getIncomeExpance = async (req, res) => {
           .lean(),
         ExpanceIncome.find(finalQuery)
           .populate("orderId", "product clientName purchasePrice orderId")
-          .populate("supplierId", "firstName lastName company")
+          .populate("supplierId", "firstName lastName company supplierId")
           .populate({
             path: "bankId",
             select: "_id name",
@@ -340,6 +340,7 @@ export const getIncomeExpance = async (req, res) => {
             `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
             item.supplierId?.company ||
             "",
+          supplierId: item.supplierId,
           status: item.status,
           bankId,
           bank,
