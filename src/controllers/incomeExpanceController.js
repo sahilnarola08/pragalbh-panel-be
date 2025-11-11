@@ -261,7 +261,10 @@ export const getIncomeExpance = async (req, res) => {
           date: item.date || item.createdAt,
           orderId: item.orderId,
           description: item.description || item.orderId?.product || "",
-          dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
+          dueAmount:
+            item.dueAmount !== undefined && item.dueAmount !== null
+              ? item.dueAmount
+              : item.orderId?.purchasePrice || 0,
           clientName: item.orderId?.clientName || "",
           paidAmount: item.paidAmount || 0,
           supplierName:
@@ -333,7 +336,10 @@ export const getIncomeExpance = async (req, res) => {
           date: item.date || item.createdAt,
           orderId: item.orderId,
           description: item.description || item.orderId?.product || "",
-          dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
+          dueAmount:
+            item.dueAmount !== undefined && item.dueAmount !== null
+              ? item.dueAmount
+              : item.orderId?.purchasePrice || 0,
           clientName: item.orderId?.clientName || "",
           paidAmount: item.paidAmount || 0,
           supplierName:
@@ -346,7 +352,6 @@ export const getIncomeExpance = async (req, res) => {
           bank,
         };
       });
-
       // 🔍 Combined filtering
       const merged = [...incomeList, ...expanceList].filter((item) => {
         if (!search) return true;
@@ -416,6 +421,7 @@ export const getIncomeExpance = async (req, res) => {
         items: data,
       },
     });
+    
   } catch (error) {
     console.error("Error fetching income and expance:", error);
     res.status(500).json({
