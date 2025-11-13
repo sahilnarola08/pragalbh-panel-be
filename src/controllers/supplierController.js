@@ -9,8 +9,19 @@ const validateAdvancePayments = async (advancePayments) => {
     }
 
     if (!Array.isArray(advancePayments)) {
+        // Allow single object payload for convenience
+        advancePayments = [advancePayments];
+    }
+
+    if (!Array.isArray(advancePayments)) {
         throw { status: 400, message: "advancePayment must be an array" };
     }
+
+    if (advancePayments.length === 0) {
+        return [];
+    }
+
+    const seenBankIds = new Set();
 
     for (const payment of advancePayments) {
         if (!payment || typeof payment !== "object") {
@@ -22,6 +33,12 @@ const validateAdvancePayments = async (advancePayments) => {
         if (!bankId || !mongoose.Types.ObjectId.isValid(bankId)) {
             throw { status: 400, message: `Invalid bank ID format: ${bankId}` };
         }
+
+        const bankKey = bankId.toString();
+        if (seenBankIds.has(bankKey)) {
+            throw { status: 400, message: "Duplicate bank entries are not allowed in advancePayment" };
+        }
+        seenBankIds.add(bankKey);
 
         const bankExists = await Master.findOne({
             _id: bankId,
@@ -37,9 +54,11 @@ const validateAdvancePayments = async (advancePayments) => {
         }
 
         if (typeof amount !== "number" || Number.isNaN(amount) || amount < 0) {
-            throw { status: 400, message: "Payment amount must be a positive number" };
+            throw { status: 400, message: "Payment amount must be a non-negative number" };
         }
     }
+
+    return advancePayments;
 };
 
 const buildSupplierAggregationPipeline = ({
@@ -557,8 +576,9 @@ export const updateSupplierBalance = async (req, res) => {
         });
       }
 
+      let normalizedAdvancePayments;
       try {
-        await validateAdvancePayments(advancePayment);
+        normalizedAdvancePayments = await validateAdvancePayments(advancePayment);
       } catch (validationError) {
         return sendErrorResponse({
           res,
@@ -576,13 +596,44 @@ export const updateSupplierBalance = async (req, res) => {
         });
       }
 
-      // Update the advancePayment array directly
-      supplier.advancePayment = Array.isArray(advancePayment)
-        ? advancePayment.map(payment => ({
-            bankId: new mongoose.Types.ObjectId(payment.bankId),
-            amount: payment.amount
-          }))
-        : [];
+      // Normalize existing advance payments to ensure ObjectId instances
+      const existingPaymentsMap = new Map();
+      if (Array.isArray(supplier.advancePayment)) {
+        supplier.advancePayment.forEach((payment) => {
+          if (!payment) return;
+          const bankObjectId = payment.bankId
+            ? new mongoose.Types.ObjectId(payment.bankId)
+            : null;
+          if (!bankObjectId) return;
+          existingPaymentsMap.set(bankObjectId.toString(), {
+            bankId: bankObjectId,
+            amount: payment.amount || 0,
+          });
+        });
+      }
+
+      // Merge incoming payments (add/update/remove)
+      normalizedAdvancePayments = normalizedAdvancePayments || [];
+
+      normalizedAdvancePayments.forEach((payment) => {
+        const bankObjectId = new mongoose.Types.ObjectId(payment.bankId);
+        const key = bankObjectId.toString();
+        const currentAmount = existingPaymentsMap.has(key)
+          ? existingPaymentsMap.get(key).amount || 0
+          : 0;
+        const updatedAmount = currentAmount + payment.amount;
+
+        if (updatedAmount <= 0) {
+          existingPaymentsMap.delete(key);
+        } else {
+          existingPaymentsMap.set(key, {
+            bankId: bankObjectId,
+            amount: updatedAmount,
+          });
+        }
+      });
+
+      supplier.advancePayment = Array.from(existingPaymentsMap.values());
       await supplier.save();
 
       // Get updated supplier with calculated total using aggregation
