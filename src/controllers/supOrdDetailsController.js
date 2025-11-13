@@ -301,7 +301,7 @@ export const markPaymentDone = async (req, res) => {
     if (bankPayment.amount < dueAmount) {
       return res.status(400).json({
         success: false,
-        status: 400,
+        status: 409,
         message: `Insufficient balance. Required: ${dueAmount}, Available: ${bankPayment.amount}`,
       });
     }

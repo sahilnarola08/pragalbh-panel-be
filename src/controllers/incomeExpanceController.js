@@ -187,7 +187,7 @@ export const getIncomeExpance = async (req, res) => {
     else if (incExpType == 2) {
       const expanceData = await ExpanceIncome.find({ ...searchQuery, ...orderFilter })
         .populate("orderId", "product clientName purchasePrice orderId")
-        .populate("supplierId", "firstName lastName company")
+        .populate("supplierId", "firstName lastName company supplierId ")
         .populate({
           path: "bankId",
           select: "_id name",
@@ -261,7 +261,10 @@ export const getIncomeExpance = async (req, res) => {
           date: item.date || item.createdAt,
           orderId: item.orderId,
           description: item.description || item.orderId?.product || "",
-          dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
+          dueAmount:
+            item.dueAmount !== undefined && item.dueAmount !== null
+              ? item.dueAmount
+              : item.orderId?.purchasePrice || 0,
           clientName: item.orderId?.clientName || "",
           paidAmount: item.paidAmount || 0,
           supplierName:
@@ -294,7 +297,7 @@ export const getIncomeExpance = async (req, res) => {
           .lean(),
         ExpanceIncome.find(finalQuery)
           .populate("orderId", "product clientName purchasePrice orderId")
-          .populate("supplierId", "firstName lastName company")
+          .populate("supplierId", "firstName lastName company supplierId")
           .populate({
             path: "bankId",
             select: "_id name",
@@ -333,19 +336,22 @@ export const getIncomeExpance = async (req, res) => {
           date: item.date || item.createdAt,
           orderId: item.orderId,
           description: item.description || item.orderId?.product || "",
-          dueAmount: item.orderId?.purchasePrice || item.dueAmount || 0,
+          dueAmount:
+            item.dueAmount !== undefined && item.dueAmount !== null
+              ? item.dueAmount
+              : item.orderId?.purchasePrice || 0,
           clientName: item.orderId?.clientName || "",
           paidAmount: item.paidAmount || 0,
           supplierName:
             `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
             item.supplierId?.company ||
             "",
+          supplierId: item.supplierId,
           status: item.status,
           bankId,
           bank,
         };
       });
-
       // 🔍 Combined filtering
       const merged = [...incomeList, ...expanceList].filter((item) => {
         if (!search) return true;
@@ -415,6 +421,7 @@ export const getIncomeExpance = async (req, res) => {
         items: data,
       },
     });
+    
   } catch (error) {
     console.error("Error fetching income and expance:", error);
     res.status(500).json({
