@@ -72,9 +72,20 @@ const orderSchema = new mongoose.Schema({
           enum: Object.values(ORDER_STATUS),
           default: DEFAULT_ORDER_STATUS,
      },
-     productImage: {
-          type: String,
-          default: "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product"
+     productImages: {
+          type: [
+               {
+                    img: {
+                         type: String,
+                         required: false,
+                    },
+               },
+          ],
+          default: [
+               {
+                    img: "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product",
+               },
+          ],
      },
      trackingId: {
           type: String,

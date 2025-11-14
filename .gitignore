@@ -69,3 +69,9 @@ logs/
 
 # local nodejs server
 local/
+
+# Uploaded files
+uploads/
+!uploads/.gitkeep
+!uploads/images/.gitkeep
+!uploads/videos/.gitkeep

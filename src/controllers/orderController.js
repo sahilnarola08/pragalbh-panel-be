@@ -1,6 +1,6 @@
 import Order from "../models/order.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
-import { ORDER_STATUS, DEFAULT_ORDER_STATUS} from "../helper/enums.js";
+import { ORDER_STATUS, DEFAULT_ORDER_STATUS } from "../helper/enums.js";
 import Product from "../models/product.js";
 import User from "../models/user.js";
 import Supplier from "../models/supplier.js";
@@ -9,6 +9,49 @@ import Income from "../models/income.js";
 import ExpanseIncome from "../models/expance_inc.js";
 import { DEFAULT_PAYMENT_STATUS } from "../helper/enums.js";
 import Master from "../models/master.js";
+
+const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
+  "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product";
+
+const extractProductImages = (input, { fallback } = { fallback: false }) => {
+  if (input === undefined || input === null) {
+    return fallback ? [{ img: DEFAULT_ORDER_IMAGE_PLACEHOLDER }] : undefined;
+  }
+
+  const arrayInput = Array.isArray(input) ? input : [input];
+
+  const normalized = arrayInput
+    .map((item) => {
+      if (!item) return null;
+
+      if (typeof item === "string") {
+        const trimmed = item.trim();
+        return trimmed ? { img: trimmed } : null;
+      }
+
+      if (typeof item === "object" && item !== null) {
+        const candidate =
+          item.img ??
+          item.url ??
+          item.imageUrl ??
+          item.relativePath ??
+          item.path;
+
+        if (typeof candidate === "string" && candidate.trim()) {
+          return { img: candidate.trim() };
+        }
+      }
+
+      return null;
+    })
+    .filter(Boolean);
+
+  if (normalized.length) {
+    return normalized;
+  }
+
+  return fallback ? [{ img: DEFAULT_ORDER_IMAGE_PLACEHOLDER }] : undefined;
+};
 
 const sanitizeOrderPlatformValues = async () => {
   await Order.updateMany(
@@ -53,6 +96,8 @@ export const createOrder = async (req, res, next) => {
       clientName,
       address,
       product,
+      productImages,
+      productImage,
       orderDate,
       dispatchDate,
       purchasePrice,
@@ -128,11 +173,17 @@ export const createOrder = async (req, res, next) => {
       });
     }
 
+    const normalizedProductImages = extractProductImages(
+      productImages ?? productImage,
+      { fallback: true }
+    );
+
     // The order status will automatically be set to 'pending' because we updated the enums file.
     const order = await Order.create({
       clientName,
       address,
       product,
+      productImages: normalizedProductImages,
       orderDate,
       dispatchDate,
       purchasePrice,
@@ -387,6 +438,18 @@ const updateOrder = async (req, res, next) => {
           status: error.status || 400,
         });
       }
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(updateData, "productImages") ||
+      Object.prototype.hasOwnProperty.call(updateData, "productImage")
+    ) {
+      const normalizedProductImages = extractProductImages(
+        updateData.productImages ?? updateData.productImage,
+        { fallback: true }
+      );
+      updateData.productImages = normalizedProductImages;
+      delete updateData.productImage;
     }
 
     // Update order
