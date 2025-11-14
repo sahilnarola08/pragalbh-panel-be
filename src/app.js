@@ -18,6 +18,9 @@ dotenv.config({ path: envFile });
 
 const app = express();
 
+// Trust proxy - important for reading x-forwarded-* headers behind reverse proxy/load balancer
+app.set('trust proxy', true);
+
 // Connect to database
 connectDB();
 
