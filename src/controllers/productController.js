@@ -3,10 +3,53 @@ import Master from "../models/master.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import mongoose from "mongoose";
 
+const DEFAULT_IMAGE_PLACEHOLDER =
+  "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product";
+
+const extractImageURLs = (input, { fallback } = { fallback: false }) => {
+  if (input === undefined || input === null) {
+    return fallback ? [{ img: DEFAULT_IMAGE_PLACEHOLDER }] : undefined;
+  }
+
+  const arrayInput = Array.isArray(input) ? input : [input];
+
+  const normalized = arrayInput
+    .map((item) => {
+      if (!item) return null;
+
+      if (typeof item === "string") {
+        const trimmed = item.trim();
+        return trimmed ? { img: trimmed } : null;
+      }
+
+      if (typeof item === "object" && item !== null) {
+        const candidate =
+          item.img ??
+          item.url ??
+          item.imageUrl ??
+          item.relativePath ??
+          item.path;
+
+        if (typeof candidate === "string" && candidate.trim()) {
+          return { img: candidate.trim() };
+        }
+      }
+
+      return null;
+    })
+    .filter(Boolean);
+
+  if (normalized.length) {
+    return normalized;
+  }
+
+  return fallback ? [{ img: DEFAULT_IMAGE_PLACEHOLDER }] : undefined;
+};
+
 // create product controller
 const createProduct = async (req, res) => {
   try {
-    const { category, productName, image } = req.body;
+    const { category, productName, imageURLs, image } = req.body;
 
     // Validate category ObjectId format
     if (!mongoose.Types.ObjectId.isValid(category)) {
@@ -47,10 +90,15 @@ const createProduct = async (req, res) => {
       });
     }
 
+    const normalizedImageURLs = extractImageURLs(
+      imageURLs ?? image,
+      { fallback: true }
+    );
+
     const newProduct = await Product.create({
       category,
       productName: trimmedProductName,
-      image,
+      imageURLs: normalizedImageURLs,
     });
 
     await newProduct.populate({
@@ -200,6 +248,18 @@ const updateProduct = async (req, res, next) => {
     // Trim productName if provided
     if (updateData.productName) {
       updateData.productName = updateData.productName.trim();
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(updateData, "imageURLs") ||
+      Object.prototype.hasOwnProperty.call(updateData, "image")
+    ) {
+      const normalizedImageURLs = extractImageURLs(
+        updateData.imageURLs ?? updateData.image,
+        { fallback: true }
+      );
+      updateData.imageURLs = normalizedImageURLs;
+      delete updateData.image;
     }
 
     const categoryToCheck =
