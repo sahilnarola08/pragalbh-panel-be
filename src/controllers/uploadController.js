@@ -1,14 +1,78 @@
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import { deleteImageFile } from "../middlewares/upload.js";
 
-const buildAbsoluteUrl = (relativePath) => {
+const buildAbsoluteUrl = (relativePath, req = null) => {
   if (!relativePath) return null;
+  
+  // If already an absolute URL, return as is
   if (relativePath.startsWith("http://") || relativePath.startsWith("https://")) {
     return relativePath;
   }
-  const baseUrl = process.env.BASE_URL || "";
+  
+  // Try to get base URL from request headers first (dynamic detection)
+  let baseUrl = "";
+  
+  if (req) {
+    // Get protocol - prioritize x-forwarded-proto for reverse proxies (nginx, load balancers)
+    let protocol = 'http';
+    
+    // Check x-forwarded-proto header (most reliable for proxies)
+    const forwardedProto = req.get('x-forwarded-proto');
+    if (forwardedProto) {
+      // Handle comma-separated values (e.g., "https, http")
+      protocol = forwardedProto.split(',')[0].trim().toLowerCase();
+    } 
+    // Check if request is secure (works when not behind proxy)
+    else if (req.secure || req.protocol === 'https') {
+      protocol = 'https';
+    }
+    
+    // Normalize protocol
+    protocol = (protocol === 'https') ? 'https' : 'http';
+    
+    // Get host from request headers (priority: x-forwarded-host > host header > headers.host)
+    let host = '';
+    
+    // x-forwarded-host is set by reverse proxies
+    const forwardedHost = req.get('x-forwarded-host');
+    if (forwardedHost) {
+      // Handle comma-separated values and take the first one
+      host = forwardedHost.split(',')[0].trim();
+    } 
+    // Use Express host header (includes port if present)
+    else if (req.get('host')) {
+      host = req.get('host');
+    } 
+    // Fallback to raw headers
+    else if (req.headers && req.headers.host) {
+      host = req.headers.host;
+    }
+    
+    // Build base URL if host is available
+    if (host) {
+      baseUrl = `${protocol}://${host}`;
+    }
+  }
+  
+  // Fallback to environment variable if request-based detection fails
+  // This handles cases where req is not available (background jobs, etc.)
+  if (!baseUrl) {
+    baseUrl = process.env.BASE_URL || "";
+  }
+  
+  // Remove trailing slash if present
   const sanitizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-  return sanitizedBase ? `${sanitizedBase}${relativePath}` : relativePath;
+  
+  // Build final URL
+  if (!sanitizedBase) {
+    // If no base URL found, return relative path
+    return relativePath;
+  }
+  
+  // Ensure relativePath starts with / if it doesn't already
+  const normalizedPath = relativePath.startsWith("/") ? relativePath : `/${relativePath}`;
+  
+  return `${sanitizedBase}${normalizedPath}`;
 };
 
 export const uploadProductImages = async (req, res) => {
@@ -26,7 +90,7 @@ export const uploadProductImages = async (req, res) => {
     const images = processed.map((image) => ({
       filename: image.filename,
       originalName: image.originalname,
-      url: buildAbsoluteUrl(image.imageUrl),
+      url: buildAbsoluteUrl(image.imageUrl, req),
       relativePath: image.imageUrl,
       mimetype: image.mimetype,
       size: image.size,
