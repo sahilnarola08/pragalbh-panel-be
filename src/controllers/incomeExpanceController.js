@@ -168,9 +168,9 @@ export const getIncomeExpance = async (req, res) => {
           orderId: item.orderId,
           description: item.Description || item.orderId?.product || "",
           product: item.orderId?.product || "",
-          sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
-          receivedAmount: item.receivedAmount || 0,
-          initialPayment: item.orderId?.initialPayment || 0,
+          sellingPrice: Math.round((item.orderId?.sellingPrice || item.sellingPrice || 0) * 100) / 100,
+          receivedAmount: Math.round((item.receivedAmount || 0) * 100) / 100,
+          initialPayment: Math.round((item.orderId?.initialPayment || 0) * 100) / 100,
           clientName:
             item.orderId?.clientName ||
             `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
@@ -261,12 +261,13 @@ export const getIncomeExpance = async (req, res) => {
           date: item.date || item.createdAt,
           orderId: item.orderId,
           description: item.description || item.orderId?.product || "",
-          dueAmount:
-            item.dueAmount !== undefined && item.dueAmount !== null
+          dueAmount: Math.round(
+            (item.dueAmount !== undefined && item.dueAmount !== null
               ? item.dueAmount
-              : item.orderId?.purchasePrice || 0,
+              : item.orderId?.purchasePrice || 0) * 100
+          ) / 100,
           clientName: item.orderId?.clientName || "",
-          paidAmount: item.paidAmount || 0,
+          paidAmount: Math.round((item.paidAmount || 0) * 100) / 100,
           supplierName:
             `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
             item.supplierId?.company ||
@@ -316,9 +317,9 @@ export const getIncomeExpance = async (req, res) => {
           orderId: item.orderId,
           description: item.Description || item.orderId?.product || "",
           product: item.orderId?.product || "",
-          sellingPrice: item.orderId?.sellingPrice || item.sellingPrice || 0,
-          receivedAmount: item.receivedAmount || 0,
-          initialPayment: item.orderId?.initialPayment || 0,
+          sellingPrice: Math.round((item.orderId?.sellingPrice || item.sellingPrice || 0) * 100) / 100,
+          receivedAmount: Math.round((item.receivedAmount || 0) * 100) / 100,
+          initialPayment: Math.round((item.orderId?.initialPayment || 0) * 100) / 100,
           clientName:
             item.orderId?.clientName ||
             `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
@@ -336,12 +337,13 @@ export const getIncomeExpance = async (req, res) => {
           date: item.date || item.createdAt,
           orderId: item.orderId,
           description: item.description || item.orderId?.product || "",
-          dueAmount:
-            item.dueAmount !== undefined && item.dueAmount !== null
+          dueAmount: Math.round(
+            (item.dueAmount !== undefined && item.dueAmount !== null
               ? item.dueAmount
-              : item.orderId?.purchasePrice || 0,
+              : item.orderId?.purchasePrice || 0) * 100
+          ) / 100,
           clientName: item.orderId?.clientName || "",
-          paidAmount: item.paidAmount || 0,
+          paidAmount: Math.round((item.paidAmount || 0) * 100) / 100,
           supplierName:
             `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
             item.supplierId?.company ||
@@ -495,8 +497,8 @@ export const addIncomeEntry = async (req, res) => {
       date: date || new Date(),
       orderId: order._id,
       Description: description || order.product,
-      sellingPrice: order.sellingPrice,
-      receivedAmount: receivedAmount || 0,
+      sellingPrice: Math.round((order.sellingPrice || 0) * 100) / 100,
+      receivedAmount: Math.round((receivedAmount || 0) * 100) / 100,
       clientId: client._id,
       status: status || "pending",
       bankId: normalizedBankId,
@@ -593,8 +595,8 @@ export const addExpanseEntry = async (req, res) => {
       date: date || new Date(),
       orderId: order._id,
       description: description || order.product,
-      dueAmount: order.purchasePrice,
-      paidAmount: paidAmount || 0,
+      dueAmount: Math.round((order.purchasePrice || 0) * 100) / 100,
+      paidAmount: Math.round((paidAmount || 0) * 100) / 100,
       supplierId: supplier._id,
       status: status || "pending",
       bankId: normalizedBankId,
@@ -660,7 +662,7 @@ export const editIncomeEntry = async (req, res) => {
         });
       }
       income.orderId = order._id;
-      income.sellingPrice = order.sellingPrice;
+      income.sellingPrice = Math.round((order.sellingPrice || 0) * 100) / 100;
       income.Description = order.product;
     }
 
@@ -692,13 +694,13 @@ export const editIncomeEntry = async (req, res) => {
     // Update fields if provided
     if (date) income.date = date;
     if (description) income.Description = description;
-    if (receivedAmount !== undefined) income.receivedAmount = receivedAmount;
+    if (receivedAmount !== undefined) income.receivedAmount = Math.round(receivedAmount * 100) / 100;
 
     // Auto-set receivedAmount when status is updated to paid or done
     if (status) {
       income.status = status;
       if (status === "paid" || status === "done") {
-        income.receivedAmount = income.sellingPrice;
+        income.receivedAmount = Math.round((income.sellingPrice || 0) * 100) / 100;
       }
     }
 
@@ -753,7 +755,7 @@ export const editExpanseEntry = async (req, res) => {
     // Update fields
     if (date) existingExpense.date = date;
     if (description) existingExpense.description = description;
-    if (paidAmount !== undefined) existingExpense.paidAmount = paidAmount;
+    if (paidAmount !== undefined) existingExpense.paidAmount = Math.round(paidAmount * 100) / 100;
     if (status) existingExpense.status = status;
 
     if (bankId !== undefined) {
@@ -769,7 +771,7 @@ export const editExpanseEntry = async (req, res) => {
 
     // Recalculate remaining amount
     existingExpense.remainingAmount =
-      (existingExpense.dueAmount || 0) - (existingExpense.paidAmount || 0);
+      Math.round(((existingExpense.dueAmount || 0) - (existingExpense.paidAmount || 0)) * 100) / 100;
 
     // Save updated document
     await existingExpense.save();
@@ -846,7 +848,7 @@ export const updateIncomePaymentStatus = async (req, res) => {
           message: "receivedAmount must be a positive number",
         });
       }
-      income.receivedAmount = receivedAmount;
+      income.receivedAmount = Math.round(receivedAmount * 100) / 100;
     }
 
     // Update fields if provided
@@ -936,7 +938,7 @@ export const addExtraExpense = async (req, res) => {
     const newExpense = await ExpanceIncome.create({
       date: date || new Date(),
       description: description,
-      paidAmount: paidAmount,
+      paidAmount: Math.round(paidAmount * 100) / 100,
       dueAmount: 0,
       bankId: normalizedBankId,
       status: "paid", // Direct paid status
@@ -1017,7 +1019,7 @@ export const editExtraExpense = async (req, res) => {
           message: "paidAmount must be a positive number",
         });
       }
-      expense.paidAmount = paidAmount;
+      expense.paidAmount = Math.round(paidAmount * 100) / 100;
     }
 
     await expense.save();
@@ -1083,8 +1085,8 @@ export const getExpenseById = async (req, res) => {
       date: expense.date || expense.createdAt,
       orderId: expense.orderId,
       description: expense.description,
-      paidAmount: expense.paidAmount || 0,
-      dueAmount: expense.dueAmount || 0,
+      paidAmount: Math.round((expense.paidAmount || 0) * 100) / 100,
+      dueAmount: Math.round((expense.dueAmount || 0) * 100) / 100,
       supplierId: expense.supplierId,
       supplierName: expense.supplierId
         ? `${expense.supplierId.firstName || ""} ${expense.supplierId.lastName || ""}`.trim() ||
@@ -1154,11 +1156,12 @@ export const addExtraIncome = async (req, res) => {
     }
 
     // Create new income entry without orderId and clientId
+    const roundedAmount = Math.round(receivedAmount * 100) / 100;
     const newIncome = await Income.create({
       date: date || new Date(),
       Description: description,
-      receivedAmount: receivedAmount,
-      sellingPrice: receivedAmount, // Set sellingPrice equal to receivedAmount for standalone income
+      receivedAmount: roundedAmount,
+      sellingPrice: roundedAmount, // Set sellingPrice equal to receivedAmount for standalone income
       bankId: normalizedBankId,
       status: "paid", // Automatically set status to paid
     });
@@ -1238,8 +1241,9 @@ export const editExtraIncome = async (req, res) => {
           message: "receivedAmount must be a positive number",
         });
       }
-      income.receivedAmount = receivedAmount;
-      income.sellingPrice = receivedAmount; // Keep sellingPrice in sync
+      const roundedAmount = Math.round(receivedAmount * 100) / 100;
+      income.receivedAmount = roundedAmount;
+      income.sellingPrice = roundedAmount; // Keep sellingPrice in sync
     }
 
     await income.save();
@@ -1304,8 +1308,8 @@ export const getIncomeById = async (req, res) => {
       date: income.date,
       orderId: income.orderId,
       description: income.Description,
-      sellingPrice: income.sellingPrice || 0,
-      receivedAmount: income.receivedAmount || 0,
+      sellingPrice: Math.round((income.sellingPrice || 0) * 100) / 100,
+      receivedAmount: Math.round((income.receivedAmount || 0) * 100) / 100,
       clientId: income.clientId,
       clientName: income.orderId?.clientName ||
         (income.clientId ? `${income.clientId.firstName || ""} ${income.clientId.lastName || ""}`.trim() : ""),

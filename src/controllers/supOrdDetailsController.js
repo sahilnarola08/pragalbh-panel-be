@@ -3,7 +3,7 @@ import ExpanceIncome from "../models/expance_inc.js";
 import Supplier from "../models/supplier.js";
 import Master from "../models/master.js";
 import mongoose from "mongoose";
-
+// normalize object id or throw error
 const normalizeObjectIdOrThrow = (value, fieldName) => {
   if (!value || !mongoose.Types.ObjectId.isValid(value)) {
     const error = new Error(`${fieldName} must be a valid ObjectId`);
@@ -13,6 +13,7 @@ const normalizeObjectIdOrThrow = (value, fieldName) => {
   return new mongoose.Types.ObjectId(value);
 };
 
+// normalize bank id or throw error
 const normalizeBankIdOrThrow = async (bankId) => {
   const normalized = normalizeObjectIdOrThrow(bankId, "bankId");
 
@@ -30,6 +31,7 @@ const normalizeBankIdOrThrow = async (bankId) => {
   return bank._id;
 };
 
+// build bank response
 const buildBankResponse = (bank) => {
   if (!bank || typeof bank !== "object") {
     return { bankId: null, bank: null };
@@ -360,4 +362,5 @@ export const markPaymentDone = async (req, res) => {
   }
 };
 
+// export supplier order details controller
 export default { getSupplierOrderDetails, markPaymentDone };

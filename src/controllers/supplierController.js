@@ -3,6 +3,7 @@ import Master from "../models/master.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import mongoose from "mongoose";
 
+// validate advance payments
 const validateAdvancePayments = async (advancePayments) => {
     if (advancePayments === undefined || advancePayments === null) {
         return;
@@ -61,6 +62,7 @@ const validateAdvancePayments = async (advancePayments) => {
     return advancePayments;
 };
 
+// build supplier aggregation pipeline
 const buildSupplierAggregationPipeline = ({
     matchStage = {},
     sortObj,
@@ -105,7 +107,7 @@ const buildSupplierAggregationPipeline = ({
                         as: "payment",
                         in: {
                             bankId: "$$payment.bankId",
-                            amount: "$$payment.amount",
+                            amount: { $round: ["$$payment.amount", 2] },
                             bank: {
                                 $let: {
                                     vars: {
@@ -143,13 +145,18 @@ const buildSupplierAggregationPipeline = ({
                     $cond: {
                         if: { $isArray: "$advancePayment" },
                         then: {
-                            $sum: {
-                                $map: {
-                                    input: "$advancePayment",
-                                    as: "payment",
-                                    in: "$$payment.amount"
-                                }
-                            }
+                            $round: [
+                                {
+                                    $sum: {
+                                        $map: {
+                                            input: "$advancePayment",
+                                            as: "payment",
+                                            in: "$$payment.amount"
+                                        }
+                                    }
+                                },
+                                2
+                            ]
                         },
                         else: 0
                     }
@@ -193,6 +200,7 @@ const buildSupplierAggregationPipeline = ({
     return pipeline;
 };
 
+// fetch supplier with aggregates
 const fetchSupplierWithAggregates = async (supplierId) => {
     if (!mongoose.Types.ObjectId.isValid(supplierId)) {
         return null;
@@ -258,7 +266,7 @@ const createSupplier = async (req, res, next) => {
         const sanitizedAdvancePayments = Array.isArray(advancePayment)
             ? advancePayment.map(payment => ({
                 bankId: new mongoose.Types.ObjectId(payment.bankId),
-                amount: payment.amount
+                amount: Math.round(payment.amount * 100) / 100
             }))
             : [];
 
@@ -441,7 +449,7 @@ const updateSupplier = async (req, res, next) => {
         if (Array.isArray(updateData.advancePayment)) {
             updateData.advancePayment = updateData.advancePayment.map(payment => ({
                 bankId: new mongoose.Types.ObjectId(payment.bankId),
-                amount: payment.amount
+                amount: Math.round(payment.amount * 100) / 100
             }));
         }
 
@@ -545,8 +553,6 @@ const getSupplierById = async (req, res, next) => {
 };
 
 
-
-
 // Add or Update Advance Payment for Supplier
 export const updateSupplierBalance = async (req, res) => {
     try {
@@ -607,7 +613,7 @@ export const updateSupplierBalance = async (req, res) => {
           if (!bankObjectId) return;
           existingPaymentsMap.set(bankObjectId.toString(), {
             bankId: bankObjectId,
-            amount: payment.amount || 0,
+            amount: Math.round((payment.amount || 0) * 100) / 100,
           });
         });
       }
@@ -621,7 +627,8 @@ export const updateSupplierBalance = async (req, res) => {
         const currentAmount = existingPaymentsMap.has(key)
           ? existingPaymentsMap.get(key).amount || 0
           : 0;
-        const updatedAmount = currentAmount + payment.amount;
+        const roundedPaymentAmount = Math.round(payment.amount * 100) / 100;
+        const updatedAmount = Math.round((currentAmount + roundedPaymentAmount) * 100) / 100;
 
         if (updatedAmount <= 0) {
           existingPaymentsMap.delete(key);
@@ -673,6 +680,7 @@ export const updateSupplierBalance = async (req, res) => {
     }
   };
 
+// export supplier controller
 export default {
     createSupplier,
     getAllSuppliers,
