@@ -13,6 +13,7 @@ import Master from "../models/master.js";
 const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
   "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product";
 
+// extract product images
 const extractProductImages = (input, { fallback } = { fallback: false }) => {
   if (input === undefined || input === null) {
     return fallback ? [{ img: DEFAULT_ORDER_IMAGE_PLACEHOLDER }] : undefined;
@@ -53,6 +54,7 @@ const extractProductImages = (input, { fallback } = { fallback: false }) => {
   return fallback ? [{ img: DEFAULT_ORDER_IMAGE_PLACEHOLDER }] : undefined;
 };
 
+// sanitize order platform values
 const sanitizeOrderPlatformValues = async () => {
   await Order.updateMany(
     { orderPlatform: { $type: "string" } },
@@ -60,6 +62,7 @@ const sanitizeOrderPlatformValues = async () => {
   );
 };
 
+// normalize master id or throw error
 const normalizeMasterIdOrThrow = async (id, fieldName = "masterId") => {
   if (!id) {
     const error = new Error(`${fieldName} is required`);
@@ -89,7 +92,7 @@ const normalizeMasterIdOrThrow = async (id, fieldName = "masterId") => {
 
   return master;
 };
-
+// create order
 export const createOrder = async (req, res, next) => {
   try {
     const {
@@ -186,11 +189,11 @@ export const createOrder = async (req, res, next) => {
       productImages: normalizedProductImages,
       orderDate,
       dispatchDate,
-      purchasePrice,
-      sellingPrice,
-      initialPayment,
+      purchasePrice: Math.round((purchasePrice || 0) * 100) / 100,
+      sellingPrice: Math.round((sellingPrice || 0) * 100) / 100,
+      initialPayment: Math.round((initialPayment || 0) * 100) / 100,
       bankName,
-      paymentAmount,
+      paymentAmount: paymentAmount !== undefined && paymentAmount !== null ? Math.round(paymentAmount * 100) / 100 : paymentAmount,
       supplier,
       orderPlatform: orderPlatformMaster._id,
       otherDetails,
@@ -204,8 +207,8 @@ export const createOrder = async (req, res, next) => {
       date: new Date(), 
       orderId: order._id, 
       Description: order.product, 
-      sellingPrice: order.sellingPrice,
-      costPrice: order.purchasePrice,
+      sellingPrice: Math.round((order.sellingPrice || 0) * 100) / 100,
+      costPrice: Math.round((order.purchasePrice || 0) * 100) / 100,
       receivedAmount: 0, 
       clientId: existingClient._id,
       status: DEFAULT_PAYMENT_STATUS,
@@ -218,7 +221,7 @@ export const createOrder = async (req, res, next) => {
         orderId: order._id,
         description: order.product,
         paidAmount: 0,
-        dueAmount: order.purchasePrice,
+        dueAmount: Math.round((order.purchasePrice || 0) * 100) / 100,
         supplierId: existingSupplier._id,
         status: DEFAULT_PAYMENT_STATUS,
       });
@@ -258,7 +261,9 @@ const getAllOrders = async (req, res) => {
       search = "",
       sortField = "createdAt",
       sortOrder = "desc",
-      status = ""
+      status = "",
+      startDate = "",
+      endDate = ""
     } = req.query;
 
     const pageNum = parseInt(page, 10);
@@ -304,6 +309,76 @@ const getAllOrders = async (req, res) => {
     // Add status filter if provided in the query
     if (status) {
       filter.status = status;
+    }
+
+    // Date range filter
+    if (startDate || endDate) {
+      filter.orderDate = {};
+
+      // Parse dates - support DD/MM/YYYY format
+      const parseDate = (dateString) => {
+        if (!dateString || typeof dateString !== 'string') return null;
+        
+        const trimmed = dateString.trim();
+        
+        // Try DD/MM/YYYY format first
+        const ddmmyyyy = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        if (ddmmyyyy) {
+          const day = parseInt(ddmmyyyy[1], 10);
+          const month = parseInt(ddmmyyyy[2], 10) - 1; // Month is 0-indexed
+          const year = parseInt(ddmmyyyy[3], 10);
+          const date = new Date(year, month, day);
+          date.setHours(0, 0, 0, 0); // Start of day
+          return date;
+        }
+        
+        // Try YYYY-MM-DD format (ISO)
+        const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+        if (iso) {
+          const year = parseInt(iso[1], 10);
+          const month = parseInt(iso[2], 10) - 1;
+          const day = parseInt(iso[3], 10);
+          const date = new Date(year, month, day);
+          date.setHours(0, 0, 0, 0);
+          return date;
+        }
+        
+        // Try parsing as ISO string or default Date constructor
+        const date = new Date(trimmed);
+        if (!isNaN(date.getTime())) {
+          date.setHours(0, 0, 0, 0);
+          return date;
+        }
+        
+        return null;
+      };
+
+      if (startDate) {
+        const start = parseDate(startDate);
+        if (start) {
+          filter.orderDate.$gte = start;
+        } else {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Invalid startDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
+          });
+        }
+      }
+
+      if (endDate) {
+        const end = parseDate(endDate);
+        if (end) {
+          end.setHours(23, 59, 59, 999); // End of day
+          filter.orderDate.$lte = end;
+        } else {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Invalid endDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
+          });
+        }
+      }
     }
 
     const orders = await Order.find(filter)
@@ -452,6 +527,23 @@ const updateOrder = async (req, res, next) => {
       delete updateData.productImage;
     }
 
+    // Round amount values if being updated
+    if (updateData.purchasePrice !== undefined) {
+      updateData.purchasePrice = Math.round((updateData.purchasePrice || 0) * 100) / 100;
+    }
+    if (updateData.sellingPrice !== undefined) {
+      updateData.sellingPrice = Math.round((updateData.sellingPrice || 0) * 100) / 100;
+    }
+    if (updateData.initialPayment !== undefined) {
+      updateData.initialPayment = Math.round((updateData.initialPayment || 0) * 100) / 100;
+    }
+    if (updateData.paymentAmount !== undefined && updateData.paymentAmount !== null) {
+      updateData.paymentAmount = Math.round(updateData.paymentAmount * 100) / 100;
+    }
+    if (updateData.shippingCost !== undefined && updateData.shippingCost !== null) {
+      updateData.shippingCost = Math.round(updateData.shippingCost * 100) / 100;
+    }
+
     // Update order
     const updatedOrder = await Order.findByIdAndUpdate(
       id,
@@ -545,11 +637,85 @@ const getOrderById = async (req, res, next) => {
 // Get Kanban Board Data
 const getKanbanData = async (req, res) => {
   try {
+    const { startDate = "", endDate = "" } = req.query;
+
     const statuses = Object.values(ORDER_STATUS);
     const kanbanData = {};
 
+    // Date range filter
+    let dateFilter = {};
+    if (startDate || endDate) {
+      // Parse dates - support DD/MM/YYYY format
+      const parseDate = (dateString) => {
+        if (!dateString || typeof dateString !== 'string') return null;
+        
+        const trimmed = dateString.trim();
+        
+        // Try DD/MM/YYYY format first
+        const ddmmyyyy = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        if (ddmmyyyy) {
+          const day = parseInt(ddmmyyyy[1], 10);
+          const month = parseInt(ddmmyyyy[2], 10) - 1; // Month is 0-indexed
+          const year = parseInt(ddmmyyyy[3], 10);
+          const date = new Date(year, month, day);
+          date.setHours(0, 0, 0, 0); // Start of day
+          return date;
+        }
+        
+        // Try YYYY-MM-DD format (ISO)
+        const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+        if (iso) {
+          const year = parseInt(iso[1], 10);
+          const month = parseInt(iso[2], 10) - 1;
+          const day = parseInt(iso[3], 10);
+          const date = new Date(year, month, day);
+          date.setHours(0, 0, 0, 0);
+          return date;
+        }
+        
+        // Try parsing as ISO string or default Date constructor
+        const date = new Date(trimmed);
+        if (!isNaN(date.getTime())) {
+          date.setHours(0, 0, 0, 0);
+          return date;
+        }
+        
+        return null;
+      };
+
+      dateFilter.orderDate = {};
+
+      if (startDate) {
+        const start = parseDate(startDate);
+        if (start) {
+          dateFilter.orderDate.$gte = start;
+        } else {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Invalid startDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
+          });
+        }
+      }
+
+      if (endDate) {
+        const end = parseDate(endDate);
+        if (end) {
+          end.setHours(23, 59, 59, 999); // End of day
+          dateFilter.orderDate.$lte = end;
+        } else {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Invalid endDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
+          });
+        }
+      }
+    }
+
     const promises = statuses.map(async (status) => {
-      const orders = await Order.find({ status }).sort({ createdAt: 'asc' });
+      const queryFilter = { status, ...dateFilter };
+      const orders = await Order.find(queryFilter).sort({ createdAt: 'asc' });
       kanbanData[status] = orders;
     });
 
@@ -646,12 +812,13 @@ export const updateOrderStatus = async (req, res) => {
 
     // Validate payment is complete before moving to DISPATCH
     if (status === ORDER_STATUS.DISPATCH) {
-      const initialPayment = order.initialPayment || 0;
-      if (initialPayment !== order.sellingPrice) {
+      const roundedInitialPayment = Math.round((order.initialPayment || 0) * 100) / 100;
+      const roundedSellingPrice = Math.round((order.sellingPrice || 0) * 100) / 100;
+      if (roundedInitialPayment !== roundedSellingPrice) {
         return sendErrorResponse({
           res,
           status: 400,
-          message: `Cannot move to dispatch. Payment incomplete. Initial payment: ${initialPayment}, Selling price: ${order.sellingPrice}`,
+          message: `Cannot move to dispatch. Payment incomplete. Initial payment: ${roundedInitialPayment}, Selling price: ${roundedSellingPrice}`,
         });
       }
     }
@@ -711,7 +878,9 @@ export const updateTrackingInfo = async (req, res) => {
     order.courierCompany = courierCompany;
     order.status = ORDER_STATUS.UPDATED_TRACKING_ID;
     order.trackingIdUpdatedAt = new Date();
-    order.shippingCost = shippingCost;
+    if (shippingCost !== undefined && shippingCost !== null) {
+      order.shippingCost = Math.round(shippingCost * 100) / 100;
+    }
     await order.save();
 
     return sendSuccessResponse({
@@ -729,8 +898,6 @@ export const updateTrackingInfo = async (req, res) => {
     });
   }
 };
-
-
 
 // Update Initial Payment
 export const updateInitialPayment = async (req, res) => {
@@ -771,17 +938,19 @@ export const updateInitialPayment = async (req, res) => {
     }
 
     // --- Validate against sellingPrice ---
-    const sellingPrice = Number(order.sellingPrice || 0);
-    if (initialPayment > sellingPrice) {
+    const roundedSellingPrice = Math.round(Number(order.sellingPrice || 0) * 100) / 100;
+    const roundedInitialPayment = Math.round(initialPayment * 100) / 100;
+    
+    if (roundedInitialPayment > roundedSellingPrice) {
       return sendErrorResponse({
         res,
         status: 400,
-        message: `Initial payment (${initialPayment}) cannot exceed selling price (${sellingPrice})`,
+        message: `Initial payment (${roundedInitialPayment}) cannot exceed selling price (${roundedSellingPrice})`,
       });
     }
 
     // --- Update payment ---
-    order.initialPayment = initialPayment;
+    order.initialPayment = roundedInitialPayment;
     
     // Update bank name if provided
     if (bankName) {
@@ -790,11 +959,11 @@ export const updateInitialPayment = async (req, res) => {
     
     // Update payment amount if provided
     if (paymentAmount !== undefined && paymentAmount !== null) {
-      order.paymentAmount = paymentAmount;
+      order.paymentAmount = Math.round(paymentAmount * 100) / 100;
     }
 
     // --- Auto update status if fully paid ---
-    const isPaymentComplete = Number(initialPayment) === sellingPrice;
+    const isPaymentComplete = roundedInitialPayment === roundedSellingPrice;
     if (isPaymentComplete && order.status !== ORDER_STATUS.DISPATCH) {
       order.status = ORDER_STATUS.DISPATCH;
     }

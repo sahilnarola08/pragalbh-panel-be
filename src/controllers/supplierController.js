@@ -3,6 +3,7 @@ import Master from "../models/master.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import mongoose from "mongoose";
 
+// validate advance payments
 const validateAdvancePayments = async (advancePayments) => {
     if (advancePayments === undefined || advancePayments === null) {
         return;
@@ -61,6 +62,7 @@ const validateAdvancePayments = async (advancePayments) => {
     return advancePayments;
 };
 
+// build supplier aggregation pipeline
 const buildSupplierAggregationPipeline = ({
     matchStage = {},
     sortObj,
@@ -105,7 +107,7 @@ const buildSupplierAggregationPipeline = ({
                         as: "payment",
                         in: {
                             bankId: "$$payment.bankId",
-                            amount: "$$payment.amount",
+                            amount: { $round: ["$$payment.amount", 2] },
                             bank: {
                                 $let: {
                                     vars: {
@@ -143,13 +145,18 @@ const buildSupplierAggregationPipeline = ({
                     $cond: {
                         if: { $isArray: "$advancePayment" },
                         then: {
-                            $sum: {
-                                $map: {
-                                    input: "$advancePayment",
-                                    as: "payment",
-                                    in: "$$payment.amount"
-                                }
-                            }
+                            $round: [
+                                {
+                                    $sum: {
+                                        $map: {
+                                            input: "$advancePayment",
+                                            as: "payment",
+                                            in: "$$payment.amount"
+                                        }
+                                    }
+                                },
+                                2
+                            ]
                         },
                         else: 0
                     }
@@ -193,6 +200,7 @@ const buildSupplierAggregationPipeline = ({
     return pipeline;
 };
 
+// fetch supplier with aggregates
 const fetchSupplierWithAggregates = async (supplierId) => {
     if (!mongoose.Types.ObjectId.isValid(supplierId)) {
         return null;
@@ -258,7 +266,7 @@ const createSupplier = async (req, res, next) => {
         const sanitizedAdvancePayments = Array.isArray(advancePayment)
             ? advancePayment.map(payment => ({
                 bankId: new mongoose.Types.ObjectId(payment.bankId),
-                amount: payment.amount
+                amount: Math.round(payment.amount * 100) / 100
             }))
             : [];
 
@@ -294,6 +302,8 @@ const getAllSuppliers = async (req, res) => {
             search = "",
             sortField = "createdAt",
             sortOrder = "desc",
+            startDate = "",
+            endDate = ""
         } = req.query;
 
         const pageNum = parseInt(page, 10);
@@ -329,6 +339,76 @@ const getAllSuppliers = async (req, res) => {
             }
 
             matchStage.$or = orConditions;
+        }
+
+        // Date range filter
+        if (startDate || endDate) {
+            // Parse dates - support DD/MM/YYYY format
+            const parseDate = (dateString) => {
+                if (!dateString || typeof dateString !== 'string') return null;
+                
+                const trimmed = dateString.trim();
+                
+                // Try DD/MM/YYYY format first
+                const ddmmyyyy = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                if (ddmmyyyy) {
+                    const day = parseInt(ddmmyyyy[1], 10);
+                    const month = parseInt(ddmmyyyy[2], 10) - 1; // Month is 0-indexed
+                    const year = parseInt(ddmmyyyy[3], 10);
+                    const date = new Date(year, month, day);
+                    date.setHours(0, 0, 0, 0); // Start of day
+                    return date;
+                }
+                
+                // Try YYYY-MM-DD format (ISO)
+                const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+                if (iso) {
+                    const year = parseInt(iso[1], 10);
+                    const month = parseInt(iso[2], 10) - 1;
+                    const day = parseInt(iso[3], 10);
+                    const date = new Date(year, month, day);
+                    date.setHours(0, 0, 0, 0);
+                    return date;
+                }
+                
+                // Try parsing as ISO string or default Date constructor
+                const date = new Date(trimmed);
+                if (!isNaN(date.getTime())) {
+                    date.setHours(0, 0, 0, 0);
+                    return date;
+                }
+                
+                return null;
+            };
+
+            matchStage.createdAt = {};
+
+            if (startDate) {
+                const start = parseDate(startDate);
+                if (start) {
+                    matchStage.createdAt.$gte = start;
+                } else {
+                    return sendErrorResponse({
+                        status: 400,
+                        res,
+                        message: "Invalid startDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
+                    });
+                }
+            }
+
+            if (endDate) {
+                const end = parseDate(endDate);
+                if (end) {
+                    end.setHours(23, 59, 59, 999); // End of day
+                    matchStage.createdAt.$lte = end;
+                } else {
+                    return sendErrorResponse({
+                        status: 400,
+                        res,
+                        message: "Invalid endDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
+                    });
+                }
+            }
         }
 
         // Build sort object
@@ -441,7 +521,7 @@ const updateSupplier = async (req, res, next) => {
         if (Array.isArray(updateData.advancePayment)) {
             updateData.advancePayment = updateData.advancePayment.map(payment => ({
                 bankId: new mongoose.Types.ObjectId(payment.bankId),
-                amount: payment.amount
+                amount: Math.round(payment.amount * 100) / 100
             }));
         }
 
@@ -545,8 +625,6 @@ const getSupplierById = async (req, res, next) => {
 };
 
 
-
-
 // Add or Update Advance Payment for Supplier
 export const updateSupplierBalance = async (req, res) => {
     try {
@@ -607,7 +685,7 @@ export const updateSupplierBalance = async (req, res) => {
           if (!bankObjectId) return;
           existingPaymentsMap.set(bankObjectId.toString(), {
             bankId: bankObjectId,
-            amount: payment.amount || 0,
+            amount: Math.round((payment.amount || 0) * 100) / 100,
           });
         });
       }
@@ -621,7 +699,8 @@ export const updateSupplierBalance = async (req, res) => {
         const currentAmount = existingPaymentsMap.has(key)
           ? existingPaymentsMap.get(key).amount || 0
           : 0;
-        const updatedAmount = currentAmount + payment.amount;
+        const roundedPaymentAmount = Math.round(payment.amount * 100) / 100;
+        const updatedAmount = Math.round((currentAmount + roundedPaymentAmount) * 100) / 100;
 
         if (updatedAmount <= 0) {
           existingPaymentsMap.delete(key);
@@ -673,6 +752,7 @@ export const updateSupplierBalance = async (req, res) => {
     }
   };
 
+// export supplier controller
 export default {
     createSupplier,
     getAllSuppliers,
