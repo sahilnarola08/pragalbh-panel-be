@@ -302,6 +302,8 @@ const getAllSuppliers = async (req, res) => {
             search = "",
             sortField = "createdAt",
             sortOrder = "desc",
+            startDate = "",
+            endDate = ""
         } = req.query;
 
         const pageNum = parseInt(page, 10);
@@ -337,6 +339,76 @@ const getAllSuppliers = async (req, res) => {
             }
 
             matchStage.$or = orConditions;
+        }
+
+        // Date range filter
+        if (startDate || endDate) {
+            // Parse dates - support DD/MM/YYYY format
+            const parseDate = (dateString) => {
+                if (!dateString || typeof dateString !== 'string') return null;
+                
+                const trimmed = dateString.trim();
+                
+                // Try DD/MM/YYYY format first
+                const ddmmyyyy = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+                if (ddmmyyyy) {
+                    const day = parseInt(ddmmyyyy[1], 10);
+                    const month = parseInt(ddmmyyyy[2], 10) - 1; // Month is 0-indexed
+                    const year = parseInt(ddmmyyyy[3], 10);
+                    const date = new Date(year, month, day);
+                    date.setHours(0, 0, 0, 0); // Start of day
+                    return date;
+                }
+                
+                // Try YYYY-MM-DD format (ISO)
+                const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+                if (iso) {
+                    const year = parseInt(iso[1], 10);
+                    const month = parseInt(iso[2], 10) - 1;
+                    const day = parseInt(iso[3], 10);
+                    const date = new Date(year, month, day);
+                    date.setHours(0, 0, 0, 0);
+                    return date;
+                }
+                
+                // Try parsing as ISO string or default Date constructor
+                const date = new Date(trimmed);
+                if (!isNaN(date.getTime())) {
+                    date.setHours(0, 0, 0, 0);
+                    return date;
+                }
+                
+                return null;
+            };
+
+            matchStage.createdAt = {};
+
+            if (startDate) {
+                const start = parseDate(startDate);
+                if (start) {
+                    matchStage.createdAt.$gte = start;
+                } else {
+                    return sendErrorResponse({
+                        status: 400,
+                        res,
+                        message: "Invalid startDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
+                    });
+                }
+            }
+
+            if (endDate) {
+                const end = parseDate(endDate);
+                if (end) {
+                    end.setHours(23, 59, 59, 999); // End of day
+                    matchStage.createdAt.$lte = end;
+                } else {
+                    return sendErrorResponse({
+                        status: 400,
+                        res,
+                        message: "Invalid endDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
+                    });
+                }
+            }
         }
 
         // Build sort object

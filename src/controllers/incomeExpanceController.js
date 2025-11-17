@@ -67,6 +67,8 @@ export const getIncomeExpance = async (req, res) => {
       sortOrder = "desc",
       search = "",
       orderId = "",
+      startDate = "",
+      endDate = ""
     } = req.query;
 
     page = parseInt(page);
@@ -93,12 +95,93 @@ export const getIncomeExpance = async (req, res) => {
       }
     }
 
+    // Date range filter helper
+    const buildDateFilter = () => {
+      const dateFilter = {};
+      
+      if (!startDate && !endDate) {
+        return null;
+      }
+
+      // Parse dates - support DD/MM/YYYY format
+      const parseDate = (dateString) => {
+        if (!dateString || typeof dateString !== 'string') return null;
+        
+        const trimmed = dateString.trim();
+        
+        // Try DD/MM/YYYY format first
+        const ddmmyyyy = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        if (ddmmyyyy) {
+          const day = parseInt(ddmmyyyy[1], 10);
+          const month = parseInt(ddmmyyyy[2], 10) - 1; // Month is 0-indexed
+          const year = parseInt(ddmmyyyy[3], 10);
+          const date = new Date(year, month, day);
+          date.setHours(0, 0, 0, 0); // Start of day
+          return date;
+        }
+        
+        // Try YYYY-MM-DD format (ISO)
+        const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+        if (iso) {
+          const year = parseInt(iso[1], 10);
+          const month = parseInt(iso[2], 10) - 1;
+          const day = parseInt(iso[3], 10);
+          const date = new Date(year, month, day);
+          date.setHours(0, 0, 0, 0);
+          return date;
+        }
+        
+        // Try parsing as ISO string or default Date constructor
+        const date = new Date(trimmed);
+        if (!isNaN(date.getTime())) {
+          date.setHours(0, 0, 0, 0);
+          return date;
+        }
+        
+        return null;
+      };
+
+      if (startDate) {
+        const start = parseDate(startDate);
+        if (!start) {
+          throw new Error("Invalid startDate format. Use DD/MM/YYYY or YYYY-MM-DD format.");
+        }
+        dateFilter.$gte = start;
+      }
+
+      if (endDate) {
+        const end = parseDate(endDate);
+        if (!end) {
+          throw new Error("Invalid endDate format. Use DD/MM/YYYY or YYYY-MM-DD format.");
+        }
+        end.setHours(23, 59, 59, 999); // End of day
+        dateFilter.$lte = end;
+      }
+
+      return dateFilter;
+    };
+
+    let dateFilter = null;
+    try {
+      dateFilter = buildDateFilter();
+    } catch (error) {
+      return res.status(400).json({
+        status: 400,
+        message: error.message,
+      });
+    }
+
     let data = [];
     let total = 0;
 
     // ====================== CASE 1: INCOME ======================
     if (incExpType == 1) {
-      const incomeData = await Income.find({ ...searchQuery, ...orderFilter })
+      const incomeQuery = { ...searchQuery, ...orderFilter };
+      if (dateFilter) {
+        incomeQuery.date = dateFilter;
+      }
+      
+      const incomeData = await Income.find(incomeQuery)
         .populate("orderId", "product clientName sellingPrice orderId initialPayment")
         .populate("clientId", "firstName lastName")
         .populate({
@@ -185,7 +268,16 @@ export const getIncomeExpance = async (req, res) => {
 
     // ====================== CASE 2: EXPENSE ======================
     else if (incExpType == 2) {
-      const expanceData = await ExpanceIncome.find({ ...searchQuery, ...orderFilter })
+      const expenseQuery = { ...searchQuery, ...orderFilter };
+      // For expense, check both date and createdAt fields
+      if (dateFilter) {
+        expenseQuery.$or = [
+          { date: dateFilter },
+          { createdAt: dateFilter }
+        ];
+      }
+      
+      const expanceData = await ExpanceIncome.find(expenseQuery)
         .populate("orderId", "product clientName purchasePrice orderId")
         .populate("supplierId", "firstName lastName company supplierId ")
         .populate({
@@ -284,9 +376,23 @@ export const getIncomeExpance = async (req, res) => {
     // ====================== CASE 3: BOTH ======================
     else if (incExpType == 3) {
       const finalQuery = { ...searchQuery, ...orderFilter };
+      
+      // Build queries with date filter
+      const incomeQuery = { ...finalQuery };
+      if (dateFilter) {
+        incomeQuery.date = dateFilter;
+      }
+      
+      const expenseQuery = { ...finalQuery };
+      if (dateFilter) {
+        expenseQuery.$or = [
+          { date: dateFilter },
+          { createdAt: dateFilter }
+        ];
+      }
 
       const [incomeData, expanceData] = await Promise.all([
-        Income.find(finalQuery)
+        Income.find(incomeQuery)
           .populate("orderId", "product clientName sellingPrice orderId initialPayment")
           .populate("clientId", "firstName lastName")
           .populate({
@@ -296,7 +402,7 @@ export const getIncomeExpance = async (req, res) => {
           })
           .sort(sortQuery)
           .lean(),
-        ExpanceIncome.find(finalQuery)
+        ExpanceIncome.find(expenseQuery)
           .populate("orderId", "product clientName purchasePrice orderId")
           .populate("supplierId", "firstName lastName company supplierId")
           .populate({
