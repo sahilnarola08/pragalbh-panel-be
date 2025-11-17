@@ -249,7 +249,7 @@ export const markPaymentDone = async (req, res) => {
     }
 
     // Check if payment is already paid
-    if (expense.status === PAYMENT_STATUS.PAID || expense.status === PAYMENT_STATUS.DONE) {
+    if (expense.status === PAYMENT_STATUS.PAID ) {
       return res.status(201).json({
         success: false,
         status: 201,

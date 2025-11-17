@@ -40,6 +40,7 @@ const incomeSchema = new mongoose.Schema(
       default: DEFAULT_PAYMENT_STATUS,
       required: true,
       enum: Object.values(PAYMENT_STATUS),
+      index: true, // Index for faster dashboard queries
     },
     bankId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -51,6 +52,10 @@ const incomeSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// Compound indexes for better performance
+incomeSchema.index({ status: 1, receivedAmount: 1 }); // For pending/received payment queries
+incomeSchema.index({ date: 1 }); // For date range queries
 
 const Income = mongoose.model("Income", incomeSchema);
 export default Income;
