@@ -393,6 +393,67 @@ const getAllOrders = async (req, res) => {
       })
       .lean();
 
+    // Calculate income, expense, and net profit per order
+    const incomeMap = new Map();
+    const expenseMap = new Map();
+
+    if (orders.length > 0) {
+      const orderIds = orders
+        .map((order) => order?._id)
+        .filter((id) => !!id);
+
+      if (orderIds.length > 0) {
+        const [incomeTotals, expenseTotals] = await Promise.all([
+          Income.aggregate([
+            {
+              $match: {
+                orderId: { $in: orderIds },
+              },
+            },
+            {
+              $group: {
+                _id: "$orderId",
+                totalIncome: {
+                  $sum: { $ifNull: ["$receivedAmount", 0] },
+                },
+              },
+            },
+          ]),
+          ExpanseIncome.aggregate([
+            {
+              $match: {
+                orderId: { $in: orderIds },
+              },
+            },
+            {
+              $group: {
+                _id: "$orderId",
+                totalExpense: {
+                  $sum: { $ifNull: ["$paidAmount", 0] },
+                },
+              },
+            },
+          ]),
+        ]);
+
+        incomeTotals.forEach((item) => {
+          if (!item?._id) return;
+          incomeMap.set(
+            String(item._id),
+            Math.round((item.totalIncome || 0) * 100) / 100
+          );
+        });
+
+        expenseTotals.forEach((item) => {
+          if (!item?._id) return;
+          expenseMap.set(
+            String(item._id),
+            Math.round((item.totalExpense || 0) * 100) / 100
+          );
+        });
+      }
+    }
+
     const totalOrders = await Order.countDocuments(filter);
 
     const formattedOrders = orders.map((order) => {
@@ -400,9 +461,18 @@ const getAllOrders = async (req, res) => {
         order.orderPlatform && typeof order.orderPlatform === "object"
           ? { _id: order.orderPlatform._id, name: order.orderPlatform.name }
           : null;
+      const orderIdStr = order?._id ? String(order._id) : "";
+      const totalIncome = incomeMap.get(orderIdStr) ?? 0;
+      const totalExpense = expenseMap.get(orderIdStr) ?? 0;
+      const netProfit =
+        Math.round((Number(totalIncome) - Number(totalExpense)) * 100) / 100;
+
       return {
         ...order,
         orderPlatform: platform,
+        totalIncome,
+        totalExpense,
+        netProfit,
       };
     });
 
