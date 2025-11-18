@@ -9,6 +9,7 @@ import Income from "../models/income.js";
 import ExpanseIncome from "../models/expance_inc.js";
 import { DEFAULT_PAYMENT_STATUS } from "../helper/enums.js";
 import Master from "../models/master.js";
+import { formatCurrency } from "../util/currencyFormat.js";
 
 const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
   "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product";
@@ -818,7 +819,7 @@ export const updateOrderStatus = async (req, res) => {
         return sendErrorResponse({
           res,
           status: 400,
-          message: `Cannot move to dispatch. Payment incomplete. Initial payment: ${roundedInitialPayment}, Selling price: ${roundedSellingPrice}`,
+          message: `Cannot move to dispatch. Payment incomplete. Initial Payment (${formatCurrency(roundedInitialPayment)}) must match Selling Price (${formatCurrency(roundedSellingPrice)}) before moving to Dispatch!`,
         });
       }
     }
@@ -945,7 +946,7 @@ export const updateInitialPayment = async (req, res) => {
       return sendErrorResponse({
         res,
         status: 400,
-        message: `Initial payment (${roundedInitialPayment}) cannot exceed selling price (${roundedSellingPrice})`,
+        message: `Initial Payment (${formatCurrency(roundedInitialPayment)}) cannot exceed Selling Price (${formatCurrency(roundedSellingPrice)})`,
       });
     }
 
