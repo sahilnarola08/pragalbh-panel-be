@@ -70,14 +70,6 @@ const orderSchema = new mongoose.Schema({
           required: false,
           index: true,
      },
-     isBankReceived: {
-          type: Boolean,
-          default: false,
-     },
-     isMediatorReceived: {
-          type: Boolean,
-          default: false,
-     },
      otherDetails: {
           type: String,
      },

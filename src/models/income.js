@@ -47,6 +47,14 @@ const incomeSchema = new mongoose.Schema(
       ref: "master",
       index: true,
     },
+    isBankReceived: {
+      type: Boolean,
+      default: false,
+    },
+    isMediatorReceived: {
+      type: Boolean,
+      default: false,
+    },
     mediator: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "master",

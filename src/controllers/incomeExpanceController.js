@@ -105,77 +105,6 @@ const formatOrderMediatorInfo = (order) => {
   return formattedOrder;
 };
 
-
-// Helper function to normalize and validate mediator
-const normalizeMediatorIdOrThrow = async (mediatorId) => {
-  if (!mediatorId) {
-    return null;
-  }
-
-  const rawId =
-    typeof mediatorId === "object" && mediatorId !== null
-      ? mediatorId._id || mediatorId.id || mediatorId.toString()
-      : mediatorId;
-
-  if (!mongoose.Types.ObjectId.isValid(rawId)) {
-    const error = new Error("Invalid mediator ID format");
-    error.status = 400;
-    throw error;
-  }
-
-  const mediator = await Master.findOne({
-    _id: rawId,
-    isDeleted: false,
-  }).select("_id name");
-
-  if (!mediator) {
-    const error = new Error("Mediator not found or is inactive");
-    error.status = 404;
-    throw error;
-  }
-
-  return mediator._id;
-};
-
-// Helper function to normalize mediator amount array for Income model
-const normalizeIncomeMediatorAmount = async (mediatorAmountArray) => {
-  if (!mediatorAmountArray || !Array.isArray(mediatorAmountArray)) {
-    return [];
-  }
-
-  const normalized = [];
-  const seenIds = new Set();
-
-  for (const item of mediatorAmountArray) {
-    const mediatorId = item?.mediatorId || item;
-    
-    if (!mediatorId) continue;
-
-    const idString = String(mediatorId);
-    if (seenIds.has(idString)) continue;
-
-    try {
-      const validatedMediatorId = await normalizeMediatorIdOrThrow(mediatorId);
-      const amount = item?.amount !== undefined && item?.amount !== null
-        ? Math.round((item.amount || 0) * 100) / 100
-        : 0;
-
-      if (amount > 0) {
-        normalized.push({
-          mediatorId: validatedMediatorId,
-          amount: amount,
-        });
-        seenIds.add(idString);
-      }
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  return normalized;
-};
-
-
 // get income and expence 
 export const getIncomeExpance = async (req, res) => {
   try {
@@ -304,7 +233,7 @@ export const getIncomeExpance = async (req, res) => {
       const incomeData = await Income.find(incomeQuery)
         .populate({
           path: "orderId",
-          select: "product clientName sellingPrice orderId initialPayment mediator isBankReceived isMediatorReceived",
+          select: "product clientName sellingPrice orderId initialPayment mediator",
           populate: [
             {
               path: "mediator",
@@ -429,6 +358,8 @@ export const getIncomeExpance = async (req, res) => {
           bank,
           mediator: formattedMediator,
           mediatorAmount: formattedMediatorAmount,
+          isBankReceived: Boolean(item.isBankReceived),
+          isMediatorReceived: Boolean(item.isMediatorReceived),
         };
       });
 
@@ -447,7 +378,7 @@ export const getIncomeExpance = async (req, res) => {
       }
       
       const expanceData = await ExpanceIncome.find(expenseQuery)
-        .populate("orderId", "product clientName purchasePrice orderId isBankReceived isMediatorReceived")
+        .populate("orderId", "product clientName purchasePrice orderId")
         .populate("supplierId", "firstName lastName company supplierId ")
         .populate({
           path: "bankId",
@@ -564,7 +495,7 @@ export const getIncomeExpance = async (req, res) => {
         Income.find(incomeQuery)
           .populate({
             path: "orderId",
-            select: "product clientName sellingPrice orderId initialPayment mediator isBankReceived isMediatorReceived",
+            select: "product clientName sellingPrice orderId initialPayment mediator",
             populate: [
               {
                 path: "mediator",
@@ -592,7 +523,7 @@ export const getIncomeExpance = async (req, res) => {
           .sort(sortQuery)
           .lean(),
         ExpanceIncome.find(expenseQuery)
-          .populate("orderId", "product clientName purchasePrice orderId isBankReceived isMediatorReceived")
+          .populate("orderId", "product clientName purchasePrice orderId")
           .populate("supplierId", "firstName lastName company supplierId")
           .populate({
             path: "bankId",
@@ -650,6 +581,8 @@ export const getIncomeExpance = async (req, res) => {
           bank,
           mediator: formattedMediator,
           mediatorAmount: formattedMediatorAmount,
+          isBankReceived: Boolean(item.isBankReceived),
+          isMediatorReceived: Boolean(item.isMediatorReceived),
         };
       });
 
@@ -757,7 +690,74 @@ export const getIncomeExpance = async (req, res) => {
     });
   }
 };
+// Helper function to normalize and validate mediator
+const normalizeMediatorIdOrThrow = async (mediatorId) => {
+  if (!mediatorId) {
+    return null;
+  }
 
+  const rawId =
+    typeof mediatorId === "object" && mediatorId !== null
+      ? mediatorId._id || mediatorId.id || mediatorId.toString()
+      : mediatorId;
+
+  if (!mongoose.Types.ObjectId.isValid(rawId)) {
+    const error = new Error("Invalid mediator ID format");
+    error.status = 400;
+    throw error;
+  }
+
+  const mediator = await Master.findOne({
+    _id: rawId,
+    isDeleted: false,
+  }).select("_id name");
+
+  if (!mediator) {
+    const error = new Error("Mediator not found or is inactive");
+    error.status = 404;
+    throw error;
+  }
+
+  return mediator._id;
+};
+
+// Helper function to normalize mediator amount array for Income model
+const normalizeIncomeMediatorAmount = async (mediatorAmountArray) => {
+  if (!mediatorAmountArray || !Array.isArray(mediatorAmountArray)) {
+    return [];
+  }
+
+  const normalized = [];
+  const seenIds = new Set();
+
+  for (const item of mediatorAmountArray) {
+    const mediatorId = item?.mediatorId || item;
+    
+    if (!mediatorId) continue;
+
+    const idString = String(mediatorId);
+    if (seenIds.has(idString)) continue;
+
+    try {
+      const validatedMediatorId = await normalizeMediatorIdOrThrow(mediatorId);
+      const amount = item?.amount !== undefined && item?.amount !== null
+        ? Math.round((item.amount || 0) * 100) / 100
+        : 0;
+
+      if (amount > 0) {
+        normalized.push({
+          mediatorId: validatedMediatorId,
+          amount: amount,
+        });
+        seenIds.add(idString);
+      }
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  return normalized;
+};
 
 // Add New Income Entry
 export const addIncomeEntry = async (req, res) => {
@@ -771,6 +771,8 @@ export const addIncomeEntry = async (req, res) => {
       bankId,
       mediatorId,
       mediatorAmount,
+      isBankReceived = false,
+      isMediatorReceived = false,
     } = req.body;
 
     // Validate required fields
@@ -836,10 +838,14 @@ export const addIncomeEntry = async (req, res) => {
 
     // Handle mediatorAmount: normalize array if provided
     let normalizedMediatorAmountArray = [];
+    let shouldSetMediatorReceived = false;
+    
     if (mediatorAmount !== undefined && mediatorAmount !== null) {
       if (Array.isArray(mediatorAmount)) {
         try {
           normalizedMediatorAmountArray = await normalizeIncomeMediatorAmount(mediatorAmount);
+          // If mediatorAmount is provided and normalized array has items, set isMediatorReceived to true
+          shouldSetMediatorReceived = normalizedMediatorAmountArray.length > 0;
         } catch (error) {
           return res.status(error.status || 400).json({
             status: error.status || 400,
@@ -854,6 +860,8 @@ export const addIncomeEntry = async (req, res) => {
             mediatorId: normalizedMediatorId,
             amount: roundedAmount,
           }];
+          // If mediatorAmount is provided as number > 0, set isMediatorReceived to true
+          shouldSetMediatorReceived = true;
         }
       }
     }
@@ -871,6 +879,12 @@ export const addIncomeEntry = async (req, res) => {
       bankId: normalizedBankId,
       mediator: normalizedMediatorId,
       mediatorAmount: normalizedMediatorAmountArray,
+      isBankReceived: Boolean(isBankReceived),
+      // If mediatorAmount is provided and has valid entries, set isMediatorReceived to true
+      // Otherwise, use the provided isMediatorReceived value
+      isMediatorReceived: (mediatorAmount !== undefined && mediatorAmount !== null)
+        ? shouldSetMediatorReceived
+        : Boolean(isMediatorReceived),
     });
 
     const populatedIncome = await Income.findById(newIncome._id)
@@ -1043,7 +1057,9 @@ export const editIncomeEntry = async (req, res) => {
       clientId, 
       bankId,
       mediatorId,
-      mediatorAmount 
+      mediatorAmount,
+      isBankReceived,
+      isMediatorReceived,
     } = req.body;
 
     if (!incomeId) {
@@ -1109,28 +1125,42 @@ export const editIncomeEntry = async (req, res) => {
     // Handle mediatorAmount: normalize array if provided
     if (mediatorAmount !== undefined && mediatorAmount !== null) {
       if (Array.isArray(mediatorAmount)) {
-        try {
-          income.mediatorAmount = await normalizeIncomeMediatorAmount(mediatorAmount);
-        } catch (error) {
-          return res.status(error.status || 400).json({
-            status: error.status || 400,
-            message: error.message || "Invalid mediator amount data",
-          });
+        // Handle array of mediator amounts
+        if (mediatorAmount.length === 0) {
+          // Empty array provided - clear mediatorAmount and set isMediatorReceived to false
+          income.mediatorAmount = [];
+          income.isMediatorReceived = false;
+        } else {
+          try {
+            income.mediatorAmount = await normalizeIncomeMediatorAmount(mediatorAmount);
+            // If mediatorAmount is provided and normalized array has items, set isMediatorReceived to true
+            income.isMediatorReceived = income.mediatorAmount.length > 0;
+          } catch (error) {
+            return res.status(error.status || 400).json({
+              status: error.status || 400,
+              message: error.message || "Invalid mediator amount data",
+            });
+          }
         }
-      } else if (mediatorAmount === null || (Array.isArray(mediatorAmount) && mediatorAmount.length === 0)) {
-        income.mediatorAmount = [];
       } else if (typeof mediatorAmount === 'number' && income.mediator) {
-        // If single number provided and mediator exists, create array entry
+        // Handle single number - convert to array entry
         const roundedAmount = Math.round(mediatorAmount * 100) / 100;
         if (roundedAmount > 0) {
           income.mediatorAmount = [{
             mediatorId: income.mediator,
             amount: roundedAmount,
           }];
+          // If mediatorAmount is provided as number > 0, set isMediatorReceived to true
+          income.isMediatorReceived = true;
         } else {
+          // Number is 0 or negative - clear mediatorAmount and set isMediatorReceived to false
           income.mediatorAmount = [];
+          income.isMediatorReceived = false;
         }
       }
+    } else if (isMediatorReceived !== undefined) {
+      // If mediatorAmount is not provided, allow manual override of isMediatorReceived
+      income.isMediatorReceived = Boolean(isMediatorReceived);
     }
 
     // Update clientId if provided
@@ -1158,6 +1188,10 @@ export const editIncomeEntry = async (req, res) => {
       }
     }
 
+    if (isBankReceived !== undefined) {
+      income.isBankReceived = Boolean(isBankReceived);
+    }
+
     // Update fields if provided
     if (date) income.date = date;
     if (description) income.Description = description;
@@ -1168,6 +1202,7 @@ export const editIncomeEntry = async (req, res) => {
       income.status = status;
       if (status === "paid" || status === "done") {
         income.receivedAmount = Math.round((income.sellingPrice || 0) * 100) / 100;
+        income.isBankReceived = true;
       }
     }
 
@@ -1366,6 +1401,7 @@ export const updateIncomePaymentStatus = async (req, res) => {
 
     // Update status from "pending" to "reserved"
     income.status = "reserved";
+    income.isBankReceived = true;
 
     await income.save();
 
@@ -1853,6 +1889,8 @@ export const getIncomeById = async (req, res) => {
       bank: incomeBank,
       mediator: formattedMediator,
       mediatorAmount: formattedMediatorAmount,
+      isBankReceived: Boolean(income.isBankReceived),
+      isMediatorReceived: Boolean(income.isMediatorReceived),
       createdAt: income.createdAt,
       updatedAt: income.updatedAt,
     };
