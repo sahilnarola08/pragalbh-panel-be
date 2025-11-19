@@ -93,6 +93,66 @@ const normalizeMasterIdOrThrow = async (id, fieldName = "masterId") => {
 
   return master;
 };
+
+// normalize mediator amount array - order create/update only stores mediatorId (amount is set to 0, will be updated in next step)
+const normalizeMediatorAmount = async (mediatorAmountArray) => {
+  if (!mediatorAmountArray || !Array.isArray(mediatorAmountArray)) {
+    return [];
+  }
+
+  const normalized = [];
+  const seenIds = new Set();
+
+  for (const item of mediatorAmountArray) {
+    // Handle both object format { mediatorId: "..." } and direct string/ID
+    const mediatorId = item?.mediatorId || item;
+    
+    if (!mediatorId) continue;
+
+    // Skip duplicates
+    const idString = String(mediatorId);
+    if (seenIds.has(idString)) continue;
+
+    try {
+      const mediator = await normalizeMasterIdOrThrow(mediatorId, "mediatorId");
+      
+      // Order create/update only stores mediatorId, amount is set to 0 (will be updated in next step/flow)
+      normalized.push({
+        mediatorId: mediator._id,
+        amount: 0, // Amount not provided during order create/update, set to 0 for now
+      });
+      
+      seenIds.add(idString);
+    } catch (error) {
+      // Skip invalid mediator IDs
+      continue;
+    }
+  }
+
+  return normalized;
+};
+
+// format mediator amount details with populated mediator info
+const formatMediatorAmountDetails = (mediatorAmountArray, mediatorDetails = []) => {
+  if (!mediatorAmountArray || !Array.isArray(mediatorAmountArray)) {
+    return [];
+  }
+
+  return mediatorAmountArray.map((item) => {
+    const mediatorId = item.mediatorId?._id || item.mediatorId;
+    const matchedMediator = mediatorDetails.find(
+      (m) => m._id && m._id.toString() === String(mediatorId)
+    );
+
+    return {
+      mediatorId: mediatorId,
+      amount: Math.round((item.amount || 0) * 100) / 100,
+      mediator: matchedMediator
+        ? { _id: matchedMediator._id, name: matchedMediator.name }
+        : null,
+    };
+  });
+};
 // create order
 export const createOrder = async (req, res, next) => {
   try {
@@ -111,6 +171,8 @@ export const createOrder = async (req, res, next) => {
       paymentAmount,
       supplier,
       orderPlatform,
+      mediator,
+      mediatorAmount,
       otherDetails
     } = req.body;
 
@@ -177,6 +239,25 @@ export const createOrder = async (req, res, next) => {
       });
     }
 
+    // Validate and normalize mediator if provided
+    let mediatorMaster = null;
+    if (mediator) {
+      try {
+        mediatorMaster = await normalizeMasterIdOrThrow(mediator, "mediator");
+      } catch (error) {
+        return sendErrorResponse({
+          res,
+          message: error.message || "Invalid mediator",
+          status: error.status || 400,
+        });
+      }
+    }
+
+    // Normalize mediatorAmount array - default to [] if not provided by frontend
+    const normalizedMediatorAmount = mediatorAmount !== undefined && mediatorAmount !== null
+      ? await normalizeMediatorAmount(mediatorAmount)
+      : [];
+
     const normalizedProductImages = extractProductImages(
       productImages ?? productImage,
       { fallback: true }
@@ -197,6 +278,8 @@ export const createOrder = async (req, res, next) => {
       paymentAmount: paymentAmount !== undefined && paymentAmount !== null ? Math.round(paymentAmount * 100) / 100 : paymentAmount,
       supplier,
       orderPlatform: orderPlatformMaster._id,
+      mediator: mediatorMaster ? mediatorMaster._id : undefined,
+      mediatorAmount: normalizedMediatorAmount,
       otherDetails,
       trackingId: "",
       courierCompany: "",
@@ -233,11 +316,33 @@ export const createOrder = async (req, res, next) => {
         path: "orderPlatform",
         select: "_id name",
         match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediator",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediatorAmount.mediatorId",
+        select: "_id name",
+        match: { isDeleted: false },
       });
+
+    // Format mediatorAmount details
+    const formattedOrder = populatedOrder.toObject();
+    if (formattedOrder.mediatorAmount && Array.isArray(formattedOrder.mediatorAmount)) {
+      const mediatorDetails = formattedOrder.mediatorAmount
+        .map((item) => item.mediatorId)
+        .filter((m) => m && typeof m === "object");
+      formattedOrder.mediatorAmount = formatMediatorAmountDetails(
+        formattedOrder.mediatorAmount,
+        mediatorDetails
+      );
+    }
 
     return sendSuccessResponse({
       res,
-      data: populatedOrder,
+      data: formattedOrder,
       message: "Order created successfully",
       status: 200
     });
@@ -391,6 +496,16 @@ const getAllOrders = async (req, res) => {
         select: "_id name",
         match: { isDeleted: false },
       })
+      .populate({
+        path: "mediator",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediatorAmount.mediatorId",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
       .lean();
 
     // Calculate income, expense, and net profit per order
@@ -461,6 +576,24 @@ const getAllOrders = async (req, res) => {
         order.orderPlatform && typeof order.orderPlatform === "object"
           ? { _id: order.orderPlatform._id, name: order.orderPlatform.name }
           : null;
+      
+      const mediatorInfo =
+        order.mediator && typeof order.mediator === "object"
+          ? { _id: order.mediator._id, name: order.mediator.name }
+          : null;
+
+      // Format mediatorAmount details
+      let mediatorAmountDetails = [];
+      if (order.mediatorAmount && Array.isArray(order.mediatorAmount)) {
+        const mediatorDetails = order.mediatorAmount
+          .map((item) => item.mediatorId)
+          .filter((m) => m && typeof m === "object");
+        mediatorAmountDetails = formatMediatorAmountDetails(
+          order.mediatorAmount,
+          mediatorDetails
+        );
+      }
+
       const orderIdStr = order?._id ? String(order._id) : "";
       const totalIncome = incomeMap.get(orderIdStr) ?? 0;
       const totalExpense = expenseMap.get(orderIdStr) ?? 0;
@@ -470,6 +603,8 @@ const getAllOrders = async (req, res) => {
       return {
         ...order,
         orderPlatform: platform,
+        mediator: mediatorInfo,
+        mediatorAmount: mediatorAmountDetails,
         totalIncome,
         totalExpense,
         netProfit,
@@ -586,6 +721,36 @@ const updateOrder = async (req, res, next) => {
       }
     }
 
+    // Handle mediator update
+    if (updateData.mediator !== undefined) {
+      if (updateData.mediator === null || updateData.mediator === "") {
+        updateData.mediator = null;
+      } else {
+        try {
+          const mediatorMaster = await normalizeMasterIdOrThrow(
+            updateData.mediator,
+            "mediator"
+          );
+          updateData.mediator = mediatorMaster._id;
+        } catch (error) {
+          return sendErrorResponse({
+            res,
+            message: error.message || "Invalid mediator",
+            status: error.status || 400,
+          });
+        }
+      }
+    }
+
+    // Handle mediatorAmount update - only if provided by frontend, default to [] if explicitly set to null/empty
+    if (updateData.mediatorAmount !== undefined) {
+      if (updateData.mediatorAmount === null || (Array.isArray(updateData.mediatorAmount) && updateData.mediatorAmount.length === 0)) {
+        updateData.mediatorAmount = [];
+      } else {
+        updateData.mediatorAmount = await normalizeMediatorAmount(updateData.mediatorAmount);
+      }
+    }
+
     if (
       Object.prototype.hasOwnProperty.call(updateData, "productImages") ||
       Object.prototype.hasOwnProperty.call(updateData, "productImage")
@@ -626,11 +791,33 @@ const updateOrder = async (req, res, next) => {
         path: "orderPlatform",
         select: "_id name",
         match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediator",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediatorAmount.mediatorId",
+        select: "_id name",
+        match: { isDeleted: false },
       });
+
+    // Format mediatorAmount details
+    const formattedOrder = updatedOrder.toObject();
+    if (formattedOrder.mediatorAmount && Array.isArray(formattedOrder.mediatorAmount)) {
+      const mediatorDetails = formattedOrder.mediatorAmount
+        .map((item) => item.mediatorId)
+        .filter((m) => m && typeof m === "object");
+      formattedOrder.mediatorAmount = formatMediatorAmountDetails(
+        formattedOrder.mediatorAmount,
+        mediatorDetails
+      );
+    }
 
     sendSuccessResponse({
       res,
-      data: updatedOrder,
+      data: formattedOrder,
       message: "Order updated successfully",
       status: 200
     });
@@ -683,6 +870,16 @@ const getOrderById = async (req, res, next) => {
         path: "orderPlatform",
         select: "_id name",
         match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediator",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediatorAmount.mediatorId",
+        select: "_id name",
+        match: { isDeleted: false },
       });
     
     if (!order) {
@@ -693,9 +890,21 @@ const getOrderById = async (req, res, next) => {
       });
     }
 
+    // Format mediatorAmount details
+    const formattedOrder = order.toObject();
+    if (formattedOrder.mediatorAmount && Array.isArray(formattedOrder.mediatorAmount)) {
+      const mediatorDetails = formattedOrder.mediatorAmount
+        .map((item) => item.mediatorId)
+        .filter((m) => m && typeof m === "object");
+      formattedOrder.mediatorAmount = formatMediatorAmountDetails(
+        formattedOrder.mediatorAmount,
+        mediatorDetails
+      );
+    }
+
     sendSuccessResponse({
       res,
-      data: order,
+      data: formattedOrder,
       message: "Order retrieved successfully",
       status: 200
     });
