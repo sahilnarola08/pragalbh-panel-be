@@ -56,6 +56,68 @@ const docToPlainWithBank = (doc) => {
   };
 };
 
+// format mediator amount details with populated mediator info
+const formatMediatorAmountDetails = (mediatorAmountArray, mediatorDetails = []) => {
+  if (!mediatorAmountArray || !Array.isArray(mediatorAmountArray)) {
+    return [];
+  }
+
+  return mediatorAmountArray.map((item) => {
+    const mediatorId = item.mediatorId?._id || item.mediatorId;
+    const matchedMediator = mediatorDetails.find(
+      (m) => m._id && m._id.toString() === String(mediatorId)
+    );
+
+    const result = {
+      mediatorId: mediatorId,
+      mediator: matchedMediator
+        ? { _id: matchedMediator._id, name: matchedMediator.name }
+        : null,
+    };
+
+    // Only include amount if it exists and is not null/undefined
+    if (item.amount !== undefined && item.amount !== null) {
+      result.amount = Math.round(item.amount * 100) / 100;
+    }
+
+    return result;
+  });
+};
+
+// format order mediator info
+const formatOrderMediatorInfo = (order) => {
+  if (!order) return null;
+
+  const formattedOrder = { ...order };
+
+  // Format mediator
+  if (formattedOrder.mediator) {
+    if (typeof formattedOrder.mediator === 'object' && formattedOrder.mediator._id) {
+      formattedOrder.mediator = {
+        _id: formattedOrder.mediator._id,
+        name: formattedOrder.mediator.name || null,
+      };
+    } else {
+      formattedOrder.mediator = null;
+    }
+  }
+
+  // Format mediatorAmount
+  if (formattedOrder.mediatorAmount && Array.isArray(formattedOrder.mediatorAmount)) {
+    const mediatorDetails = formattedOrder.mediatorAmount
+      .map((item) => item.mediatorId)
+      .filter((m) => m && typeof m === "object");
+    formattedOrder.mediatorAmount = formatMediatorAmountDetails(
+      formattedOrder.mediatorAmount,
+      mediatorDetails
+    );
+  } else {
+    formattedOrder.mediatorAmount = [];
+  }
+
+  return formattedOrder;
+};
+
 // get income and expence 
 export const getIncomeExpance = async (req, res) => {
   try {
@@ -182,7 +244,22 @@ export const getIncomeExpance = async (req, res) => {
       }
       
       const incomeData = await Income.find(incomeQuery)
-        .populate("orderId", "product clientName sellingPrice orderId initialPayment")
+        .populate({
+          path: "orderId",
+          select: "product clientName sellingPrice orderId initialPayment mediatorAmount mediator isBankReceived isMediatorReceived",
+          populate: [
+            {
+              path: "mediator",
+              select: "_id name",
+              match: { isDeleted: false },
+            },
+            {
+              path: "mediatorAmount.mediatorId",
+              select: "_id name",
+              match: { isDeleted: false },
+            },
+          ],
+        })
         .populate("clientId", "firstName lastName")
         .populate({
           path: "bankId",
@@ -244,11 +321,12 @@ export const getIncomeExpance = async (req, res) => {
 
       data = sliced.map((item) => {
         const { bankId, bank } = buildBankResponse(item.bankId);
+        const formattedOrder = formatOrderMediatorInfo(item.orderId);
         return {
           _id: item._id,
           incExpType: 1,
           date: item.date,
-          orderId: item.orderId,
+          orderId: formattedOrder,
           description: item.Description || item.orderId?.product || "",
           product: item.orderId?.product || "",
           sellingPrice: Math.round((item.orderId?.sellingPrice || item.sellingPrice || 0) * 100) / 100,
@@ -278,7 +356,7 @@ export const getIncomeExpance = async (req, res) => {
       }
       
       const expanceData = await ExpanceIncome.find(expenseQuery)
-        .populate("orderId", "product clientName purchasePrice orderId")
+        .populate("orderId", "product clientName purchasePrice orderId isBankReceived isMediatorReceived")
         .populate("supplierId", "firstName lastName company supplierId ")
         .populate({
           path: "bankId",
@@ -393,7 +471,22 @@ export const getIncomeExpance = async (req, res) => {
 
       const [incomeData, expanceData] = await Promise.all([
         Income.find(incomeQuery)
-          .populate("orderId", "product clientName sellingPrice orderId initialPayment")
+          .populate({
+            path: "orderId",
+            select: "product clientName sellingPrice orderId initialPayment mediatorAmount mediator isBankReceived isMediatorReceived",
+            populate: [
+              {
+                path: "mediator",
+                select: "_id name",
+                match: { isDeleted: false },
+              },
+              {
+                path: "mediatorAmount.mediatorId",
+                select: "_id name",
+                match: { isDeleted: false },
+              },
+            ],
+          })
           .populate("clientId", "firstName lastName")
           .populate({
             path: "bankId",
@@ -403,7 +496,7 @@ export const getIncomeExpance = async (req, res) => {
           .sort(sortQuery)
           .lean(),
         ExpanceIncome.find(expenseQuery)
-          .populate("orderId", "product clientName purchasePrice orderId")
+          .populate("orderId", "product clientName purchasePrice orderId isBankReceived isMediatorReceived")
           .populate("supplierId", "firstName lastName company supplierId")
           .populate({
             path: "bankId",
@@ -416,11 +509,12 @@ export const getIncomeExpance = async (req, res) => {
 
       const incomeList = incomeData.map((item) => {
         const { bankId, bank } = buildBankResponse(item.bankId);
+        const formattedOrder = formatOrderMediatorInfo(item.orderId);
         return {
           _id: item._id,
           incExpType: 1,
           date: item.date,
-          orderId: item.orderId,
+          orderId: formattedOrder,
           description: item.Description || item.orderId?.product || "",
           product: item.orderId?.product || "",
           sellingPrice: Math.round((item.orderId?.sellingPrice || item.sellingPrice || 0) * 100) / 100,
