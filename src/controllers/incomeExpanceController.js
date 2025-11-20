@@ -1786,7 +1786,14 @@ export const getExpenseById = async (req, res) => {
 // Add Extra Income (without order/client)
 export const addExtraIncome = async (req, res) => {
   try {
-    const { date, description, receivedAmount, bankId } = req.body;
+    const { 
+      date, 
+      description, 
+      receivedAmount, 
+      bankId,
+      mediatorId,
+      mediatorAmount
+    } = req.body;
 
     // Validate required fields
     if (!description) {
@@ -1796,40 +1803,114 @@ export const addExtraIncome = async (req, res) => {
       });
     }
 
-    if (receivedAmount === undefined || receivedAmount === null) {
+    // Determine which status to set based on provided fields
+    const hasReceivedAmountAndBank = receivedAmount !== undefined && receivedAmount !== null && bankId !== undefined;
+    const hasMediatorData = mediatorId !== undefined || mediatorAmount !== undefined;
+    
+    // Scenario 1: Only mediatorId and mediatorAmount provided (without receivedAmount and bankId) -> PROCESSING
+    // Scenario 2: receivedAmount and bankId provided (with or without mediator data) -> RESERVED
+    // Note: "paid" status is not used for income, only for expense
+    
+    let targetStatus = null;
+    
+    if (hasMediatorData && !hasReceivedAmountAndBank) {
+      // Only mediator data provided without receivedAmount and bankId -> PROCESSING
+      targetStatus = "processing";
+    } else if (hasReceivedAmountAndBank) {
+      // receivedAmount and bankId provided (with or without mediator data) -> RESERVED
+      targetStatus = "reserved";
+    } else {
+      // No valid fields provided
       return res.status(400).json({
         status: 400,
-        message: "receivedAmount is required",
+        message: "Either (receivedAmount and bankId) or (mediatorId/mediatorAmount) must be provided",
       });
     }
 
-    // Validate receivedAmount
-    if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
-      return res.status(400).json({
-        status: 400,
-        message: "receivedAmount must be a positive number",
-      });
+    // Validate receivedAmount if provided (required for RESERVED status)
+    if (hasReceivedAmountAndBank) {
+      if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
+        return res.status(400).json({
+          status: 400,
+          message: "receivedAmount must be a positive number",
+        });
+      }
     }
 
+    // Handle bankId if provided
     let normalizedBankId = null;
-    try {
-      normalizedBankId = await normalizeBankIdOrThrow(bankId);
-    } catch (error) {
-      return res.status(error.status || 400).json({
-        status: error.status || 400,
-        message: error.message || "Invalid bank ID",
-      });
+    if (bankId !== undefined) {
+      try {
+        normalizedBankId = await normalizeBankIdOrThrow(bankId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid bank ID",
+        });
+      }
     }
+
+    // Handle mediator: validate if provided
+    let normalizedMediatorId = null;
+    if (mediatorId !== undefined && mediatorId !== null && mediatorId !== "") {
+      try {
+        normalizedMediatorId = await normalizeMediatorIdOrThrow(mediatorId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid mediator ID",
+        });
+      }
+    }
+
+    // Handle mediatorAmount: normalize array if provided
+    let normalizedMediatorAmountArray = [];
+    let shouldSetMediatorReceived = false;
+    
+    if (mediatorAmount !== undefined && mediatorAmount !== null) {
+      if (Array.isArray(mediatorAmount)) {
+        if (mediatorAmount.length === 0) {
+          normalizedMediatorAmountArray = [];
+          shouldSetMediatorReceived = false;
+        } else {
+          try {
+            normalizedMediatorAmountArray = await normalizeIncomeMediatorAmount(mediatorAmount);
+            shouldSetMediatorReceived = normalizedMediatorAmountArray.length > 0;
+          } catch (error) {
+            return res.status(error.status || 400).json({
+              status: error.status || 400,
+              message: error.message || "Invalid mediator amount data",
+            });
+          }
+        }
+      } else if (typeof mediatorAmount === 'number' && normalizedMediatorId) {
+        const roundedAmount = Math.round(mediatorAmount * 100) / 100;
+        if (roundedAmount > 0) {
+          normalizedMediatorAmountArray = [{
+            mediatorId: normalizedMediatorId,
+            amount: roundedAmount,
+          }];
+          shouldSetMediatorReceived = true;
+        }
+      }
+    }
+
+    // Calculate receivedAmount
+    const roundedReceivedAmount = hasReceivedAmountAndBank 
+      ? Math.round(receivedAmount * 100) / 100 
+      : 0;
 
     // Create new income entry without orderId and clientId
-    const roundedAmount = Math.round(receivedAmount * 100) / 100;
     const newIncome = await Income.create({
       date: date || new Date(),
       Description: description,
-      receivedAmount: roundedAmount,
-      sellingPrice: roundedAmount, // Set sellingPrice equal to receivedAmount for standalone income
+      receivedAmount: roundedReceivedAmount,
       bankId: normalizedBankId,
-      status: "paid", // Automatically set status to paid
+      mediator: normalizedMediatorId,
+      mediatorAmount: normalizedMediatorAmountArray,
+      status: targetStatus,
+      isBankReceived: hasReceivedAmountAndBank,
+      isMediatorReceived: shouldSetMediatorReceived,
     });
 
     const populatedIncome = await Income.findById(newIncome._id)
@@ -1837,13 +1918,47 @@ export const addExtraIncome = async (req, res) => {
         path: "bankId",
         select: "_id name",
         match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediator",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediatorAmount.mediatorId",
+        select: "_id name",
+        match: { isDeleted: false },
       });
 
+    // Format mediator and mediatorAmount
     const incomeResponse = docToPlainWithBank(populatedIncome);
+    
+    // Format mediator
+    if (incomeResponse.mediator) {
+      if (typeof incomeResponse.mediator === 'object' && incomeResponse.mediator._id) {
+        incomeResponse.mediator = {
+          _id: incomeResponse.mediator._id,
+          name: incomeResponse.mediator.name || null,
+        };
+      } else {
+        incomeResponse.mediator = null;
+      }
+    }
+
+    // Format mediatorAmount
+    if (incomeResponse.mediatorAmount && Array.isArray(incomeResponse.mediatorAmount)) {
+      const mediatorDetails = populatedIncome.mediatorAmount
+        .map((item) => item.mediatorId)
+        .filter((m) => m && typeof m === "object");
+      incomeResponse.mediatorAmount = formatMediatorAmountDetails(
+        incomeResponse.mediatorAmount,
+        mediatorDetails
+      );
+    }
 
     return res.status(201).json({
       status: 201,
-      message: "Extra income added successfully",
+      message: `Extra income added successfully with status ${targetStatus.toUpperCase()}`,
       data: incomeResponse,
     });
   } catch (error) {
@@ -1860,7 +1975,14 @@ export const addExtraIncome = async (req, res) => {
 export const editExtraIncome = async (req, res) => {
   try {
     const { incomeId } = req.params;
-    const { date, description, receivedAmount, bankId } = req.body;
+    const { 
+      date, 
+      description, 
+      receivedAmount, 
+      bankId,
+      mediatorId,
+      mediatorAmount
+    } = req.body;
 
     if (!incomeId) {
       return res.status(400).json({
@@ -1886,12 +2008,41 @@ export const editExtraIncome = async (req, res) => {
       });
     }
 
+    // Check if status is already reserved - cannot be changed once reserved
+    if (income.status === "reserved") {
+      return res.status(400).json({
+        status: 400,
+        message: "Cannot edit income with RESERVED status",
+      });
+    }
+
+    // Determine which status to set based on provided fields
+    const hasReceivedAmountAndBank = receivedAmount !== undefined && receivedAmount !== null && bankId !== undefined;
+    const hasMediatorData = mediatorId !== undefined || mediatorAmount !== undefined;
+    const hasNewData = hasReceivedAmountAndBank || hasMediatorData || date || description;
+    
+    let targetStatus = income.status; // Keep current status by default
+    
+    // Only update status if new data is provided
+    // Note: "paid" status is not used for income, only for expense
+    if (hasNewData) {
+      if (hasMediatorData && !hasReceivedAmountAndBank) {
+        // Only mediator data provided without receivedAmount and bankId -> PROCESSING
+        targetStatus = "processing";
+      } else if (hasReceivedAmountAndBank) {
+        // receivedAmount and bankId provided (with or without mediator data) -> RESERVED
+        targetStatus = "reserved";
+      }
+    }
+
     // Update fields if provided
     if (date) income.date = date;
     if (description) income.Description = description;
+    
     if (bankId !== undefined) {
       try {
         income.bankId = await normalizeBankIdOrThrow(bankId);
+        income.isBankReceived = true;
       } catch (error) {
         return res.status(error.status || 400).json({
           status: error.status || 400,
@@ -1900,7 +2051,7 @@ export const editExtraIncome = async (req, res) => {
       }
     }
 
-    if (receivedAmount !== undefined) {
+    if (receivedAmount !== undefined && receivedAmount !== null) {
       if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
         return res.status(400).json({
           status: 400,
@@ -1909,22 +2060,107 @@ export const editExtraIncome = async (req, res) => {
       }
       const roundedAmount = Math.round(receivedAmount * 100) / 100;
       income.receivedAmount = roundedAmount;
-      income.sellingPrice = roundedAmount; // Keep sellingPrice in sync
     }
+
+    // Handle mediator: validate if provided
+    if (mediatorId !== undefined) {
+      if (mediatorId === null || mediatorId === "") {
+        income.mediator = null;
+      } else {
+        try {
+          income.mediator = await normalizeMediatorIdOrThrow(mediatorId);
+        } catch (error) {
+          return res.status(error.status || 400).json({
+            status: error.status || 400,
+            message: error.message || "Invalid mediator ID",
+          });
+        }
+      }
+    }
+
+    // Handle mediatorAmount: normalize array if provided
+    if (mediatorAmount !== undefined && mediatorAmount !== null) {
+      if (Array.isArray(mediatorAmount)) {
+        if (mediatorAmount.length === 0) {
+          income.mediatorAmount = [];
+          income.isMediatorReceived = false;
+        } else {
+          try {
+            income.mediatorAmount = await normalizeIncomeMediatorAmount(mediatorAmount);
+            income.isMediatorReceived = income.mediatorAmount.length > 0;
+          } catch (error) {
+            return res.status(error.status || 400).json({
+              status: error.status || 400,
+              message: error.message || "Invalid mediator amount data",
+            });
+          }
+        }
+      } else if (typeof mediatorAmount === 'number' && income.mediator) {
+        const roundedAmount = Math.round(mediatorAmount * 100) / 100;
+        if (roundedAmount > 0) {
+          income.mediatorAmount = [{
+            mediatorId: income.mediator,
+            amount: roundedAmount,
+          }];
+          income.isMediatorReceived = true;
+        } else {
+          income.mediatorAmount = [];
+          income.isMediatorReceived = false;
+        }
+      }
+    }
+
+    // Update status
+    income.status = targetStatus;
 
     await income.save();
 
-    const populatedIncome = await Income.findById(incomeId).populate({
-      path: "bankId",
-      select: "_id name",
-      match: { isDeleted: false },
-    });
+    const populatedIncome = await Income.findById(incomeId)
+      .populate({
+        path: "bankId",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediator",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediatorAmount.mediatorId",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
 
+    // Format mediator and mediatorAmount
     const incomeResponse = docToPlainWithBank(populatedIncome);
+    
+    // Format mediator
+    if (incomeResponse.mediator) {
+      if (typeof incomeResponse.mediator === 'object' && incomeResponse.mediator._id) {
+        incomeResponse.mediator = {
+          _id: incomeResponse.mediator._id,
+          name: incomeResponse.mediator.name || null,
+        };
+      } else {
+        incomeResponse.mediator = null;
+      }
+    }
+
+    // Format mediatorAmount
+    if (incomeResponse.mediatorAmount && Array.isArray(incomeResponse.mediatorAmount)) {
+      const mediatorDetails = populatedIncome.mediatorAmount
+        .map((item) => item.mediatorId)
+        .filter((m) => m && typeof m === "object");
+      incomeResponse.mediatorAmount = formatMediatorAmountDetails(
+        incomeResponse.mediatorAmount,
+        mediatorDetails
+      );
+    }
 
     return res.status(200).json({
       status: 200,
-      message: "Extra income updated successfully",
+      message: `Extra income updated successfully with status ${targetStatus.toUpperCase()}`,
       data: incomeResponse,
     });
   } catch (error) {
