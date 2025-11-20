@@ -18,7 +18,8 @@ export const ORDER_STATUS = {
   export const PAYMENT_STATUS = {
     PENDING: "pending",
     PAID: "paid",
-    RESERVED: "reserved"
+    RESERVED: "reserved",
+    PROCESSING: "processing",
   };
   
   // Default values - Changed to PENDING

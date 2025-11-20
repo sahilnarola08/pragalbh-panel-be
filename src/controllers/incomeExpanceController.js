@@ -1335,7 +1335,15 @@ export const editExpanseEntry = async (req, res) => {
 // Update Income Payment Status
 export const updateIncomePaymentStatus = async (req, res) => {
   try {
-    const { incomeId, date, description, receivedAmount, bankId } = req.body;
+    const { 
+      incomeId, 
+      date, 
+      description, 
+      receivedAmount, 
+      bankId,
+      mediatorId,
+      mediatorAmount
+    } = req.body;
 
     if (!incomeId) {
       return res.status(400).json({
@@ -1353,25 +1361,59 @@ export const updateIncomePaymentStatus = async (req, res) => {
       });
     }
 
-    // Check if status is already reserved
+    // Check if status is already reserved - cannot be changed once reserved
     if (income.status === "reserved") {
       const populatedIncome = await Income.findById(income._id)
         .populate("orderId", "product clientName sellingPrice orderId")
-        .populate("clientId", "firstName lastName");
+        .populate("clientId", "firstName lastName")
+        .populate({
+          path: "mediator",
+          select: "_id name",
+          match: { isDeleted: false },
+        })
+        .populate({
+          path: "mediatorAmount.mediatorId",
+          select: "_id name",
+          match: { isDeleted: false },
+        });
 
       return res.status(201).json({
         status: 201,
-        message: "This ID status is already reserved",
+        message: "This ID status is already RESERVED and cannot be changed",
         data: populatedIncome,
       });
     }
 
-    // Only allow update if current status is "pending"
-    if (income.status !== "pending") {
+    // Allow update if current status is "pending" or "processing"
+    if (income.status !== "pending" && income.status !== "processing") {
       return res.status(400).json({
         status: 400,
-        message: `Cannot update payment status. Current status is "${income.status}". Only "pending" status can be updated to "reserved".`,
+        message: `Cannot update payment status. Current status is "${income.status}". Only "pending" or "processing" status can be updated.`,
       });
+    }
+
+    // Determine which status to set based on provided fields
+    const hasReceivedAmountAndBank = receivedAmount !== undefined && bankId !== undefined;
+    const hasMediatorData = mediatorId !== undefined || mediatorAmount !== undefined;
+    
+    // Scenario 1: Only mediatorId and mediatorAmount provided (without receivedAmount and bankId) -> PROCESSING
+    // Scenario 2: All fields including receivedAmount, bankId, mediatorId, mediatorAmount -> RESERVED
+    
+    let targetStatus = "reserved"; // Default to RESERVED (old behavior)
+    let targetMessage = "Income payment status updated to RESERVED successfully";
+    
+    if (hasMediatorData && !hasReceivedAmountAndBank) {
+      // Only mediator data provided without receivedAmount and bankId -> PROCESSING
+      targetStatus = "processing";
+      targetMessage = "Income payment status updated to PROCESSING successfully";
+    } else if (hasReceivedAmountAndBank && hasMediatorData) {
+      // All fields provided -> RESERVED
+      targetStatus = "reserved";
+      targetMessage = "Income payment status updated to RESERVED successfully";
+    } else if (hasReceivedAmountAndBank && !hasMediatorData) {
+      // Old behavior: only receivedAmount and bankId -> RESERVED
+      targetStatus = "reserved";
+      targetMessage = "Income payment status updated to RESERVED successfully";
     }
 
     // Validate receivedAmount if provided
@@ -1388,9 +1430,11 @@ export const updateIncomePaymentStatus = async (req, res) => {
     // Update fields if provided
     if (date) income.date = date;
     if (description) income.Description = description;
+    
     if (bankId !== undefined) {
       try {
         income.bankId = await normalizeBankIdOrThrow(bankId);
+        income.isBankReceived = true;
       } catch (error) {
         return res.status(error.status || 400).json({
           status: error.status || 400,
@@ -1399,9 +1443,62 @@ export const updateIncomePaymentStatus = async (req, res) => {
       }
     }
 
-    // Update status from "pending" to "reserved"
-    income.status = "reserved";
-    income.isBankReceived = true;
+    // Handle mediator: use provided mediatorId or default to order's mediator
+    if (mediatorId !== undefined) {
+      if (mediatorId === null || mediatorId === "") {
+        income.mediator = null;
+      } else {
+        try {
+          income.mediator = await normalizeMediatorIdOrThrow(mediatorId);
+        } catch (error) {
+          return res.status(error.status || 400).json({
+            status: error.status || 400,
+            message: error.message || "Invalid mediator ID",
+          });
+        }
+      }
+    }
+
+    // Handle mediatorAmount: normalize array if provided
+    if (mediatorAmount !== undefined && mediatorAmount !== null) {
+      if (Array.isArray(mediatorAmount)) {
+        // Handle array of mediator amounts
+        if (mediatorAmount.length === 0) {
+          // Empty array provided - clear mediatorAmount and set isMediatorReceived to false
+          income.mediatorAmount = [];
+          income.isMediatorReceived = false;
+        } else {
+          try {
+            income.mediatorAmount = await normalizeIncomeMediatorAmount(mediatorAmount);
+            // If mediatorAmount is provided and normalized array has items, set isMediatorReceived to true
+            income.isMediatorReceived = income.mediatorAmount.length > 0;
+          } catch (error) {
+            return res.status(error.status || 400).json({
+              status: error.status || 400,
+              message: error.message || "Invalid mediator amount data",
+            });
+          }
+        }
+      } else if (typeof mediatorAmount === 'number' && income.mediator) {
+        // Handle single number - convert to array entry
+        const roundedAmount = Math.round(mediatorAmount * 100) / 100;
+        if (roundedAmount > 0) {
+          income.mediatorAmount = [{
+            mediatorId: income.mediator,
+            amount: roundedAmount,
+          }];
+          // If mediatorAmount is provided as number > 0, set isMediatorReceived to true
+          income.isMediatorReceived = true;
+        } else {
+          // Number is 0 or negative - clear mediatorAmount and set isMediatorReceived to false
+          income.mediatorAmount = [];
+          income.isMediatorReceived = false;
+        }
+      }
+    }
+
+    // Update status based on scenario
+    income.status = targetStatus;
 
     await income.save();
 
@@ -1412,13 +1509,47 @@ export const updateIncomePaymentStatus = async (req, res) => {
         path: "bankId",
         select: "_id name",
         match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediator",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "mediatorAmount.mediatorId",
+        select: "_id name",
+        match: { isDeleted: false },
       });
 
+    // Format mediator and mediatorAmount
     const incomeResponse = docToPlainWithBank(populatedIncome);
+    
+    // Format mediator
+    if (incomeResponse.mediator) {
+      if (typeof incomeResponse.mediator === 'object' && incomeResponse.mediator._id) {
+        incomeResponse.mediator = {
+          _id: incomeResponse.mediator._id,
+          name: incomeResponse.mediator.name || null,
+        };
+      } else {
+        incomeResponse.mediator = null;
+      }
+    }
+
+    // Format mediatorAmount
+    if (incomeResponse.mediatorAmount && Array.isArray(incomeResponse.mediatorAmount)) {
+      const mediatorDetails = populatedIncome.mediatorAmount
+        .map((item) => item.mediatorId)
+        .filter((m) => m && typeof m === "object");
+      incomeResponse.mediatorAmount = formatMediatorAmountDetails(
+        incomeResponse.mediatorAmount,
+        mediatorDetails
+      );
+    }
 
     return res.status(200).json({
       status: 200,
-      message: "Income payment status updated to RESERVED successfully",
+      message: targetMessage,
       data: incomeResponse,
     });
   } catch (error) {
