@@ -583,16 +583,29 @@ export const getIncomeExpance = async (req, res) => {
           );
         }
 
+        const storedInitialPayment = roundAmount(
+          item.initialPayment ?? productDetails.initialPayment ?? 0
+        );
+        const useProductDerivedValues =
+          Boolean(item.orderId) && storedInitialPayment !== 0;
+        const productNameValue = useProductDerivedValues
+          ? productDetails.productName || item.Description || ""
+          : item.Description || productDetails.productName || "";
+        const sellingPriceValue = useProductDerivedValues
+          ? productDetails.sellingPrice ||
+            roundAmount(item.sellingPrice || 0)
+          : roundAmount(item.sellingPrice || 0);
+
         return {
           _id: item._id,
           incExpType: 1,
           date: item.date,
           orderId: formattedOrder,
-          description: item.Description || productDetails.productName || "",
-          product: productDetails.productName || "",
-          sellingPrice: productDetails.sellingPrice || roundAmount(item.sellingPrice || 0),
+          description: item.Description || productNameValue,
+          product: productNameValue,
+          sellingPrice: sellingPriceValue,
           receivedAmount: roundAmount(item.receivedAmount || 0),
-          initialPayment: productDetails.initialPayment,
+          initialPayment: storedInitialPayment,
           clientName:
             item.orderId?.clientName ||
             `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
@@ -832,16 +845,29 @@ export const getIncomeExpance = async (req, res) => {
           );
         }
 
+        const storedInitialPayment = roundAmount(
+          item.initialPayment ?? productDetails.initialPayment ?? 0
+        );
+        const useProductDerivedValues =
+          Boolean(item.orderId) && storedInitialPayment !== 0;
+        const productNameValue = useProductDerivedValues
+          ? productDetails.productName || item.Description || ""
+          : item.Description || productDetails.productName || "";
+        const sellingPriceValue = useProductDerivedValues
+          ? productDetails.sellingPrice ||
+            roundAmount(item.sellingPrice || 0)
+          : roundAmount(item.sellingPrice || 0);
+
         return {
           _id: item._id,
           incExpType: 1,
           date: item.date,
           orderId: formattedOrder,
-          description: item.Description || productDetails.productName || "",
-          product: productDetails.productName || "",
-          sellingPrice: productDetails.sellingPrice || roundAmount(item.sellingPrice || 0),
+          description: item.Description || productNameValue,
+          product: productNameValue,
+          sellingPrice: sellingPriceValue,
           receivedAmount: roundAmount(item.receivedAmount || 0),
-          initialPayment: productDetails.initialPayment,
+          initialPayment: storedInitialPayment,
           clientName:
             item.orderId?.clientName ||
             `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
@@ -1083,6 +1109,7 @@ export const addIncomeEntry = async (req, res) => {
       orderId: order._id,
       Description: description || orderProductDetails.productName,
       sellingPrice: orderProductDetails.sellingPrice,
+      initialPayment: 0,
       receivedAmount: roundAmount(receivedAmount || 0),
       clientId: client._id,
       status: status || "pending",
@@ -1336,6 +1363,7 @@ export const editIncomeEntry = async (req, res) => {
       });
       income.orderId = order._id;
       income.sellingPrice = orderProductDetails.sellingPrice;
+      income.initialPayment = orderProductDetails.initialPayment;
       income.Description = orderProductDetails.productName;
     } else if (income.orderId) {
       // Use existing orderId if no new orderId provided
@@ -1343,6 +1371,9 @@ export const editIncomeEntry = async (req, res) => {
       orderProductDetails = getOrderProductDetails(order, {
         productNameHint: order?.product || income.Description,
       });
+      if (orderProductDetails) {
+        income.initialPayment = orderProductDetails.initialPayment;
+      }
     }
 
     // Handle mediator: use provided mediatorId or default to order's mediator if no mediatorId in income
@@ -2195,6 +2226,7 @@ export const addExtraIncome = async (req, res) => {
     const newIncome = await Income.create({
       date: date || new Date(),
       Description: description,
+      initialPayment: 0,
       receivedAmount: roundedReceivedAmount,
       bankId: normalizedBankId,
       mediator: normalizedMediatorId,
@@ -2543,18 +2575,33 @@ export const getIncomeById = async (req, res) => {
       productNameHint: income.Description,
       sellingPriceHint: income.sellingPrice,
     });
+    const storedInitialPayment = roundAmount(
+      income.initialPayment ?? productDetails.initialPayment ?? 0
+    );
+    const useProductDetails =
+      Boolean(income.orderId) && storedInitialPayment !== 0;
+    const productNameValue = useProductDetails
+      ? productDetails.productName || income.Description || ""
+      : income.Description || productDetails.productName || "";
+    const sellingPriceValue = useProductDetails
+      ? Math.round((productDetails.sellingPrice || 0) * 100) / 100
+      : Math.round((income.sellingPrice || 0) * 100) / 100;
+    const receivedAmountValue = Math.round(
+      (income.receivedAmount || 0) * 100
+    ) / 100;
 
     const formattedIncome = {
       _id: income._id,
       date: income.date,
       orderId: income.orderId,
       description: income.Description,
-      sellingPrice: Math.round((income.sellingPrice || 0) * 100) / 100,
-      receivedAmount: Math.round((income.receivedAmount || 0) * 100) / 100,
+      sellingPrice: sellingPriceValue,
+      receivedAmount: receivedAmountValue,
       clientId: income.clientId,
       clientName: income.orderId?.clientName ||
         (income.clientId ? `${income.clientId.firstName || ""} ${income.clientId.lastName || ""}`.trim() : ""),
-      product: productDetails.productName || "",
+      product: productNameValue,
+      initialPayment: storedInitialPayment,
       status: income.status,
       bankId: incomeBankId,
       bank: incomeBank,

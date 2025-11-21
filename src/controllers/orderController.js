@@ -243,6 +243,7 @@ export const createOrder = async (req, res, next) => {
           orderId: order._id,
           Description: product.productName,
           sellingPrice: product.sellingPrice,
+          initialPayment: product.initialPayment,
           receivedAmount: 0,
           clientId: existingClient._id,
           status: DEFAULT_PAYMENT_STATUS,

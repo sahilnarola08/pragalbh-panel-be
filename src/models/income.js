@@ -24,6 +24,11 @@ const incomeSchema = new mongoose.Schema(
       required: false, // Optional - for extra income calculated from receivedAmount
       default: 0,
     },
+    initialPayment: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
     receivedAmount: {
       type: Number,
       required: true,
