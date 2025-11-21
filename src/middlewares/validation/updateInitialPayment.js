@@ -4,7 +4,10 @@ import { sendErrorResponse } from "../../util/commonResponses.js";
 
 const schema = yup.object().shape({
   orderId: yup.string().required("orderId is required"),
+  productIndex: yup.number().required("productIndex is required").integer("productIndex must be an integer").min(0, "productIndex must be >= 0"),
   initialPayment: yup.number().required("initialPayment is required").min(0, "initialPayment must be >= 0"),
+  bankName: yup.string().optional(),
+  paymentAmount: yup.number().min(0, "paymentAmount must be >= 0").optional(),
 });
 
 export const validateUpdateInitialPayment = async (req, res, next) => {

@@ -100,20 +100,12 @@ export const createOrder = async (req, res, next) => {
     const {
       clientName,
       address,
-      product,
-      productImages,
-      productImage,
-      orderDate,
-      dispatchDate,
-      purchasePrice,
-      sellingPrice,
-      initialPayment,
+      products,
       bankName,
       paymentAmount,
       supplier,
-      orderPlatform,
-      mediator,
-      otherDetails
+      otherDetails,
+      shippingCost
     } = req.body;
 
     // ✅ Validate client existence
@@ -133,15 +125,11 @@ export const createOrder = async (req, res, next) => {
       });
     }
 
-    // ✅ Validate product existence
-    const existingProduct = await Product.findOne({
-      productName: new RegExp(product, "i")
-    });
-
-    if (!existingProduct) {
+    // Validate products array
+    if (!Array.isArray(products) || products.length === 0) {
       return sendErrorResponse({
         res,
-        message: `Product "${product}" does not exist. Please add product first.`,
+        message: "At least one product is required",
         status: 400,
       });
     }
@@ -168,91 +156,124 @@ export const createOrder = async (req, res, next) => {
       }
     }
 
-    let orderPlatformMaster;
-    try {
-      orderPlatformMaster = await normalizeMasterIdOrThrow(orderPlatform, "orderPlatform");
-    } catch (error) {
-      return sendErrorResponse({
-        res,
-        message: error.message || "Invalid order platform",
-        status: error.status || 400,
+    // Process and validate each product
+    const processedProducts = [];
+    for (const product of products) {
+      // ✅ Validate product existence
+      const existingProduct = await Product.findOne({
+        productName: new RegExp(product.productName, "i")
       });
-    }
 
-    // Validate and normalize mediator if provided
-    let mediatorMaster = null;
-    if (mediator) {
+      if (!existingProduct) {
+        return sendErrorResponse({
+          res,
+          message: `Product "${product.productName}" does not exist. Please add product first.`,
+          status: 400,
+        });
+      }
+
+      // Validate and normalize orderPlatform
+      let orderPlatformMaster;
       try {
-        mediatorMaster = await normalizeMasterIdOrThrow(mediator, "mediator");
+        orderPlatformMaster = await normalizeMasterIdOrThrow(product.orderPlatform, "orderPlatform");
       } catch (error) {
         return sendErrorResponse({
           res,
-          message: error.message || "Invalid mediator",
+          message: error.message || "Invalid order platform",
           status: error.status || 400,
         });
       }
+
+      // Validate and normalize mediator if provided
+      let mediatorMaster = null;
+      if (product.mediator) {
+        try {
+          mediatorMaster = await normalizeMasterIdOrThrow(product.mediator, "mediator");
+        } catch (error) {
+          return sendErrorResponse({
+            res,
+            message: error.message || "Invalid mediator",
+            status: error.status || 400,
+          });
+        }
+      }
+
+      const normalizedProductImages = extractProductImages(
+        product.productImages,
+        { fallback: true }
+      );
+
+      processedProducts.push({
+        productName: product.productName,
+        orderDate: product.orderDate,
+        dispatchDate: product.dispatchDate,
+        purchasePrice: Math.round((product.purchasePrice || 0) * 100) / 100,
+        sellingPrice: Math.round((product.sellingPrice || 0) * 100) / 100,
+        initialPayment: Math.round((product.initialPayment || 0) * 100) / 100,
+        orderPlatform: orderPlatformMaster._id,
+        mediator: mediatorMaster ? mediatorMaster._id : undefined,
+        productImages: normalizedProductImages,
+      });
     }
 
-    const normalizedProductImages = extractProductImages(
-      productImages ?? productImage,
-      { fallback: true }
-    );
-
-    // The order status will automatically be set to 'pending' because we updated the enums file.
+    // Create order with products array
     const order = await Order.create({
       clientName,
       address,
-      product,
-      productImages: normalizedProductImages,
-      orderDate,
-      dispatchDate,
-      purchasePrice: Math.round((purchasePrice || 0) * 100) / 100,
-      sellingPrice: Math.round((sellingPrice || 0) * 100) / 100,
-      initialPayment: Math.round((initialPayment || 0) * 100) / 100,
-      bankName,
+      products: processedProducts,
+      bankName: bankName || "",
       paymentAmount: paymentAmount !== undefined && paymentAmount !== null ? Math.round(paymentAmount * 100) / 100 : paymentAmount,
-      supplier,
-      orderPlatform: orderPlatformMaster._id,
-      mediator: mediatorMaster ? mediatorMaster._id : undefined,
-      otherDetails,
+      supplier: supplier || "",
+      otherDetails: otherDetails || "",
+      shippingCost: shippingCost !== undefined && shippingCost !== null ? Math.round(shippingCost * 100) / 100 : 0,
       trackingId: "",
       courierCompany: "",
       status: DEFAULT_ORDER_STATUS,
     });
 
-    // Create related Income record
-    await Income.create({
-      date: new Date(), 
-      orderId: order._id, 
-      Description: order.product, 
-      sellingPrice: Math.round((order.sellingPrice || 0) * 100) / 100,
-      costPrice: Math.round((order.purchasePrice || 0) * 100) / 100,
-      receivedAmount: 0, 
-      clientId: existingClient._id,
-      status: DEFAULT_PAYMENT_STATUS,
-    });
+    // Create Income and ExpanseIncome records for each product
+    const incomePromises = [];
+    const expensePromises = [];
 
+    for (const product of processedProducts) {
+      // Create Income record for each product
+      incomePromises.push(
+        Income.create({
+          date: new Date(),
+          orderId: order._id,
+          Description: product.productName,
+          sellingPrice: product.sellingPrice,
+          receivedAmount: 0,
+          clientId: existingClient._id,
+          status: DEFAULT_PAYMENT_STATUS,
+        })
+      );
 
-     // Create ExpenseIncome record (supplier side)
-     if (existingSupplier) {
-      await ExpanseIncome.create({
-        orderId: order._id,
-        description: order.product,
-        paidAmount: 0,
-        dueAmount: Math.round((order.purchasePrice || 0) * 100) / 100,
-        supplierId: existingSupplier._id,
-        status: DEFAULT_PAYMENT_STATUS,
-      });
+      // Create ExpenseIncome record for each product if supplier exists
+      if (existingSupplier) {
+        expensePromises.push(
+          ExpanseIncome.create({
+            orderId: order._id,
+            description: product.productName,
+            paidAmount: 0,
+            dueAmount: product.purchasePrice,
+            supplierId: existingSupplier._id,
+            status: DEFAULT_PAYMENT_STATUS,
+          })
+        );
+      }
     }
+
+    await Promise.all([...incomePromises, ...expensePromises]);
 
     const populatedOrder = await Order.findById(order._id)
       .populate({
-        path: "orderPlatform",
+        path: "products.orderPlatform",
         select: "_id name",
         match: { isDeleted: false },
       })
       .populate({
-        path: "mediator",
+        path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
       });
@@ -278,7 +299,6 @@ export const createOrder = async (req, res, next) => {
 // Get All Orders
 const getAllOrders = async (req, res) => {
   try {
-    await sanitizeOrderPlatformValues();
 
     const {
       page = 1,
@@ -314,17 +334,17 @@ const getAllOrders = async (req, res) => {
       const orConditions = [
         { clientName: searchRegex },
         { address: searchRegex },
-        { product: searchRegex },
+        { "products.productName": searchRegex },
         { supplier: searchRegex },
       ];
 
       if (mongoose.Types.ObjectId.isValid(trimmedSearch)) {
-        orConditions.push({ orderPlatform: trimmedSearch });
+        orConditions.push({ "products.orderPlatform": trimmedSearch });
       }
 
       if (matchingPlatformIds.length > 0) {
         orConditions.push({
-          orderPlatform: { $in: matchingPlatformIds.map((item) => item._id) },
+          "products.orderPlatform": { $in: matchingPlatformIds.map((item) => item._id) },
         });
       }
 
@@ -336,10 +356,8 @@ const getAllOrders = async (req, res) => {
       filter.status = status;
     }
 
-    // Date range filter
+    // Date range filter - filter by products.orderDate
     if (startDate || endDate) {
-      filter.orderDate = {};
-
       // Parse dates - support DD/MM/YYYY format
       const parseDate = (dateString) => {
         if (!dateString || typeof dateString !== 'string') return null;
@@ -378,10 +396,11 @@ const getAllOrders = async (req, res) => {
         return null;
       };
 
+      const dateConditions = {};
       if (startDate) {
         const start = parseDate(startDate);
         if (start) {
-          filter.orderDate.$gte = start;
+          dateConditions.$gte = start;
         } else {
           return sendErrorResponse({
             status: 400,
@@ -395,7 +414,7 @@ const getAllOrders = async (req, res) => {
         const end = parseDate(endDate);
         if (end) {
           end.setHours(23, 59, 59, 999); // End of day
-          filter.orderDate.$lte = end;
+          dateConditions.$lte = end;
         } else {
           return sendErrorResponse({
             status: 400,
@@ -404,6 +423,10 @@ const getAllOrders = async (req, res) => {
           });
         }
       }
+
+      if (Object.keys(dateConditions).length > 0) {
+        filter["products.orderDate"] = dateConditions;
+      }
     }
 
     const orders = await Order.find(filter)
@@ -411,12 +434,12 @@ const getAllOrders = async (req, res) => {
       .skip(offset)
       .limit(limitNum)
       .populate({
-        path: "orderPlatform",
+        path: "products.orderPlatform",
         select: "_id name",
         match: { isDeleted: false },
       })
       .populate({
-        path: "mediator",
+        path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
       })
@@ -486,15 +509,24 @@ const getAllOrders = async (req, res) => {
     const totalOrders = await Order.countDocuments(filter);
 
     const formattedOrders = orders.map((order) => {
-      const platform =
-        order.orderPlatform && typeof order.orderPlatform === "object"
-          ? { _id: order.orderPlatform._id, name: order.orderPlatform.name }
-          : null;
-      
-      const mediatorInfo =
-        order.mediator && typeof order.mediator === "object"
-          ? { _id: order.mediator._id, name: order.mediator.name }
-          : null;
+      // Format products with populated orderPlatform and mediator
+      const formattedProducts = (order.products || []).map((product) => {
+        const platform =
+          product.orderPlatform && typeof product.orderPlatform === "object"
+            ? { _id: product.orderPlatform._id, name: product.orderPlatform.name }
+            : null;
+        
+        const mediatorInfo =
+          product.mediator && typeof product.mediator === "object"
+            ? { _id: product.mediator._id, name: product.mediator.name }
+            : null;
+
+        return {
+          ...product,
+          orderPlatform: platform,
+          mediator: mediatorInfo,
+        };
+      });
 
       const orderIdStr = order?._id ? String(order._id) : "";
       const totalIncome = incomeMap.get(orderIdStr) ?? 0;
@@ -504,8 +536,7 @@ const getAllOrders = async (req, res) => {
 
       return {
         ...order,
-        orderPlatform: platform,
-        mediator: mediatorInfo,
+        products: formattedProducts,
         totalIncome,
         totalExpense,
         netProfit,
@@ -537,7 +568,6 @@ const getAllOrders = async (req, res) => {
 // Update order by ID
 const updateOrder = async (req, res, next) => {
   try {
-    await sanitizeOrderPlatformValues();
 
     const { id } = req.params;
     const updateData = req.body;
@@ -571,21 +601,6 @@ const updateOrder = async (req, res, next) => {
       }
     }
 
-    // Validate product existence if product is being updated
-    if (updateData.product) {
-      const existingProduct = await Product.findOne({
-        productName: new RegExp(updateData.product, "i")
-      });
-
-      if (!existingProduct) {
-        return sendErrorResponse({
-          res,
-          message: `Product "${updateData.product}" does not exist. Please add product first.`,
-          status: 400,
-        });
-      }
-    }
-
     // Validate supplier existence if supplier is being updated
     if (updateData.supplier && updateData.supplier.trim()) {
       const existingSupplier = await Supplier.findOne({
@@ -606,65 +621,78 @@ const updateOrder = async (req, res, next) => {
       }
     }
 
-    if (updateData.orderPlatform !== undefined) {
-      try {
-        const master = await normalizeMasterIdOrThrow(
-          updateData.orderPlatform,
-          "orderPlatform"
-        );
-        updateData.orderPlatform = master._id;
-      } catch (error) {
-        return sendErrorResponse({
-          res,
-          message: error.message || "Invalid order platform",
-          status: error.status || 400,
+    // Process products array if being updated
+    if (updateData.products && Array.isArray(updateData.products)) {
+      const processedProducts = [];
+      
+      for (const product of updateData.products) {
+        // Validate product existence
+        const existingProduct = await Product.findOne({
+          productName: new RegExp(product.productName, "i")
         });
-      }
-    }
 
-    // Handle mediator update
-    if (updateData.mediator !== undefined) {
-      if (updateData.mediator === null || updateData.mediator === "") {
-        updateData.mediator = null;
-      } else {
+        if (!existingProduct) {
+          return sendErrorResponse({
+            res,
+            message: `Product "${product.productName}" does not exist. Please add product first.`,
+            status: 400,
+          });
+        }
+
+        // Validate and normalize orderPlatform
+        let orderPlatformMaster;
         try {
-          const mediatorMaster = await normalizeMasterIdOrThrow(
-            updateData.mediator,
-            "mediator"
+          orderPlatformMaster = await normalizeMasterIdOrThrow(
+            product.orderPlatform,
+            "orderPlatform"
           );
-          updateData.mediator = mediatorMaster._id;
         } catch (error) {
           return sendErrorResponse({
             res,
-            message: error.message || "Invalid mediator",
+            message: error.message || "Invalid order platform",
             status: error.status || 400,
           });
         }
-      }
-    }
 
-    if (
-      Object.prototype.hasOwnProperty.call(updateData, "productImages") ||
-      Object.prototype.hasOwnProperty.call(updateData, "productImage")
-    ) {
-      const normalizedProductImages = extractProductImages(
-        updateData.productImages ?? updateData.productImage,
-        { fallback: true }
-      );
-      updateData.productImages = normalizedProductImages;
-      delete updateData.productImage;
+        // Handle mediator update
+        let mediatorMaster = null;
+        if (product.mediator !== undefined && product.mediator !== null && product.mediator !== "") {
+          try {
+            mediatorMaster = await normalizeMasterIdOrThrow(
+              product.mediator,
+              "mediator"
+            );
+          } catch (error) {
+            return sendErrorResponse({
+              res,
+              message: error.message || "Invalid mediator",
+              status: error.status || 400,
+            });
+          }
+        }
+
+        const normalizedProductImages = extractProductImages(
+          product.productImages,
+          { fallback: true }
+        );
+
+        processedProducts.push({
+          productName: product.productName,
+          orderDate: product.orderDate,
+          dispatchDate: product.dispatchDate,
+          purchasePrice: Math.round((product.purchasePrice || 0) * 100) / 100,
+          sellingPrice: Math.round((product.sellingPrice || 0) * 100) / 100,
+          initialPayment: Math.round((product.initialPayment || 0) * 100) / 100,
+          orderPlatform: orderPlatformMaster._id,
+          mediator: mediatorMaster ? mediatorMaster._id : undefined,
+          productImages: normalizedProductImages,
+        });
+      }
+
+      updateData.products = processedProducts;
     }
 
     // Round amount values if being updated
-    if (updateData.purchasePrice !== undefined) {
-      updateData.purchasePrice = Math.round((updateData.purchasePrice || 0) * 100) / 100;
-    }
-    if (updateData.sellingPrice !== undefined) {
-      updateData.sellingPrice = Math.round((updateData.sellingPrice || 0) * 100) / 100;
-    }
-    if (updateData.initialPayment !== undefined) {
-      updateData.initialPayment = Math.round((updateData.initialPayment || 0) * 100) / 100;
-    }
     if (updateData.paymentAmount !== undefined && updateData.paymentAmount !== null) {
       updateData.paymentAmount = Math.round(updateData.paymentAmount * 100) / 100;
     }
@@ -680,12 +708,12 @@ const updateOrder = async (req, res, next) => {
     )
       .select("-__v")
       .populate({
-        path: "orderPlatform",
+        path: "products.orderPlatform",
         select: "_id name",
         match: { isDeleted: false },
       })
       .populate({
-        path: "mediator",
+        path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
       });
@@ -737,19 +765,18 @@ const deleteOrder = async (req, res, next) => {
 // Get order by ID
 const getOrderById = async (req, res, next) => {
   try {
-    await sanitizeOrderPlatformValues();
 
     const { id } = req.params;
 
     const order = await Order.findById(id)
       .select("-__v")
       .populate({
-        path: "orderPlatform",
+        path: "products.orderPlatform",
         select: "_id name",
         match: { isDeleted: false },
       })
       .populate({
-        path: "mediator",
+        path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
       });
@@ -825,12 +852,12 @@ const getKanbanData = async (req, res) => {
         return null;
       };
 
-      dateFilter.orderDate = {};
+      const dateConditions = {};
 
       if (startDate) {
         const start = parseDate(startDate);
         if (start) {
-          dateFilter.orderDate.$gte = start;
+          dateConditions.$gte = start;
         } else {
           return sendErrorResponse({
             status: 400,
@@ -844,7 +871,7 @@ const getKanbanData = async (req, res) => {
         const end = parseDate(endDate);
         if (end) {
           end.setHours(23, 59, 59, 999); // End of day
-          dateFilter.orderDate.$lte = end;
+          dateConditions.$lte = end;
         } else {
           return sendErrorResponse({
             status: 400,
@@ -852,6 +879,10 @@ const getKanbanData = async (req, res) => {
             message: "Invalid endDate format. Use DD/MM/YYYY or YYYY-MM-DD format.",
           });
         }
+      }
+
+      if (Object.keys(dateConditions).length > 0) {
+        dateFilter["products.orderDate"] = dateConditions;
       }
     }
 
@@ -954,13 +985,27 @@ export const updateOrderStatus = async (req, res) => {
 
     // Validate payment is complete before moving to DISPATCH
     if (status === ORDER_STATUS.DISPATCH) {
-      const roundedInitialPayment = Math.round((order.initialPayment || 0) * 100) / 100;
-      const roundedSellingPrice = Math.round((order.sellingPrice || 0) * 100) / 100;
-      if (roundedInitialPayment !== roundedSellingPrice) {
+      if (!order.products || !Array.isArray(order.products) || order.products.length === 0) {
         return sendErrorResponse({
           res,
           status: 400,
-          message: `Cannot move to dispatch. Payment incomplete. Initial Payment (${formatCurrency(roundedInitialPayment)}) must match Selling Price (${formatCurrency(roundedSellingPrice)}) before moving to Dispatch!`,
+          message: "Order has no products",
+        });
+      }
+
+      // Check if all products are fully paid
+      const unpaidProducts = order.products.filter(p => {
+        const productInitialPayment = Math.round((p.initialPayment || 0) * 100) / 100;
+        const productSellingPrice = Math.round((p.sellingPrice || 0) * 100) / 100;
+        return productInitialPayment !== productSellingPrice;
+      });
+
+      if (unpaidProducts.length > 0) {
+        const unpaidProductNames = unpaidProducts.map(p => p.productName).join(", ");
+        return sendErrorResponse({
+          res,
+          status: 400,
+          message: `Cannot move to dispatch. Payment incomplete for products: ${unpaidProductNames}. All products must be fully paid before moving to Dispatch!`,
         });
       }
     }
@@ -1044,11 +1089,18 @@ export const updateTrackingInfo = async (req, res) => {
 // Update Initial Payment
 export const updateInitialPayment = async (req, res) => {
   try {
-    const { orderId, initialPayment, bankName, paymentAmount } = req.body;
+    const { orderId, productIndex, initialPayment, bankName, paymentAmount } = req.body;
 
     // --- Basic validations ---
     if (!orderId) {
       return sendErrorResponse({ res, status: 400, message: "_id (orderId) is required" });
+    }
+    if (productIndex === undefined || productIndex === null) {
+      return sendErrorResponse({
+        res,
+        status: 400,
+        message: "productIndex is required to specify which product to update",
+      });
     }
     if (initialPayment === undefined || initialPayment === null) {
       return sendErrorResponse({
@@ -1079,8 +1131,22 @@ export const updateInitialPayment = async (req, res) => {
       return sendErrorResponse({ res, status: 404, message: "Order not found" });
     }
 
+    if (!order.products || !Array.isArray(order.products) || order.products.length === 0) {
+      return sendErrorResponse({ res, status: 400, message: "Order has no products" });
+    }
+
+    if (productIndex < 0 || productIndex >= order.products.length) {
+      return sendErrorResponse({
+        res,
+        status: 400,
+        message: `Invalid productIndex. Must be between 0 and ${order.products.length - 1}`,
+      });
+    }
+
+    const product = order.products[productIndex];
+
     // --- Validate against sellingPrice ---
-    const roundedSellingPrice = Math.round(Number(order.sellingPrice || 0) * 100) / 100;
+    const roundedSellingPrice = Math.round(Number(product.sellingPrice || 0) * 100) / 100;
     const roundedInitialPayment = Math.round(initialPayment * 100) / 100;
     
     if (roundedInitialPayment > roundedSellingPrice) {
@@ -1091,31 +1157,48 @@ export const updateInitialPayment = async (req, res) => {
       });
     }
 
-    // --- Update payment ---
-    order.initialPayment = roundedInitialPayment;
+    // --- Update payment for the specific product ---
+    product.initialPayment = roundedInitialPayment;
     
-    // Update bank name if provided
+    // Update bank name if provided (order level)
     if (bankName) {
       order.bankName = bankName;
     }
     
-    // Update payment amount if provided
+    // Update payment amount if provided (order level)
     if (paymentAmount !== undefined && paymentAmount !== null) {
       order.paymentAmount = Math.round(paymentAmount * 100) / 100;
     }
 
-    // --- Auto update status if fully paid ---
-    const isPaymentComplete = roundedInitialPayment === roundedSellingPrice;
-    if (isPaymentComplete && order.status !== ORDER_STATUS.DISPATCH) {
+    // --- Auto update status if all products are fully paid ---
+    const allProductsPaid = order.products.every(p => {
+      const productInitialPayment = Math.round((p.initialPayment || 0) * 100) / 100;
+      const productSellingPrice = Math.round((p.sellingPrice || 0) * 100) / 100;
+      return productInitialPayment === productSellingPrice;
+    });
+
+    if (allProductsPaid && order.status !== ORDER_STATUS.DISPATCH) {
       order.status = ORDER_STATUS.DISPATCH;
     }
 
     await order.save();
 
+    const populatedOrder = await Order.findById(order._id)
+      .populate({
+        path: "products.orderPlatform",
+        select: "_id name",
+        match: { isDeleted: false },
+      })
+      .populate({
+        path: "products.mediator",
+        select: "_id name",
+        match: { isDeleted: false },
+      });
+
     return sendSuccessResponse({
       res,
       status: 200,
-      data: order,
+      data: populatedOrder,
       message: "Initial payment updated successfully.",
     });
   } catch (error) {
