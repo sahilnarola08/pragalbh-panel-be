@@ -1015,6 +1015,38 @@ export const addIncomeEntry = async (req, res) => {
       });
     }
 
+    // Validation flow: Check if minimum required fields are provided
+    // Case 1: If only date, orderId, description are provided (no mediatorId, no bankId) → should NOT create income
+    const hasMediatorId = mediatorId !== undefined && mediatorId !== null && mediatorId !== "";
+    const hasBankId = bankId !== undefined && bankId !== null && bankId !== "";
+    const hasMediatorAmount = mediatorAmount !== undefined && mediatorAmount !== null && 
+      (Array.isArray(mediatorAmount) ? mediatorAmount.length > 0 : typeof mediatorAmount === 'number' && mediatorAmount > 0);
+    const hasReceivedAmount = receivedAmount !== undefined && receivedAmount !== null && receivedAmount > 0;
+
+    // If neither mediatorId nor bankId is provided, reject the request
+    if (!hasMediatorId && !hasBankId) {
+      return res.status(400).json({
+        status: 400,
+        message: "Either mediatorId or bankId must be provided to create income entry",
+      });
+    }
+
+    // Case 2: If mediatorId is provided but mediatorAmount is not provided → show error
+    if (hasMediatorId && !hasMediatorAmount) {
+      return res.status(400).json({
+        status: 400,
+        message: "mediatorAmount is required when mediatorId is provided",
+      });
+    }
+
+    // Case 4: If bankId is provided but receivedAmount is not provided → show error
+    if (hasBankId && !hasReceivedAmount) {
+      return res.status(400).json({
+        status: 400,
+        message: "receivedAmount is required when bankId is provided",
+      });
+    }
+
     // Find order by orderId field
     const Order = (await import("../models/order.js")).default;
     const order = await Order.findOne({ orderId: orderId });
