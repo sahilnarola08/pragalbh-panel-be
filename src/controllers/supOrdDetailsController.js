@@ -1,4 +1,5 @@
 import { PAYMENT_STATUS } from "../helper/enums.js";
+import { formatCurrency } from "../util/currencyFormat.js";
 import ExpanceIncome from "../models/expance_inc.js";
 import Supplier from "../models/supplier.js";
 import Master from "../models/master.js";
@@ -249,7 +250,7 @@ export const markPaymentDone = async (req, res) => {
     }
 
     // Check if payment is already paid
-    if (expense.status === PAYMENT_STATUS.PAID || expense.status === PAYMENT_STATUS.DONE) {
+    if (expense.status === PAYMENT_STATUS.PAID ) {
       return res.status(201).json({
         success: false,
         status: 201,
@@ -304,7 +305,7 @@ export const markPaymentDone = async (req, res) => {
       return res.status(400).json({
         success: false,
         status: 409,
-        message: `Insufficient balance. Required: ${dueAmount}, Available: ${bankPayment.amount}`,
+        message: `Insufficient balance. Required: ${formatCurrency(dueAmount)}, Available: ${formatCurrency(bankPayment.amount)}`,
       });
     }
 

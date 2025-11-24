@@ -42,12 +42,18 @@ const expanseIncomeSchema = new mongoose.Schema(
       default: DEFAULT_PAYMENT_STATUS,
       required: true,
       enum: Object.values(PAYMENT_STATUS),
+      index: true, // Index for faster dashboard queries
     },
   },
   {
     timestamps: true,
   }
 );
+
+// Compound indexes for better performance
+expanseIncomeSchema.index({ status: 1, paidAmount: 1 }); // For expense queries
+expanseIncomeSchema.index({ date: 1 }); // For date range queries
+expanseIncomeSchema.index({ createdAt: 1 }); // For createdAt queries
 
 const ExpanseIncome = mongoose.model("ExpanseIncome", expanseIncomeSchema);
 export default ExpanseIncome;

@@ -1,5 +1,6 @@
 import Supplier from "../models/supplier.js";
 import Master from "../models/master.js";
+import ExpanceIncome from "../models/expance_inc.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import mongoose from "mongoose";
 
@@ -97,6 +98,47 @@ const buildSupplierAggregationPipeline = ({
             }
         },
         {
+            $lookup: {
+                from: "expance_incomes",
+                localField: "_id",
+                foreignField: "supplierId",
+                as: "expenseRecords",
+                pipeline: [
+                    {
+                        $lookup: {
+                            from: "orders",
+                            localField: "orderId",
+                            foreignField: "_id",
+                            as: "orderDetails"
+                        }
+                    },
+                    {
+                        $addFields: {
+                            effectiveDueAmount: {
+                                $let: {
+                                    vars: {
+                                        orderPurchasePrice: {
+                                            $ifNull: [
+                                                { $arrayElemAt: ["$orderDetails.purchasePrice", 0] },
+                                                0
+                                            ]
+                                        }
+                                    },
+                                    in: {
+                                        $cond: [
+                                            { $ne: ["$dueAmount", null] },
+                                            { $ifNull: ["$dueAmount", 0] },
+                                            "$$orderPurchasePrice"
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        {
             $addFields: {
                 fullName: {
                     $concat: ["$firstName", " ", "$lastName"]
@@ -160,6 +202,20 @@ const buildSupplierAggregationPipeline = ({
                         },
                         else: 0
                     }
+                },
+                pendingPayment: {
+                    $round: [
+                        {
+                            $sum: {
+                                $map: {
+                                    input: { $ifNull: ["$expenseRecords", []] },
+                                    as: "expense",
+                                    in: { $ifNull: ["$$expense.effectiveDueAmount", 0] }
+                                }
+                            }
+                        },
+                        2
+                    ]
                 }
             }
         },
@@ -178,6 +234,7 @@ const buildSupplierAggregationPipeline = ({
                 company: 1,
                 advancePayment: 1,
                 advancePaymentDetails: 1,
+                pendingPayment: 1,
                 isDeleted: 1,
                 createdAt: 1,
                 updatedAt: 1
