@@ -16,34 +16,70 @@ const orderSchema = new mongoose.Schema({
           required: true,
           trim: true,
      },
-     product: {
-          type: String,
+     products: {
+          type: [
+               {
+                    productName: {
+                         type: String,
+                         required: true,
+                         trim: true,
+                    },
+                    orderDate: {
+                         type: Date,
+                         required: true,
+                    },
+                    dispatchDate: {
+                         type: Date,
+                         required: true,
+                    },
+                    purchasePrice: {
+                         type: Number,
+                         required: true,
+                    },
+                    sellingPrice: {
+                         type: Number,
+                         required: true,
+                    },
+                    initialPayment: {
+                         type: Number,
+                         default: 0,
+                    },
+                    orderPlatform: {
+                         type: mongoose.Schema.Types.ObjectId,
+                         ref: "master",
+                         required: true,
+                    },
+                    mediator: {
+                         type: mongoose.Schema.Types.ObjectId,
+                         ref: "master",
+                         required: false,
+                    },
+                    productImages: {
+                         type: [
+                              {
+                                   img: {
+                                        type: String,
+                                        required: false,
+                                   },
+                              },
+                         ],
+                         default: [
+                              {
+                                   img: "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product",
+                              },
+                         ],
+                    },
+               },
+          ],
           required: true,
-          trim: true,
-     },
-     orderDate: {
-          type: Date,
-          required: true,
-     },
-     dispatchDate: {
-          type: Date,
-          required: true,
-     },
-     purchasePrice: {
-          type: Number,
-          required: true,
-          trim: true,
-     },
-     sellingPrice: {
-          type: Number,
-          required: true,
-          trim: true,
+          validate: {
+               validator: function(v) {
+                    return Array.isArray(v) && v.length > 0;
+               },
+               message: "At least one product is required",
+          },
      },
      shippingCost: {
-          type: Number,
-          default: 0,
-     },
-     initialPayment: {
           type: Number,
           default: 0,
      },
@@ -58,12 +94,6 @@ const orderSchema = new mongoose.Schema({
      supplier: {
           type: String,
      },
-     orderPlatform: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "master",
-          required: true,
-          index: true,
-     },
      otherDetails: {
           type: String,
      },
@@ -71,21 +101,6 @@ const orderSchema = new mongoose.Schema({
           type: String,
           enum: Object.values(ORDER_STATUS),
           default: DEFAULT_ORDER_STATUS,
-     },
-     productImages: {
-          type: [
-               {
-                    img: {
-                         type: String,
-                         required: false,
-                    },
-               },
-          ],
-          default: [
-               {
-                    img: "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product",
-               },
-          ],
      },
      trackingId: {
           type: String,
