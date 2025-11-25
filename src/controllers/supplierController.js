@@ -99,43 +99,10 @@ const buildSupplierAggregationPipeline = ({
         },
         {
             $lookup: {
-                from: "expance_incomes",
+                from: "expanseincomes",
                 localField: "_id",
                 foreignField: "supplierId",
-                as: "expenseRecords",
-                pipeline: [
-                    {
-                        $lookup: {
-                            from: "orders",
-                            localField: "orderId",
-                            foreignField: "_id",
-                            as: "orderDetails"
-                        }
-                    },
-                    {
-                        $addFields: {
-                            effectiveDueAmount: {
-                                $let: {
-                                    vars: {
-                                        orderPurchasePrice: {
-                                            $ifNull: [
-                                                { $arrayElemAt: ["$orderDetails.purchasePrice", 0] },
-                                                0
-                                            ]
-                                        }
-                                    },
-                                    in: {
-                                        $cond: [
-                                            { $ne: ["$dueAmount", null] },
-                                            { $ifNull: ["$dueAmount", 0] },
-                                            "$$orderPurchasePrice"
-                                        ]
-                                    }
-                                }
-                            }
-                        }
-                    }
-                ]
+                as: "expenseRecords"
             }
         },
         {
@@ -210,7 +177,13 @@ const buildSupplierAggregationPipeline = ({
                                 $map: {
                                     input: { $ifNull: ["$expenseRecords", []] },
                                     as: "expense",
-                                    in: { $ifNull: ["$$expense.effectiveDueAmount", 0] }
+                                    in: {
+                                        $cond: [
+                                            { $gt: [{ $ifNull: ["$$expense.dueAmount", 0] }, 0] },
+                                            { $ifNull: ["$$expense.dueAmount", 0] },
+                                            0
+                                        ]
+                                    }
                                 }
                             }
                         },

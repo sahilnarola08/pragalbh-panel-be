@@ -13,7 +13,8 @@ export const getDashboardStats = async (req, res) => {
       totalIncomeResult,
       totalExpenseResult,
       receivedPaymentResult,
-      pendingPaymentResult
+      pendingPaymentResult,
+      processingPaymentResult
     ] = await Promise.all([
       // 1. Total Order Count
       Order.countDocuments({}),
@@ -119,6 +120,32 @@ export const getDashboardStats = async (req, res) => {
             pendingPayment: { $round: ["$pendingPayment", 2] }
           }
         }
+      ]).exec(),
+
+      // 6. Processing Payment (sum of all mediatorAmount amounts)
+      Income.aggregate([
+        {
+          $unwind: {
+            path: "$mediatorAmount",
+            preserveNullAndEmptyArrays: true
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            processingPayment: {
+              $sum: {
+                $round: [{ $ifNull: ["$mediatorAmount.amount", 0] }, 2]
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            processingPayment: { $round: ["$processingPayment", 2] }
+          }
+        }
       ]).exec()
     ]);
 
@@ -128,6 +155,7 @@ export const getDashboardStats = async (req, res) => {
     const totalExpense = totalExpenseResult[0]?.totalExpense || 0;
     const receivedPayment = receivedPaymentResult[0]?.receivedPayment || 0;
     const pendingPayment = pendingPaymentResult[0]?.pendingPayment || 0;
+    const processingPayment = processingPaymentResult[0]?.processingPayment || 0;
 
     // Calculate Net Profit (Total Income - Total Expense)
     const netProfit = Math.round((totalIncome - totalExpense) * 100) / 100;
@@ -139,7 +167,8 @@ export const getDashboardStats = async (req, res) => {
       totalExpense: Math.round(totalExpense * 100) / 100,
       netProfit: netProfit,
       receivedPayment: Math.round(receivedPayment * 100) / 100,
-      pendingPayment: Math.round(pendingPayment * 100) / 100
+      pendingPayment: Math.round(pendingPayment * 100) / 100,
+      processingPayment: Math.round(processingPayment * 100) / 100
     };
 
     return sendSuccessResponse({

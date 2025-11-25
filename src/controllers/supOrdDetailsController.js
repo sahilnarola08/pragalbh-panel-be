@@ -45,6 +45,76 @@ const buildBankResponse = (bank) => {
   return { bankId, bank: bankInfo };
 };
 
+// build order response with a single relevant product for the expense
+const buildOrderDetails = (orderDoc, expenseItem = {}) => {
+  if (!orderDoc || typeof orderDoc !== "object") {
+    return { order: null, purchasePrice: 0 };
+  }
+
+  const products = Array.isArray(orderDoc.products) ? orderDoc.products : [];
+  const normalizedDescription = expenseItem.description
+    ? expenseItem.description.toLowerCase().trim()
+    : null;
+
+  const findProductMatch = () => {
+    if (!products.length) {
+      return null;
+    }
+
+    if (normalizedDescription) {
+      const nameMatchedProduct = products.find(
+        (product) =>
+          product.productName &&
+          product.productName.toLowerCase().trim() === normalizedDescription
+      );
+      if (nameMatchedProduct) {
+        return nameMatchedProduct;
+      }
+    }
+
+    const amountPriorities = [];
+    if (typeof expenseItem.dueAmount === "number" && expenseItem.dueAmount > 0) {
+      amountPriorities.push(expenseItem.dueAmount);
+    }
+    if (typeof expenseItem.paidAmount === "number" && expenseItem.paidAmount > 0) {
+      amountPriorities.push(expenseItem.paidAmount);
+    }
+
+    for (const amount of amountPriorities) {
+      const matchedByAmount = products.find(
+        (product) => Number(product.purchasePrice || 0) === Number(amount)
+      );
+      if (matchedByAmount) {
+        return matchedByAmount;
+      }
+    }
+
+    return products[0];
+  };
+
+  const matchedProduct = findProductMatch();
+  const productPayload = matchedProduct
+    ? [
+        {
+          productName: matchedProduct.productName || "",
+          orderDate: matchedProduct.orderDate,
+          dispatchDate: matchedProduct.dispatchDate,
+          purchasePrice: matchedProduct.purchasePrice || 0,
+          sellingPrice: matchedProduct.sellingPrice || 0,
+        },
+      ]
+    : [];
+
+  return {
+    order: {
+      _id: orderDoc._id,
+      orderId: orderDoc.orderId,
+      products: productPayload,
+    },
+    purchasePrice: matchedProduct?.purchasePrice || 0,
+  };
+};
+
 export const getSupplierOrderDetails = async (req, res) => {
   try {
     let supplierId = req.params.id?.trim();
@@ -84,7 +154,11 @@ export const getSupplierOrderDetails = async (req, res) => {
       supplierId: supplierId,
     })
       .populate("supplierId", "firstName lastName email phone advancePayment")
-      .populate("orderId", "product orderDate dispatchDate orderId purchasePrice")
+      .populate({
+        path: "orderId",
+        select:
+          "orderId products.productName products.orderDate products.dispatchDate products.purchasePrice products.sellingPrice",
+      })
       .populate({
         path: "bankId",
         select: "_id name",
@@ -123,7 +197,11 @@ export const getSupplierOrderDetails = async (req, res) => {
     const allExpenseData = await ExpanceIncome.find({
       supplierId: supplierId,
     })
-      .populate("orderId", "purchasePrice")
+      .populate({
+        path: "orderId",
+        select:
+          "orderId products.productName products.orderDate products.dispatchDate products.purchasePrice products.sellingPrice",
+      })
       .populate({
         path: "bankId",
         select: "_id name",
@@ -132,14 +210,23 @@ export const getSupplierOrderDetails = async (req, res) => {
       .lean();
 
     const purchaseTotal = allExpenseData.reduce((sum, item) => {
-      return sum + (item.orderId?.purchasePrice || 0);
+      const { purchasePrice: orderPurchasePrice } = buildOrderDetails(
+        item.orderId,
+        item
+      );
+      return sum + orderPurchasePrice;
     }, 0);
 
     const dueTotal = allExpenseData.reduce((sum, item) => {
-      // If dueAmount is set, use it; otherwise fall back to purchasePrice for old records
-      const due = (item.dueAmount !== undefined && item.dueAmount !== null) 
-        ? item.dueAmount 
-        : (item.orderId?.purchasePrice || 0);
+      const { purchasePrice: orderPurchasePrice } = buildOrderDetails(
+        item.orderId,
+        item
+      );
+      // If dueAmount is set, use it; otherwise fall back to selected product purchase price for old records
+      const due =
+        item.dueAmount !== undefined && item.dueAmount !== null
+          ? item.dueAmount
+          : orderPurchasePrice;
       return sum + due;
     }, 0);
 
@@ -163,15 +250,21 @@ export const getSupplierOrderDetails = async (req, res) => {
 
     const formattedData = supplierExpanseData.map((item) => {
       const { bankId, bank } = buildBankResponse(item.bankId);
+      const {
+        order: orderDetails,
+        purchasePrice: orderPurchasePrice,
+      } = buildOrderDetails(item.orderId, item);
+      const dueAmount =
+        item.dueAmount !== undefined && item.dueAmount !== null
+          ? item.dueAmount
+          : orderPurchasePrice;
+
       return {
         _id: item._id,
-        orderId: item.orderId,
+        orderId: orderDetails,
         paidAmount: item.paidAmount,
-        purchasePrice: item.orderId?.purchasePrice || 0,
-        dueAmount:
-          item.dueAmount !== undefined && item.dueAmount !== null
-            ? item.dueAmount
-            : item.orderId?.purchasePrice || 0,
+        purchasePrice: orderPurchasePrice,
+        dueAmount,
         status: item.status,
         bankId,
         bank,
