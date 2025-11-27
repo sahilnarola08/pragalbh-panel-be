@@ -25,3 +25,12 @@ export const ORDER_STATUS = {
   // Default values - Changed to PENDING
   export const DEFAULT_ORDER_STATUS = ORDER_STATUS.PENDING;
   export const DEFAULT_PAYMENT_STATUS = PAYMENT_STATUS.PENDING;
+  
+  // User Role Enum
+  export const USER_ROLE = {
+    ADMIN: 1,
+    USER: 2
+  };
+  
+  // Default role - Admin (1)
+  export const DEFAULT_USER_ROLE = USER_ROLE.ADMIN;
