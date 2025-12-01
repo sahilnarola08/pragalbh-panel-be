@@ -63,11 +63,7 @@ const orderSchema = new mongoose.Schema({
                                    },
                               },
                          ],
-                         default: [
-                              {
-                                   img: "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product",
-                              },
-                         ],
+                         default: [],
                     },
                },
           ],

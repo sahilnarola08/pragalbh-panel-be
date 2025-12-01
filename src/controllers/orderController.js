@@ -17,7 +17,12 @@ const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
 // extract product images
 const extractProductImages = (input, { fallback } = { fallback: false }) => {
   if (input === undefined || input === null) {
-    return fallback ? [{ img: DEFAULT_ORDER_IMAGE_PLACEHOLDER }] : undefined;
+    return fallback ? [{ img: DEFAULT_ORDER_IMAGE_PLACEHOLDER }] : [];
+  }
+
+  // If input is an empty array, return empty array (no default image)
+  if (Array.isArray(input) && input.length === 0) {
+    return [];
   }
 
   const arrayInput = Array.isArray(input) ? input : [input];
@@ -52,7 +57,8 @@ const extractProductImages = (input, { fallback } = { fallback: false }) => {
     return normalized;
   }
 
-  return fallback ? [{ img: DEFAULT_ORDER_IMAGE_PLACEHOLDER }] : undefined;
+  // Return empty array instead of undefined or fallback when no images provided
+  return [];
 };
 
 // sanitize order platform values
@@ -200,7 +206,7 @@ export const createOrder = async (req, res, next) => {
 
       const normalizedProductImages = extractProductImages(
         product.productImages,
-        { fallback: true }
+        { fallback: false }
       );
 
       processedProducts.push({
@@ -674,7 +680,7 @@ const updateOrder = async (req, res, next) => {
 
         const normalizedProductImages = extractProductImages(
           product.productImages,
-          { fallback: true }
+          { fallback: false }
         );
 
         processedProducts.push({
