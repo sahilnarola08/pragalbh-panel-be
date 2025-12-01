@@ -40,13 +40,13 @@ const userRegistrationSchema = yup.object().shape({
     .nullable()
     .transform((value) => (value === '' || value === null || value === undefined ? undefined : value))
     .optional()
-    .test('contactNumber', 'Contact number must be 10-15 digits', function(value) {
+    .test('contactNumber', 'Contact number must be at least 5 digits', function(value) {
       // If value is empty, undefined, or null, skip validation
       if (!value || value.trim() === '') {
         return true;
       }
-      // If value exists, validate it must be 10-15 digits
-      return /^[0-9]{10,15}$/.test(value);
+      // If value exists, validate it must be at least 5 digits
+      return /^[0-9]{5,}$/.test(value);
     }),
 
   address: yup
@@ -65,9 +65,33 @@ const userRegistrationSchema = yup.object().shape({
 
   company: yup
     .string()
-    .min(2, 'Company name must be at least 2 characters')
-    .max(100, 'Company name must not exceed 100 characters')
-    .matches(/^[a-zA-Z0-9\s&.-]+$/, 'Company name can only contain letters, numbers, spaces, &, ., and -'),
+    .nullable()
+    .transform((value) => (value === '' || value === null || value === undefined ? undefined : value))
+    .optional()
+    .test('company', 'Company name must be at least 2 characters', function(value) {
+      // If value is empty, undefined, or null, skip validation
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      // If value exists, validate minimum length
+      return value.trim().length >= 2;
+    })
+    .test('company', 'Company name must not exceed 100 characters', function(value) {
+      // If value is empty, undefined, or null, skip validation
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      // If value exists, validate maximum length
+      return value.trim().length <= 100;
+    })
+    .test('company', 'Company name can only contain letters, numbers, spaces, &, ., and -', function(value) {
+      // If value is empty, undefined, or null, skip validation
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      // If value exists, validate format
+      return /^[a-zA-Z0-9\s&.-]+$/.test(value);
+    }),
 });
 
 // User update validation schema (all fields optional)
@@ -97,13 +121,13 @@ const userUpdateSchema = yup.object().shape({
     .nullable()
     .transform((value) => (value === '' || value === null || value === undefined ? undefined : value))
     .optional()
-    .test('contactNumber', 'Contact number must be 10-15 digits', function(value) {
+    .test('contactNumber', 'Contact number must be at least 5 digits', function(value) {
       // If value is empty, undefined, or null, skip validation
       if (!value || value.trim() === '') {
         return true;
       }
-      // If value exists, validate it must be 10-15 digits
-      return /^[0-9]{10,15}$/.test(value);
+      // If value exists, validate it must be at least 5 digits
+      return /^[0-9]{5,}$/.test(value);
     }),
 
   address: yup
@@ -123,10 +147,33 @@ const userUpdateSchema = yup.object().shape({
 
   company: yup
     .string()
-    .min(2, 'Company name must be at least 2 characters')
-    .max(100, 'Company name must not exceed 100 characters')
-    .matches(/^[a-zA-Z0-9\s&.-]+$/, 'Company name can only contain letters, numbers, spaces, &, ., and -')
-    .optional(),
+    .nullable()
+    .transform((value) => (value === '' || value === null || value === undefined ? undefined : value))
+    .optional()
+    .test('company', 'Company name must be at least 2 characters', function(value) {
+      // If value is empty, undefined, or null, skip validation
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      // If value exists, validate minimum length
+      return value.trim().length >= 2;
+    })
+    .test('company', 'Company name must not exceed 100 characters', function(value) {
+      // If value is empty, undefined, or null, skip validation
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      // If value exists, validate maximum length
+      return value.trim().length <= 100;
+    })
+    .test('company', 'Company name can only contain letters, numbers, spaces, &, ., and -', function(value) {
+      // If value is empty, undefined, or null, skip validation
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      // If value exists, validate format
+      return /^[a-zA-Z0-9\s&.-]+$/.test(value);
+    }),
 });
 
 // User ID validation schema
