@@ -57,12 +57,16 @@ const register = async (req, res, next) => {
           message: "Email already exists."
         });
       }
+
+      // Convert empty contactNumber to undefined to avoid unique index issues
+      const contactNumberValue = contactNumber && contactNumber.trim() !== '' ? contactNumber.trim() : undefined;
+
       // Create new user (no password)
       const user = await User.create({
         firstName,
         lastName,
         address,
-        contactNumber,
+        contactNumber: contactNumberValue,
         platforms,
         email,
         clientType,
@@ -256,18 +260,25 @@ const updateUser = async (req, res, next) => {
       }
     }
 
-    // Check if contact number is being updated and already exists for another user
-    if (updateData.contactNumber) {
-      const existingUserByContact = await User.findOne({ 
-        contactNumber: updateData.contactNumber,
-        _id: { $ne: id }
-      });
-      if (existingUserByContact) {
-        return sendErrorResponse({
-          status: 400,
-          res,
-          message: "Contact number already exists for another user."
+    // Handle empty contactNumber - convert to undefined
+    if (updateData.contactNumber !== undefined) {
+      if (updateData.contactNumber && updateData.contactNumber.trim() !== '') {
+        // Check if contact number already exists for another user
+        const existingUserByContact = await User.findOne({ 
+          contactNumber: updateData.contactNumber.trim(),
+          _id: { $ne: id }
         });
+        if (existingUserByContact) {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Contact number already exists for another user."
+          });
+        }
+        updateData.contactNumber = updateData.contactNumber.trim();
+      } else {
+        // Convert empty string to undefined
+        updateData.contactNumber = undefined;
       }
     }
 
