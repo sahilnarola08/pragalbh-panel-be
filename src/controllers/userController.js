@@ -60,6 +60,9 @@ const register = async (req, res, next) => {
 
       // Convert empty contactNumber to undefined to avoid unique index issues
       const contactNumberValue = contactNumber && contactNumber.trim() !== '' ? contactNumber.trim() : undefined;
+      
+      // Convert empty company to undefined
+      const companyValue = company && company.trim() !== '' ? company.trim() : undefined;
 
       // Create new user (no password)
       const user = await User.create({
@@ -70,7 +73,7 @@ const register = async (req, res, next) => {
         platforms,
         email,
         clientType,
-        company
+        company: companyValue
       });
 
       // Populate clientType and platforms in response
@@ -279,6 +282,16 @@ const updateUser = async (req, res, next) => {
       } else {
         // Convert empty string to undefined
         updateData.contactNumber = undefined;
+      }
+    }
+
+    // Handle empty company - convert to undefined
+    if (updateData.company !== undefined) {
+      if (updateData.company && updateData.company.trim() !== '') {
+        updateData.company = updateData.company.trim();
+      } else {
+        // Convert empty string to undefined
+        updateData.company = undefined;
       }
     }
 
