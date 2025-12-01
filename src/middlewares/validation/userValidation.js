@@ -37,7 +37,17 @@ const userRegistrationSchema = yup.object().shape({
 
   contactNumber: yup
     .string()
-    .matches(/^[0-9]{10,15}$/, 'Contact number must be 10-15 digits'),
+    .nullable()
+    .transform((value) => (value === '' || value === null || value === undefined ? undefined : value))
+    .optional()
+    .test('contactNumber', 'Contact number must be 10-15 digits', function(value) {
+      // If value is empty, undefined, or null, skip validation
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      // If value exists, validate it must be 10-15 digits
+      return /^[0-9]{10,15}$/.test(value);
+    }),
 
   address: yup
     .string()
@@ -84,8 +94,17 @@ const userUpdateSchema = yup.object().shape({
 
   contactNumber: yup
     .string()
-    .matches(/^[0-9]{10,15}$/, 'Contact number must be 10-15 digits')
-    .optional(),
+    .nullable()
+    .transform((value) => (value === '' || value === null || value === undefined ? undefined : value))
+    .optional()
+    .test('contactNumber', 'Contact number must be 10-15 digits', function(value) {
+      // If value is empty, undefined, or null, skip validation
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      // If value exists, validate it must be 10-15 digits
+      return /^[0-9]{10,15}$/.test(value);
+    }),
 
   address: yup
     .string()
