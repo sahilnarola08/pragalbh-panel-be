@@ -117,7 +117,7 @@ export const createOrder = async (req, res, next) => {
     // ✅ Validate client existence
     const existingClient = await User.findOne({
       $or: [
-        { firstName: new RegExp(clientName, "i") },
+        { firstName: new RegExp(clientName,   "i") },
         { lastName: new RegExp(clientName, "i") },
         { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: clientName, options: "i" } } }
       ]
@@ -126,7 +126,7 @@ export const createOrder = async (req, res, next) => {
     if (!existingClient) {
       return sendErrorResponse({
         res,
-        message: `Client "${clientName}" does not exist. Please add client first.`,
+        message: `Client ${clientName} does not exist. Please add client first.`,
         status: 400,
       });
     }
@@ -156,7 +156,7 @@ export const createOrder = async (req, res, next) => {
       if (!existingSupplier) {
         return sendErrorResponse({
           res,
-          message: `Supplier "${supplierName}" does not exist. Please add supplier first.`,
+          message: `Supplier ${supplierName} does not exist. Please add supplier first.`,
           status: 400,
         });
       }
@@ -173,7 +173,7 @@ export const createOrder = async (req, res, next) => {
       if (!existingProduct) {
         return sendErrorResponse({
           res,
-          message: `Product "${product.productName}" does not exist. Please add product first.`,
+          message: `Product ${product.productName} does not exist. Please add product first.`,
           status: 400,
         });
       }

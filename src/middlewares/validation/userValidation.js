@@ -51,8 +51,9 @@ const userRegistrationSchema = yup.object().shape({
 
   address: yup
     .string()
-    .min(10, 'Address must be at least 10 characters')
-    .max(200, 'Address must not exceed 200 characters'),
+    .min(2, 'Address must be at least 2 characters')
+    .max(200, 'Address must not exceed 200 characters')
+    .matches(/^[a-zA-Z0-9\s,-]+$/, 'Address can only contain letters, numbers, spaces, comma (,), and hyphen (-)'),
 
     platforms: yup
     .array()
@@ -83,14 +84,6 @@ const userRegistrationSchema = yup.object().shape({
       }
       // If value exists, validate maximum length
       return value.trim().length <= 100;
-    })
-    .test('company', 'Company name can only contain letters, numbers, spaces, &, ., and -', function(value) {
-      // If value is empty, undefined, or null, skip validation
-      if (!value || value.trim() === '') {
-        return true;
-      }
-      // If value exists, validate format
-      return /^[a-zA-Z0-9\s&.-]+$/.test(value);
     }),
 });
 
@@ -132,8 +125,9 @@ const userUpdateSchema = yup.object().shape({
 
   address: yup
     .string()
-    .min(10, 'Address must be at least 10 characters')
+    .min(2, 'Address must be at least 2 characters')
     .max(200, 'Address must not exceed 200 characters')
+    .matches(/^[a-zA-Z0-9\s,-]+$/, 'Address can only contain letters, numbers, spaces, comma (,), and hyphen (-)')
     .optional(),
 
   platforms: yup
@@ -165,14 +159,6 @@ const userUpdateSchema = yup.object().shape({
       }
       // If value exists, validate maximum length
       return value.trim().length <= 100;
-    })
-    .test('company', 'Company name can only contain letters, numbers, spaces, &, ., and -', function(value) {
-      // If value is empty, undefined, or null, skip validation
-      if (!value || value.trim() === '') {
-        return true;
-      }
-      // If value exists, validate format
-      return /^[a-zA-Z0-9\s&.-]+$/.test(value);
     }),
 });
 
@@ -183,6 +169,65 @@ const userIdSchema = yup.object().shape({
     .required('User ID is required')
     .matches(/^[0-9a-fA-F]{24}$/, 'Invalid user ID format')
 });
+
+// Helper function to format field names
+const formatFieldName = (fieldName) => {
+  if (!fieldName) return 'field';
+  
+  const fieldMap = {
+    firstName: 'first name',
+    lastName: 'last name',
+    contactNumber: 'contact number',
+    clientType: 'client type',
+    orderPlatform: 'order platform',
+    platformName: 'platform name',
+    platformUsername: 'platform username',
+    address: 'address',
+    company: 'company',
+    email: 'email',
+    platforms: 'platforms'
+  };
+  return fieldMap[fieldName] || fieldName;
+};
+
+// Helper function to create simple error message
+const createSimpleErrorMessage = (errors) => {
+  if (!errors || errors.length === 0) {
+    return 'Validation failed';
+  }
+  
+  // Filter out errors without valid paths and get unique field names
+  // Handle both err.path and err.field (for compatibility)
+  const validErrors = errors.filter(err => {
+    if (!err) return false;
+    return err.path || err.field;
+  });
+  
+  if (validErrors.length === 0) {
+    return 'Validation failed';
+  }
+  
+  // Get unique field names (use path first, fallback to field)
+  const uniqueFields = [...new Set(validErrors.map(err => err.path || err.field).filter(Boolean))];
+  
+  if (uniqueFields.length === 0) {
+    return 'Validation failed';
+  }
+  
+  if (uniqueFields.length === 1) {
+    const fieldName = formatFieldName(uniqueFields[0]);
+    return `${fieldName} is invalid`;
+  }
+  
+  // Multiple errors - combine field names
+  const fieldNames = uniqueFields.map(field => formatFieldName(field));
+  const lastField = fieldNames.pop();
+  const fieldsString = fieldNames.length > 0 
+    ? `${fieldNames.join(', ')} and ${lastField}` 
+    : lastField;
+  
+  return `${fieldsString} is invalid`;
+};
 
 // Validation middleware for user update
 const validateUserUpdate = async (req, res, next) => {
@@ -197,16 +242,31 @@ const validateUserUpdate = async (req, res, next) => {
     
     next();
   } catch (error) {
-    const errors = error.inner.map(err => ({
-      field: err.path,
-      message: err.message
-    }));
+    // Map errors to include path property for createSimpleErrorMessage
+    // Handle both error.inner (array) and error.errors (object) formats
+    let errors = [];
+    
+    if (error.inner && Array.isArray(error.inner) && error.inner.length > 0) {
+      errors = error.inner.map(err => ({
+        path: err.path || err.params?.path || err.params?.label,
+        field: err.path || err.params?.path || err.params?.label,
+        message: err.message
+      })).filter(err => err.path); // Filter out errors without paths
+    } else if (error.errors && typeof error.errors === 'object') {
+      // Handle case where errors might be an object
+      errors = Object.keys(error.errors).map(key => ({
+        path: key,
+        field: key,
+        message: error.errors[key]
+      }));
+    }
+
+    const errorMessage = createSimpleErrorMessage(errors);
 
     return sendErrorResponse({
       status: 400,
       res,
-      message: 'Validation failed',
-      error: { errors }
+      message: errorMessage
     });
   }
 };
@@ -217,16 +277,31 @@ const validateUserDelete = async (req, res, next) => {
     await userIdSchema.validate({ id: req.params.id }, { abortEarly: false });
     next();
   } catch (error) {
-    const errors = error.inner.map(err => ({
-      field: err.path,
-      message: err.message
-    }));
+    // Map errors to include path property for createSimpleErrorMessage
+    // Handle both error.inner (array) and error.errors (object) formats
+    let errors = [];
+    
+    if (error.inner && Array.isArray(error.inner) && error.inner.length > 0) {
+      errors = error.inner.map(err => ({
+        path: err.path || err.params?.path || err.params?.label,
+        field: err.path || err.params?.path || err.params?.label,
+        message: err.message
+      })).filter(err => err.path); // Filter out errors without paths
+    } else if (error.errors && typeof error.errors === 'object') {
+      // Handle case where errors might be an object
+      errors = Object.keys(error.errors).map(key => ({
+        path: key,
+        field: key,
+        message: error.errors[key]
+      }));
+    }
+
+    const errorMessage = createSimpleErrorMessage(errors);
 
     return sendErrorResponse({
       status: 400,
       res,
-      message: 'Validation failed',
-      error: { errors }
+      message: errorMessage
     });
   }
 };
@@ -237,16 +312,31 @@ const validateUserRegistration = async (req, res, next) => {
     await userRegistrationSchema.validate(req.body, { abortEarly: false });
     next();
   } catch (error) {
-    const errors = error.inner.map(err => ({
-      field: err.path,
-      message: err.message
-    }));
+    // Map errors to include path property for createSimpleErrorMessage
+    // Handle both error.inner (array) and error.errors (object) formats
+    let errors = [];
+    
+    if (error.inner && Array.isArray(error.inner) && error.inner.length > 0) {
+      errors = error.inner.map(err => ({
+        path: err.path || err.params?.path || err.params?.label,
+        field: err.path || err.params?.path || err.params?.label,
+        message: err.message
+      })).filter(err => err.path); // Filter out errors without paths
+    } else if (error.errors && typeof error.errors === 'object') {
+      // Handle case where errors might be an object
+      errors = Object.keys(error.errors).map(key => ({
+        path: key,
+        field: key,
+        message: error.errors[key]
+      }));
+    }
+
+    const errorMessage = createSimpleErrorMessage(errors);
 
     return sendErrorResponse({
       status: 400,
       res,
-      message: 'Validation failed',
-      error: { errors }
+      message: errorMessage
     });
   }
 };
