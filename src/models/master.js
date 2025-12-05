@@ -34,6 +34,11 @@ masterSchema.index({ name: 1, isDeleted: 1 }, {
      partialFilterExpression: { isDeleted: false }
 });
 
+// Additional performance indexes
+masterSchema.index({ master: 1, isDeleted: 1, isActive: 1 }); // For master asset filtering
+masterSchema.index({ isActive: 1, isDeleted: 1 }); // For active master queries
+masterSchema.index({ createdAt: -1 }); // For date-based sorting
+
 const Master = mongoose.model("master", masterSchema);
 
 export default Master;
