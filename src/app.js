@@ -6,6 +6,8 @@ import { fileURLToPath } from "url";
 import connectDB from "./config/db.js";
 import routes from "./routes/allrouts.js";
 import { startSchedulers } from "./services/schedulerService.js";
+import compression from "compression";
+import cacheMiddleware from "./middlewares/cache.js";
 
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -26,8 +28,25 @@ connectDB();
 
 // Middleware
 app.use(cors());
+
+// Compression middleware - reduces response size by ~70%
+app.use(compression({
+  level: 6, // Compression level (1-9, 6 is a good balance)
+  filter: (req, res) => {
+    // Don't compress if client doesn't support it
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    // Use compression for all other requests
+    return compression.filter(req, res);
+  }
+}));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Cache middleware - must be before routes
+app.use(cacheMiddleware);
 
 // Serve static files (uploaded images)
 app.use(

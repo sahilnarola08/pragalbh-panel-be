@@ -56,12 +56,20 @@ const userSchema = new mongoose.Schema({
      isDeleted: {
           type: Boolean,
           default: false,
+          index: true,
      },
 }, {
      timestamps: true,
      toJSON: { virtuals: true },
      toObject: { virtuals: true }
 });
+
+// Performance indexes
+userSchema.index({ firstName: 1, lastName: 1, isDeleted: 1 }); // Compound index for name searches
+userSchema.index({ clientType: 1, isDeleted: 1 }); // For client type filtering
+userSchema.index({ createdAt: -1 }); // For date-based sorting
+// Text index for full-text search (MongoDB text search)
+userSchema.index({ firstName: "text", lastName: "text", company: "text" });
 
 // Virtual for full name
 userSchema.virtual('fullName').get(function () {

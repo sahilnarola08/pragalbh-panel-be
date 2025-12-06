@@ -52,12 +52,20 @@ const supplierSchema = new mongoose.Schema({
      isDeleted: {
           type: Boolean,
           default: false,
+          index: true,
      },
 }, {
      timestamps: true,
      toJSON: { virtuals: true },
      toObject: { virtuals: true }
 });
+
+// Performance indexes
+supplierSchema.index({ firstName: 1, lastName: 1, isDeleted: 1 }); // Compound index for name searches
+supplierSchema.index({ company: 1, isDeleted: 1 }); // For company filtering
+supplierSchema.index({ createdAt: -1 }); // For date-based sorting
+// Text index for full-text search
+supplierSchema.index({ firstName: "text", lastName: "text", company: "text" });
 
 // Virtual for full name
 supplierSchema.virtual('fullName').get(function () {
