@@ -1325,6 +1325,11 @@ export const addExpanseEntry = async (req, res) => {
         match: { isDeleted: false },
       });
 
+    // ✅ Invalidate cache after expense creation
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('income');
+    invalidateCache('dashboard');
+
     const expenseResponse = docToPlainWithBank(populatedExpense);
 
     return res.status(201).json({
@@ -1646,6 +1651,11 @@ export const editExpanseEntry = async (req, res) => {
 
     const expenseResponse = docToPlainWithBank(populatedExpense);
 
+    // ✅ Invalidate cache after expense update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('income');
+    invalidateCache('dashboard');
+
     return res.status(200).json({
       message: "Expense entry updated successfully",
       data: expenseResponse,
@@ -1888,6 +1898,11 @@ export const updateIncomePaymentStatus = async (req, res) => {
       );
     }
 
+    // ✅ Invalidate cache after payment status update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('income');
+    invalidateCache('dashboard');
+
     return res.status(200).json({
       status: 200,
       message: targetMessage,
@@ -1957,6 +1972,11 @@ export const addExtraExpense = async (req, res) => {
         select: "_id name",
         match: { isDeleted: false },
       });
+
+    // ✅ Invalidate cache after extra expense creation
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('income');
+    invalidateCache('dashboard');
 
     const expenseResponse = docToPlainWithBank(populatedExpense);
 
@@ -2037,6 +2057,11 @@ export const editExtraExpense = async (req, res) => {
         select: "_id name",
         match: { isDeleted: false },
       });
+
+    // ✅ Invalidate cache after extra expense update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('income');
+    invalidateCache('dashboard');
 
     const expenseResponse = docToPlainWithBank(populatedExpense);
 
@@ -2311,6 +2336,11 @@ export const addExtraIncome = async (req, res) => {
       );
     }
 
+    // ✅ Invalidate cache after extra income creation
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('income');
+    invalidateCache('dashboard');
+
     return res.status(201).json({
       status: 201,
       message: `Extra income added successfully with status ${targetStatus.toUpperCase()}`,
@@ -2512,6 +2542,11 @@ export const editExtraIncome = async (req, res) => {
         mediatorDetails
       );
     }
+
+    // ✅ Invalidate cache after extra income update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('income');
+    invalidateCache('dashboard');
 
     return res.status(200).json({
       status: 200,
