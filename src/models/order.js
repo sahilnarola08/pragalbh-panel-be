@@ -138,6 +138,8 @@ orderSchema.index({ clientName: 1 }); // For client name searches
 orderSchema.index({ createdAt: -1 }); // For date-based sorting
 orderSchema.index({ "products.orderDate": 1 }); // For order date filtering
 orderSchema.index({ "products.orderPlatform": 1 }); // For platform filtering
+// Text index for search optimization
+orderSchema.index({ clientName: "text", address: "text", supplier: "text", "products.productName": "text" });
 
 // Generate order ID 
 orderSchema.pre('save', async function (next) {
