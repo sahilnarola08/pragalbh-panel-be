@@ -107,6 +107,11 @@ const createProduct = async (req, res) => {
       match: { isDeleted: false },
     });
 
+    // ✅ Invalidate cache after product creation
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('product');
+    invalidateCache('dashboard');
+
     return sendSuccessResponse({
       res,
       data: newProduct,
@@ -157,11 +162,11 @@ const getAllProducts = async (req, res) => {
         orConditions.push({ category: search.trim() });
       }
 
-      // Search category names in Master collection
+      // ✅ Optimize: Search category names in Master collection with lean()
       const matchingCategories = await Master.find({
         name: searchRegex,
         isDeleted: false,
-      }).select("_id");
+      }).select("_id").lean();
 
       if (matchingCategories.length > 0) {
         const categoryIds = matchingCategories.map((cat) => cat._id);
@@ -241,17 +246,20 @@ const getAllProducts = async (req, res) => {
       }
     }
 
-    const products = await Product.find(filter)
-      .sort(sort)
-      .skip(offset)
-      .limit(limitNum)
-      .populate({
-        path: "category",
-        select: "_id name",
-        match: { isDeleted: false },
-      });
-
-    const totalProducts = await Product.countDocuments(filter);
+    // ✅ Optimize: Run count and find in parallel, use lean()
+    const [products, totalProducts] = await Promise.all([
+      Product.find(filter)
+        .sort(sort)
+        .skip(offset)
+        .limit(limitNum)
+        .populate({
+          path: "category",
+          select: "_id name",
+          match: { isDeleted: false },
+        })
+        .lean(),
+      Product.countDocuments(filter)
+    ]);
 
     return sendSuccessResponse({
       status: 200,
@@ -369,7 +377,13 @@ const updateProduct = async (req, res, next) => {
         path: "category",
         select: "_id name",
         match: { isDeleted: false },
-      });
+      })
+      .lean();
+
+    // ✅ Invalidate cache after product update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('product', id);
+    invalidateCache('dashboard');
 
     sendSuccessResponse({
       res,
@@ -403,7 +417,13 @@ const deleteProduct = async (req, res, next) => {
       id,
       { isDeleted: true },
       { new: true }
-    );
+    )
+      .lean();
+
+    // ✅ Invalidate cache after product deletion
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('product', id);
+    invalidateCache('dashboard');
 
     sendSuccessResponse({
       res,
@@ -428,7 +448,8 @@ const getProductById = async (req, res, next) => {
         path: "category",
         select: "_id name",
         match: { isDeleted: false },
-      });
+      })
+      .lean();
     
     if (!product || product.isDeleted) {
       return sendErrorResponse({

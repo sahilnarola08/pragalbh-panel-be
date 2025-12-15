@@ -114,14 +114,15 @@ export const createOrder = async (req, res, next) => {
       shippingCost
     } = req.body;
 
-    // ✅ Validate client existence
+    // ✅ Validate client existence - optimized with text index
     const existingClient = await User.findOne({
       $or: [
-        { firstName: new RegExp(clientName,   "i") },
-        { lastName: new RegExp(clientName, "i") },
-        { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: clientName, options: "i" } } }
-      ]
-    });
+        { firstName: { $regex: clientName.trim(), $options: "i" } },
+        { lastName: { $regex: clientName.trim(), $options: "i" } },
+        { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: clientName.trim(), options: "i" } } }
+      ],
+      isDeleted: false
+    }).lean();
 
     if (!existingClient) {
       return sendErrorResponse({
@@ -146,12 +147,13 @@ export const createOrder = async (req, res, next) => {
     if (supplierName) {
       existingSupplier = await Supplier.findOne({
         $or: [
-          { firstName: new RegExp(supplierName, "i") },
-          { lastName: new RegExp(supplierName, "i") },
-          { company: new RegExp(supplierName, "i") },
+          { firstName: { $regex: supplierName, $options: "i" } },
+          { lastName: { $regex: supplierName, $options: "i" } },
+          { company: { $regex: supplierName, $options: "i" } },
           { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: supplierName, options: "i" } } }
-        ]
-      });
+        ],
+        isDeleted: false
+      }).lean();
 
       if (!existingSupplier) {
         return sendErrorResponse({
@@ -162,13 +164,34 @@ export const createOrder = async (req, res, next) => {
       }
     }
 
+    // ✅ BATCH VALIDATION - Process all products in parallel instead of sequential
+    const productNames = products.map(p => p.productName.trim());
+    const orderPlatformIds = products.map(p => p.orderPlatform).filter(Boolean);
+    const mediatorIds = products.map(p => p.mediator).filter(Boolean);
+    const masterIds = [...new Set([...orderPlatformIds, ...mediatorIds].filter(Boolean))];
+
+    // Batch fetch all products, masters in parallel
+    const [existingProducts, existingMasters] = await Promise.all([
+      Product.find({
+        productName: { $in: productNames },
+        isDeleted: false
+      }).select("productName").lean(),
+      masterIds.length > 0 ? Master.find({
+        _id: { $in: masterIds },
+        isDeleted: false
+      }).select("_id name").lean() : []
+    ]);
+
+    // Create lookup maps for O(1) access
+    const productMap = new Map(existingProducts.map(p => [p.productName.toLowerCase(), p]));
+    const masterMap = new Map(existingMasters.map(m => [String(m._id), m]));
+
     // Process and validate each product
     const processedProducts = [];
     for (const product of products) {
-      // ✅ Validate product existence
-      const existingProduct = await Product.findOne({
-        productName: new RegExp(product.productName, "i")
-      });
+      // ✅ Validate product existence using map lookup
+      const productKey = product.productName.trim().toLowerCase();
+      const existingProduct = productMap.get(productKey);
 
       if (!existingProduct) {
         return sendErrorResponse({
@@ -178,28 +201,32 @@ export const createOrder = async (req, res, next) => {
         });
       }
 
-      // Validate and normalize orderPlatform
-      let orderPlatformMaster;
-      try {
-        orderPlatformMaster = await normalizeMasterIdOrThrow(product.orderPlatform, "orderPlatform");
-      } catch (error) {
+      // ✅ Validate and normalize orderPlatform using map lookup
+      const orderPlatformId = typeof product.orderPlatform === 'object' 
+        ? product.orderPlatform._id || product.orderPlatform.id || String(product.orderPlatform)
+        : String(product.orderPlatform);
+      
+      const orderPlatformMaster = masterMap.get(orderPlatformId);
+      if (!orderPlatformMaster) {
         return sendErrorResponse({
           res,
-          message: error.message || "Invalid order platform",
-          status: error.status || 400,
+          message: "Invalid order platform",
+          status: 400,
         });
       }
 
-      // Validate and normalize mediator if provided
+      // ✅ Validate and normalize mediator if provided using map lookup
       let mediatorMaster = null;
       if (product.mediator) {
-        try {
-          mediatorMaster = await normalizeMasterIdOrThrow(product.mediator, "mediator");
-        } catch (error) {
+        const mediatorId = typeof product.mediator === 'object'
+          ? product.mediator._id || product.mediator.id || String(product.mediator)
+          : String(product.mediator);
+        mediatorMaster = masterMap.get(mediatorId);
+        if (!mediatorMaster) {
           return sendErrorResponse({
             res,
-            message: error.message || "Invalid mediator",
-            status: error.status || 400,
+            message: "Invalid mediator",
+            status: 400,
           });
         }
       }
@@ -273,6 +300,11 @@ export const createOrder = async (req, res, next) => {
 
     await Promise.all([...incomePromises, ...expensePromises]);
 
+    // ✅ Invalidate cache after order creation
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('order');
+    invalidateCache('dashboard');
+
     const populatedOrder = await Order.findById(order._id)
       .populate({
         path: "products.orderPlatform",
@@ -283,13 +315,12 @@ export const createOrder = async (req, res, next) => {
         path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
-      });
-
-    const formattedOrder = populatedOrder.toObject();
+      })
+      .lean();
 
     return sendSuccessResponse({
       res,
-      data: formattedOrder,
+      data: populatedOrder,
       message: "Order created successfully",
       status: 200
     });
@@ -596,11 +627,12 @@ const updateOrder = async (req, res, next) => {
     if (updateData.clientName) {
       existingClient = await User.findOne({
         $or: [
-          { firstName: new RegExp(updateData.clientName, "i") },
-          { lastName: new RegExp(updateData.clientName, "i") },
-          { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.clientName, options: "i" } } }
-        ]
-      });
+          { firstName: { $regex: updateData.clientName.trim(), $options: "i" } },
+          { lastName: { $regex: updateData.clientName.trim(), $options: "i" } },
+          { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.clientName.trim(), options: "i" } } }
+        ],
+        isDeleted: false
+      }).lean();
 
       if (!existingClient) {
         return sendErrorResponse({
@@ -611,16 +643,17 @@ const updateOrder = async (req, res, next) => {
       }
     }
 
-    // Validate supplier existence if supplier is being updated
+    // ✅ Validate supplier existence if supplier is being updated - optimized
     if (updateData.supplier && updateData.supplier.trim()) {
       existingSupplier = await Supplier.findOne({
         $or: [
-          { firstName: new RegExp(updateData.supplier, "i") },
-          { lastName: new RegExp(updateData.supplier, "i") },
-          { company: new RegExp(updateData.supplier, "i") },
-          { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.supplier, options: "i" } } }
-        ]
-      });
+          { firstName: { $regex: updateData.supplier.trim(), $options: "i" } },
+          { lastName: { $regex: updateData.supplier.trim(), $options: "i" } },
+          { company: { $regex: updateData.supplier.trim(), $options: "i" } },
+          { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.supplier.trim(), options: "i" } } }
+        ],
+        isDeleted: false
+      }).lean();
 
       if (!existingSupplier) {
         return sendErrorResponse({
@@ -631,15 +664,35 @@ const updateOrder = async (req, res, next) => {
       }
     }
 
-    // Process products array if being updated
+    // ✅ Process products array if being updated - BATCH VALIDATION
     if (updateData.products && Array.isArray(updateData.products)) {
+      const productNames = updateData.products.map(p => p.productName?.trim()).filter(Boolean);
+      const orderPlatformIds = updateData.products.map(p => p.orderPlatform).filter(Boolean);
+      const mediatorIds = updateData.products.map(p => p.mediator).filter(Boolean);
+      const masterIds = [...new Set([...orderPlatformIds, ...mediatorIds].filter(Boolean))];
+
+      // Batch fetch all products, masters in parallel
+      const [existingProducts, existingMasters] = await Promise.all([
+        Product.find({
+          productName: { $in: productNames },
+          isDeleted: false
+        }).select("productName").lean(),
+        masterIds.length > 0 ? Master.find({
+          _id: { $in: masterIds },
+          isDeleted: false
+        }).select("_id name").lean() : []
+      ]);
+
+      // Create lookup maps for O(1) access
+      const productMap = new Map(existingProducts.map(p => [p.productName.toLowerCase(), p]));
+      const masterMap = new Map(existingMasters.map(m => [String(m._id), m]));
+
       const processedProducts = [];
       
       for (const product of updateData.products) {
-        // Validate product existence
-        const existingProduct = await Product.findOne({
-          productName: new RegExp(product.productName, "i")
-        });
+        // ✅ Validate product existence using map lookup
+        const productKey = product.productName?.trim().toLowerCase();
+        const existingProduct = productMap.get(productKey);
 
         if (!existingProduct) {
           return sendErrorResponse({
@@ -649,34 +702,32 @@ const updateOrder = async (req, res, next) => {
           });
         }
 
-        // Validate and normalize orderPlatform
-        let orderPlatformMaster;
-        try {
-          orderPlatformMaster = await normalizeMasterIdOrThrow(
-            product.orderPlatform,
-            "orderPlatform"
-          );
-        } catch (error) {
+        // ✅ Validate and normalize orderPlatform using map lookup
+        const orderPlatformId = typeof product.orderPlatform === 'object' 
+          ? product.orderPlatform._id || product.orderPlatform.id || String(product.orderPlatform)
+          : String(product.orderPlatform);
+        
+        const orderPlatformMaster = masterMap.get(orderPlatformId);
+        if (!orderPlatformMaster) {
           return sendErrorResponse({
             res,
-            message: error.message || "Invalid order platform",
-            status: error.status || 400,
+            message: "Invalid order platform",
+            status: 400,
           });
         }
 
-        // Handle mediator update
+        // ✅ Handle mediator update using map lookup
         let mediatorMaster = null;
         if (product.mediator !== undefined && product.mediator !== null && product.mediator !== "") {
-          try {
-            mediatorMaster = await normalizeMasterIdOrThrow(
-              product.mediator,
-              "mediator"
-            );
-          } catch (error) {
+          const mediatorId = typeof product.mediator === 'object'
+            ? product.mediator._id || product.mediator.id || String(product.mediator)
+            : String(product.mediator);
+          mediatorMaster = masterMap.get(mediatorId);
+          if (!mediatorMaster) {
             return sendErrorResponse({
               res,
-              message: error.message || "Invalid mediator",
-              status: error.status || 400,
+              message: "Invalid mediator",
+              status: 400,
             });
           }
         }
@@ -726,9 +777,13 @@ const updateOrder = async (req, res, next) => {
         path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
-      });
+      })
+      .lean();
 
-    const formattedOrder = updatedOrder.toObject();
+    // ✅ Invalidate cache after order update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('order', id);
+    invalidateCache('dashboard');
 
     // --- Sync related Income and Expense records for this order ---
     try {
@@ -786,7 +841,7 @@ const updateOrder = async (req, res, next) => {
 
     sendSuccessResponse({
       res,
-      data: formattedOrder,
+      data: updatedOrder,
       message: "Order updated successfully",
       status: 200
     });
@@ -820,6 +875,11 @@ const deleteOrder = async (req, res, next) => {
     // Hard delete the order
     await Order.findByIdAndDelete(id);
 
+    // ✅ Invalidate cache after order deletion
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('order', id);
+    invalidateCache('dashboard');
+
     sendSuccessResponse({
       res,
       data: null,
@@ -849,7 +909,8 @@ const getOrderById = async (req, res, next) => {
         path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
-      });
+      })
+      .lean();
     
     if (!order) {
       return sendErrorResponse({
@@ -859,11 +920,9 @@ const getOrderById = async (req, res, next) => {
       });
     }
 
-    const formattedOrder = order.toObject();
-
     sendSuccessResponse({
       res,
-      data: formattedOrder,
+      data: order,
       message: "Order retrieved successfully",
       status: 200
     });
@@ -956,9 +1015,23 @@ const getKanbanData = async (req, res) => {
       }
     }
 
+    // ✅ Optimized Kanban query with lean() and selective fields
     const promises = statuses.map(async (status) => {
       const queryFilter = { status, ...dateFilter };
-      const orders = await Order.find(queryFilter).sort({ createdAt: 'asc' });
+      const orders = await Order.find(queryFilter)
+        .select("_id clientName address products status trackingId courierCompany createdAt")
+        .populate({
+          path: "products.orderPlatform",
+          select: "_id name",
+          match: { isDeleted: false },
+        })
+        .populate({
+          path: "products.mediator",
+          select: "_id name",
+          match: { isDeleted: false },
+        })
+        .sort({ createdAt: 'asc' })
+        .lean();
       kanbanData[status] = orders;
     });
 
@@ -1001,6 +1074,10 @@ export const updateOrderChecklist = async (req, res) => {
 
     order.checklist = checklist;
     await order.save();
+
+    // ✅ Invalidate cache after checklist update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('order', id);
 
     return sendSuccessResponse({
       res,
@@ -1083,6 +1160,12 @@ export const updateOrderStatus = async (req, res) => {
     order.status = status;
     await order.save();
 
+    // ✅ Invalidate cache after status update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('order', id);
+    invalidateCache('dashboard');
+    invalidateCache('kanban');
+
     return sendSuccessResponse({
       res,
       status: 200,
@@ -1139,6 +1222,12 @@ export const updateTrackingInfo = async (req, res) => {
       order.shippingCost = Math.round(shippingCost * 100) / 100;
     }
     await order.save();
+
+    // ✅ Invalidate cache after tracking update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('order', orderId);
+    invalidateCache('dashboard');
+    invalidateCache('kanban');
 
     return sendSuccessResponse({
       res,
@@ -1263,7 +1352,13 @@ export const updateInitialPayment = async (req, res) => {
         path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
-      });
+      })
+      .lean();
+
+    // ✅ Invalidate cache after payment update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('order', orderId);
+    invalidateCache('dashboard');
 
     return sendSuccessResponse({
       res,

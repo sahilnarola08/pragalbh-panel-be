@@ -31,10 +31,18 @@ const productSchema = new mongoose.Schema({
   isDeleted: {
     type: Boolean,
     default: false,
+    index: true,
   },
 }, {
   timestamps: true, 
 });
+
+// Performance indexes
+productSchema.index({ category: 1, isDeleted: 1 }); // Compound index for category queries
+productSchema.index({ createdAt: -1 }); // For date-based sorting
+productSchema.index({ productName: 1, isDeleted: 1 }); // Compound index for search
+// Text index for product name search
+productSchema.index({ productName: "text" });
 
 const Product = mongoose.model("Product", productSchema);
 export default Product;
