@@ -589,9 +589,12 @@ const updateOrder = async (req, res, next) => {
       });
     }
 
+    let existingClient = null;
+    let existingSupplier = null;
+
     // Validate client existence if clientName is being updated
     if (updateData.clientName) {
-      const existingClient = await User.findOne({
+      existingClient = await User.findOne({
         $or: [
           { firstName: new RegExp(updateData.clientName, "i") },
           { lastName: new RegExp(updateData.clientName, "i") },
@@ -610,7 +613,7 @@ const updateOrder = async (req, res, next) => {
 
     // Validate supplier existence if supplier is being updated
     if (updateData.supplier && updateData.supplier.trim()) {
-      const existingSupplier = await Supplier.findOne({
+      existingSupplier = await Supplier.findOne({
         $or: [
           { firstName: new RegExp(updateData.supplier, "i") },
           { lastName: new RegExp(updateData.supplier, "i") },
@@ -727,6 +730,60 @@ const updateOrder = async (req, res, next) => {
 
     const formattedOrder = updatedOrder.toObject();
 
+    // --- Sync related Income and Expense records for this order ---
+    try {
+      const [orderIncomes, orderExpenses] = await Promise.all([
+        Income.find({ orderId: id }).sort({ createdAt: 1, _id: 1 }),
+        ExpanseIncome.find({ orderId: id }).sort({ createdAt: 1, _id: 1 }),
+      ]);
+
+      // Update client reference in Income if client changed
+      if (existingClient && orderIncomes.length > 0) {
+        orderIncomes.forEach((inc) => {
+          inc.clientId = existingClient._id;
+        });
+      }
+
+      // Update supplier reference in Expense if supplier changed
+      if (existingSupplier && orderExpenses.length > 0) {
+        orderExpenses.forEach((exp) => {
+          exp.supplierId = existingSupplier._id;
+        });
+      }
+
+      const products = Array.isArray(updatedOrder.products)
+        ? updatedOrder.products
+        : [];
+
+      // Only try to sync per-product details when counts match to avoid corrupting extra manual entries
+      if (products.length > 0 && products.length === orderIncomes.length) {
+        products.forEach((product, index) => {
+          const income = orderIncomes[index];
+          if (!income) return;
+          income.Description = product.productName;
+          income.sellingPrice = product.sellingPrice;
+          income.initialPayment = product.initialPayment;
+        });
+      }
+
+      if (products.length > 0 && products.length === orderExpenses.length) {
+        products.forEach((product, index) => {
+          const expense = orderExpenses[index];
+          if (!expense) return;
+          expense.description = product.productName;
+          expense.dueAmount = product.purchasePrice;
+        });
+      }
+
+      await Promise.all([
+        ...orderIncomes.map((doc) => doc.save()),
+        ...orderExpenses.map((doc) => doc.save()),
+      ]);
+    } catch (syncError) {
+      // Log but don't break main order update flow
+      console.error("Error syncing income/expense with updated order:", syncError);
+    }
+
     sendSuccessResponse({
       res,
       data: formattedOrder,
@@ -739,7 +796,7 @@ const updateOrder = async (req, res, next) => {
   }
 };
 
-// Delete order by ID
+// Delete order by ID (and all related income/expense entries)
 const deleteOrder = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -754,13 +811,19 @@ const deleteOrder = async (req, res, next) => {
       });
     }
 
+    // Delete all related Income & Expense records for this order
+    await Promise.all([
+      Income.deleteMany({ orderId: id }),
+      ExpanseIncome.deleteMany({ orderId: id })
+    ]);
+
     // Hard delete the order
     await Order.findByIdAndDelete(id);
 
     sendSuccessResponse({
       res,
       data: null,
-      message: "Order deleted successfully",
+      message: "Order and all related income/expense entries deleted successfully",
       status: 200
     });
 
