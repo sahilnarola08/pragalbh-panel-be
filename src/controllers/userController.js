@@ -156,24 +156,37 @@ const register = async (req, res, next) => {
 
     // Search filter - always exclude deleted users
     const filter = { isDeleted: false };
-    if (search) {
+    
+    // Build search conditions if search parameter exists and is not empty
+    const normalizedSearch = search && typeof search === 'string' ? search.trim() : '';
+    if (normalizedSearch) {
+      const searchRegex = new RegExp(normalizedSearch, "i");
       const orConditions = [
-        { firstName: new RegExp(search, "i") },
-        { lastName: new RegExp(search, "i") },
-        { email: new RegExp(search, "i") },
-        { contactNumber: new RegExp(search, "i") },
-        { company: new RegExp(search, "i") },
-        { clientType: new RegExp(search, "i") }
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { email: searchRegex },
+        { contactNumber: searchRegex },
+        { company: searchRegex }
       ];
 
-      // Use $and to explicitly combine isDeleted: false with $or conditions
-      // This ensures isDeleted: false is always enforced
-      filter.$and = [
-        { isDeleted: false },
-        { $or: orConditions }
-      ];
-      // Remove the top-level isDeleted since it's now in $and
-      delete filter.isDeleted;
+      // If search is a valid ObjectId, include clientType match
+      if (mongoose.Types.ObjectId.isValid(normalizedSearch)) {
+        orConditions.push({ clientType: normalizedSearch });
+      }
+
+      // Search clientType names in Master collection
+      const matchingClientTypes = await Master.find({
+        name: searchRegex,
+        isDeleted: false,
+      }).select("_id").lean();
+
+      if (matchingClientTypes.length > 0) {
+        const clientTypeIds = matchingClientTypes.map((ct) => ct._id);
+        orConditions.push({ clientType: { $in: clientTypeIds } });
+      }
+
+      // Add $or condition to filter
+      filter.$or = orConditions;
     }
 
     // Date range filter
