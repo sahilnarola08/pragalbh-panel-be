@@ -351,9 +351,10 @@ export const getIncomeExpance = async (req, res) => {
       endDate = ""
     } = req.query;
 
-    page = parseInt(page);
-    limit = parseInt(limit);
-    const skip = (page - 1) * limit;
+    // Parse page and limit to integers with proper defaults and validation
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 10);
+    const skip = (pageNum - 1) * limitNum;
     const sortQuery = { [sortBy]: sortOrder === "asc" ? 1 : -1 };
 
     // Base query
@@ -544,7 +545,7 @@ export const getIncomeExpance = async (req, res) => {
       });
 
       const count = filtered.length;
-      const sliced = filtered.slice(skip, skip + limit);
+      const sliced = filtered.slice(skip, skip + limitNum);
 
       data = sliced.map((item) => {
         const { bankId, bank } = buildBankResponse(item.bankId);
@@ -713,7 +714,7 @@ export const getIncomeExpance = async (req, res) => {
       });
 
       const count = filtered.length;
-      const sliced = filtered.slice(skip, skip + limit);
+      const sliced = filtered.slice(skip, skip + limitNum);
 
       data = sliced.map((item) => {
         const { bankId, bank } = buildBankResponse(item.bankId);
@@ -966,7 +967,7 @@ export const getIncomeExpance = async (req, res) => {
       });
 
       total = merged.length;
-      data = sorted.slice(skip, skip + limit);
+      data = sorted.slice(skip, skip + limitNum);
     }
 
     // ✅ Final Response
@@ -975,8 +976,8 @@ export const getIncomeExpance = async (req, res) => {
       message: "Income and Expense fetched successfully",
       data: {
         total,
-        page,
-        limit,
+        page: pageNum,
+        limit: limitNum,
         items: data,
       },
     });

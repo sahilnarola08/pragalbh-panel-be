@@ -39,7 +39,7 @@ const productSchema = yup.object().shape({
     .required('Product name is required')
     .min(2, 'Product name must be at least 2 characters')
     .max(100, 'Product name must not exceed 100 characters')
-    .matches(/^[a-zA-Z0-9\s&.\-(),|]+$/, 'Product name can only contain letters, numbers, spaces, and special characters: &, ., -, (, ), comma (,), and pipe (|)'),
+    .matches(/^[a-zA-Z0-9\s&.\-(),|@#$%^*_+{}":>?<]+$/, 'Product name can only contain letters, numbers, spaces, and special characters: &, ., -, (, ), comma (,), pipe (|), @, #, $, %, ^, *, _, +, {, }, ", :, >, ?, <'),
 
   imageURLs: yup
     .array()
@@ -71,7 +71,7 @@ const productUpdateSchema = yup.object().shape({
     .string()
     .min(2, 'Product name must be at least 2 characters')
     .max(100, 'Product name must not exceed 100 characters')
-    .matches(/^[a-zA-Z0-9\s&.\-(),|]+$/, 'Product name can only contain letters, numbers, spaces, and special characters: &, ., -, (, ), comma (,), and pipe (|)')
+    .matches(/^[a-zA-Z0-9\s&.\-(),|@#$%^*_+{}":>?<]+$/, 'Product name can only contain letters, numbers, spaces, and special characters: &, ., -, (, ), comma (,), pipe (|), @, #, $, %, ^, *, _, +, {, }, ", :, >, ?, <')
     .optional(),
 
   imageURLs: yup

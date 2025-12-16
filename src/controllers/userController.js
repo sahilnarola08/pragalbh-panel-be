@@ -59,7 +59,20 @@ const register = async (req, res, next) => {
       }
 
       // Convert empty contactNumber to undefined to avoid unique index issues
-      const contactNumberValue = contactNumber && contactNumber.trim() !== '' ? contactNumber.trim() : undefined;
+      const contactNumberValue =
+        contactNumber && contactNumber.trim() !== "" ? contactNumber.trim() : undefined;
+
+      // Check if user already exists by contact number (if provided)
+      if (contactNumberValue) {
+        const existingUserByContact = await User.findOne({ contactNumber: contactNumberValue });
+        if (existingUserByContact) {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Contact number already exists.",
+          });
+        }
+      }
       
       // Convert empty company to undefined
       const companyValue = company && company.trim() !== '' ? company.trim() : undefined;
@@ -86,14 +99,34 @@ const register = async (req, res, next) => {
         select: '_id name'
       });
   
-      sendSuccessResponse({ 
-        res, 
-        data: user, 
+      sendSuccessResponse({
+        res,
+        data: user,
         message: "User registered successfully",
-        status: 200
+        status: 200,
       });
-  
+
     } catch (error) {
+      // Handle duplicate key errors more gracefully
+      if (error && error.code === 11000) {
+        const duplicateField = error.keyPattern
+          ? Object.keys(error.keyPattern)[0]
+          : null;
+
+        let message = "Duplicate value not allowed.";
+        if (duplicateField === "email") {
+          message = "Email already exists.";
+        } else if (duplicateField === "contactNumber") {
+          message = "Contact number already exists.";
+        }
+
+        return sendErrorResponse({
+          status: 400,
+          res,
+          message,
+        });
+      }
+
       next(error);
     }
   };
@@ -102,7 +135,12 @@ const register = async (req, res, next) => {
  const  getAllUsers = async (req, res) => {
   try {
     const { page = 1, limit = 10, search, sortField = 'createdAt', sortOrder = 'desc', startDate = "", endDate = "" } = req.query;
-    const offset = (page - 1) * limit;
+    
+    // Parse page and limit to integers
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 10;
+    const offset = (pageNum - 1) * limitNum;
+    
     const sort = {};
     sort[sortField] = sortOrder === "asc" ? 1 : -1;
 
@@ -194,7 +232,7 @@ const register = async (req, res, next) => {
       .find({...filter ,isDeleted: false})
       .sort(sort)
       .skip(offset)
-      .limit(limit)
+      .limit(limitNum)
       .select("-password -__v -createdAt -updatedAt")
       .populate({
         path: 'clientType',
@@ -216,8 +254,8 @@ const register = async (req, res, next) => {
       data: {
         users,
         totalUsers,
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNum,
+        limit: limitNum,
       },
       message: "User data retrieved successfully."
     });
