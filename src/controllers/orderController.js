@@ -1020,7 +1020,7 @@ const getKanbanData = async (req, res) => {
     const promises = statuses.map(async (status) => {
       const queryFilter = { status, ...dateFilter };
       const orders = await Order.find(queryFilter)
-        .select("_id clientName address products status trackingId courierCompany createdAt")
+        .select("_id clientName address products status trackingId courierCompany createdAt checklist shippingCost")
         .populate({
           path: "products.orderPlatform",
           select: "_id name",
