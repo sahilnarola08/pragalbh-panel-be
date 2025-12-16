@@ -262,6 +262,11 @@ const getAllProducts = async (req, res) => {
       Product.countDocuments(filter)
     ]);
 
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     return sendSuccessResponse({
       status: 200,
       res,
@@ -459,6 +464,11 @@ const getProductById = async (req, res, next) => {
         message: "Product not found."
       });
     }
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     sendSuccessResponse({
       res,

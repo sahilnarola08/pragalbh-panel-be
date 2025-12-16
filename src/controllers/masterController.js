@@ -153,6 +153,11 @@ const getAllMasters = async (req, res, next) => {
             hasPrevPage: pageNum > 1
         };
 
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
         return sendSuccessResponse({
             status: 200,
             res,
@@ -193,6 +198,11 @@ const getMasterById = async (req, res, next) => {
         // Convert to plain object and add id field
         const masterObj = master.toObject();
         masterObj.id = masterObj._id.toString();
+
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
 
         sendSuccessResponse({
             res,
@@ -436,6 +446,11 @@ const getAllMasterAssets = async (req, res, next) => {
             };
         });
 
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
         sendSuccessResponse({
             res,
             data: assetsList,
@@ -480,6 +495,11 @@ const getMasterAssetById = async (req, res, next) => {
             name: masterAsset.name,
             isDeleted: masterAsset.isDeleted
         };
+
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
 
         sendSuccessResponse({
             res,

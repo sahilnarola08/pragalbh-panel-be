@@ -687,6 +687,11 @@ const getSupplierById = async (req, res, next) => {
 
         const { createdAt, updatedAt, ...supplierPayload } = supplierData[0];
 
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
         sendSuccessResponse({
             res,
             data: supplierPayload,

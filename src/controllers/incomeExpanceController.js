@@ -970,6 +970,11 @@ export const getIncomeExpance = async (req, res) => {
       data = sorted.slice(skip, skip + limitNum);
     }
 
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     // ✅ Final Response
     res.status(200).json({
       status: 200,
@@ -2148,6 +2153,11 @@ export const getExpenseById = async (req, res) => {
       updatedAt: expense.updatedAt,
     };
 
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     return res.status(200).json({
       status: 200,
       message: "Expense fetched successfully",
@@ -2680,6 +2690,11 @@ export const getIncomeById = async (req, res) => {
       createdAt: income.createdAt,
       updatedAt: income.updatedAt,
     };
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return res.status(200).json({
       status: 200,

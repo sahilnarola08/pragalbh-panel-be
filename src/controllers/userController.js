@@ -98,6 +98,16 @@ const register = async (req, res, next) => {
         path: 'platforms.platformName',
         select: '_id name'
       });
+
+      // ✅ Invalidate cache after user creation
+      const { invalidateCache } = await import("../util/cacheHelper.js");
+      invalidateCache('user');
+      invalidateCache('dashboard');
+
+      // Set cache-control headers to prevent browser caching
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
   
       sendSuccessResponse({
         res,
@@ -144,10 +154,10 @@ const register = async (req, res, next) => {
     const sort = {};
     sort[sortField] = sortOrder === "asc" ? 1 : -1;
 
-    // Search filter
-    const filter = {};
+    // Search filter - always exclude deleted users
+    const filter = { isDeleted: false };
     if (search) {
-      filter.$or = [
+      const orConditions = [
         { firstName: new RegExp(search, "i") },
         { lastName: new RegExp(search, "i") },
         { email: new RegExp(search, "i") },
@@ -155,6 +165,15 @@ const register = async (req, res, next) => {
         { company: new RegExp(search, "i") },
         { clientType: new RegExp(search, "i") }
       ];
+
+      // Use $and to explicitly combine isDeleted: false with $or conditions
+      // This ensures isDeleted: false is always enforced
+      filter.$and = [
+        { isDeleted: false },
+        { $or: orConditions }
+      ];
+      // Remove the top-level isDeleted since it's now in $and
+      delete filter.isDeleted;
     }
 
     // Date range filter
@@ -229,7 +248,7 @@ const register = async (req, res, next) => {
 
     // Fetch users with populated clientType and platforms
     const users = await User
-      .find({...filter ,isDeleted: false})
+      .find(filter)
       .sort(sort)
       .skip(offset)
       .limit(limitNum)
@@ -246,7 +265,12 @@ const register = async (req, res, next) => {
       });
 
 
-    const totalUsers = await User.countDocuments({...filter ,isDeleted: false});
+    const totalUsers = await User.countDocuments(filter);
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return sendSuccessResponse({
       status: 200,
@@ -379,6 +403,17 @@ const updateUser = async (req, res, next) => {
       match: { isDeleted: false }
     });
 
+    // ✅ Invalidate cache after user update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('user', id);
+    invalidateCache('user');
+    invalidateCache('dashboard');
+
+    // Set cache-control headers to prevent browser caching
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     sendSuccessResponse({
       res,
       data: updatedUser,
@@ -396,9 +431,9 @@ const deleteUser = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Check if user exists
+    // Check if user exists and is not already deleted
     const existingUser = await User.findById(id);
-    if (!existingUser) {
+    if (!existingUser || existingUser.isDeleted) {
       return sendErrorResponse({
         status: 404,
         res,
@@ -406,9 +441,23 @@ const deleteUser = async (req, res, next) => {
       });
     }
 
-    // Delete user
-    await User.updateOne({_id: id}, {$set: {isDeleted: true}});
-    
+    // Soft delete - set isDeleted to true
+    await User.findByIdAndUpdate(
+      id,
+      { isDeleted: true },
+      { new: true }
+    );
+
+    // ✅ Invalidate cache after user deletion
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('user', id);
+    invalidateCache('user');
+    invalidateCache('dashboard');
+
+    // Set cache-control headers to prevent browser caching
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     sendSuccessResponse({
       res,
@@ -447,6 +496,11 @@ const getUserById = async (req, res, next) => {
         message: "User not found."
       });
     }
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     sendSuccessResponse({
       res,

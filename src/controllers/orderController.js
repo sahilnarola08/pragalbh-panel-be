@@ -582,6 +582,11 @@ const getAllOrders = async (req, res) => {
       };
     });
 
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     return sendSuccessResponse({
       status: 200,
       res,
@@ -921,6 +926,11 @@ const getOrderById = async (req, res, next) => {
       });
     }
 
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     sendSuccessResponse({
       res,
       data: order,
@@ -1037,6 +1047,11 @@ const getKanbanData = async (req, res) => {
     });
 
     await Promise.all(promises);
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return sendSuccessResponse({
       res,
