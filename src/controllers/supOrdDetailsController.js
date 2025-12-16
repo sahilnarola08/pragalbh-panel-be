@@ -136,8 +136,9 @@ export const getSupplierOrderDetails = async (req, res) => {
       sortOrder = "desc"
     } = req.query;
 
-    const pageNum = parseInt(page, 10);
-    const limitNum = parseInt(limit, 10);
+    // Parse page and limit to integers with proper defaults and validation
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 10);
     const offset = (pageNum - 1) * limitNum;
 
     // Build sort object

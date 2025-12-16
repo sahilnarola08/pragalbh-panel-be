@@ -135,7 +135,12 @@ const register = async (req, res, next) => {
  const  getAllUsers = async (req, res) => {
   try {
     const { page = 1, limit = 10, search, sortField = 'createdAt', sortOrder = 'desc', startDate = "", endDate = "" } = req.query;
-    const offset = (page - 1) * limit;
+    
+    // Parse page and limit to integers
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 10;
+    const offset = (pageNum - 1) * limitNum;
+    
     const sort = {};
     sort[sortField] = sortOrder === "asc" ? 1 : -1;
 
@@ -227,7 +232,7 @@ const register = async (req, res, next) => {
       .find({...filter ,isDeleted: false})
       .sort(sort)
       .skip(offset)
-      .limit(limit)
+      .limit(limitNum)
       .select("-password -__v -createdAt -updatedAt")
       .populate({
         path: 'clientType',
@@ -249,8 +254,8 @@ const register = async (req, res, next) => {
       data: {
         users,
         totalUsers,
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNum,
+        limit: limitNum,
       },
       message: "User data retrieved successfully."
     });
