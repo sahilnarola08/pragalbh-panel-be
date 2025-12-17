@@ -28,8 +28,8 @@ const masterSchema = new mongoose.Schema({
      toObject: { virtuals: true }
 });
 
-// Compound index to ensure unique name (excluding deleted records)
-masterSchema.index({ name: 1, isDeleted: 1 }, { 
+// Compound index to ensure unique name and master combination (excluding deleted records)
+masterSchema.index({ name: 1, master: 1, isDeleted: 1 }, { 
      unique: true,
      partialFilterExpression: { isDeleted: false }
 });
