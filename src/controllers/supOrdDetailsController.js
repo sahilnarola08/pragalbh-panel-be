@@ -314,6 +314,11 @@ export const markPaymentDone = async (req, res) => {
   try {
     const { expenseId, supplierId, bankId } = req.body;
 
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     // Validate required fields
     if (!expenseId || !supplierId || !bankId) {
       return res.status(400).json({
@@ -437,6 +442,13 @@ export const markPaymentDone = async (req, res) => {
       .lean();
 
     const { bankId: expenseBankId, bank } = buildBankResponse(populatedExpense?.bankId);
+
+    // Invalidate cache after payment update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('income');
+    invalidateCache('supplier', normalizedSupplierId);
+    invalidateCache('supplier');
+    invalidateCache('dashboard');
 
     return res.status(200).json({
       success: true,
