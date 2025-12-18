@@ -89,7 +89,12 @@ export const cacheMiddleware = (req, res, next) => {
 
   // Check if cache exists and is valid
   if (cached && cached.expiresAt > Date.now()) {
+    // Set headers to prevent 304 responses
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.setHeader('X-Cache', 'HIT');
+    res.status(200); // Ensure 200 status
     return res.json(cached.data);
   }
 
@@ -107,6 +112,12 @@ export const cacheMiddleware = (req, res, next) => {
         createdAt: Date.now(),
       });
       res.setHeader('X-Cache', 'MISS');
+      // Ensure cache-control headers are set to prevent 304 responses
+      if (!res.getHeader('Cache-Control')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
     }
     return originalJson(data);
   };
