@@ -231,6 +231,11 @@ export const getSupplierOrderDetails = async (req, res) => {
       return sum + due;
     }, 0);
 
+    const paidTotal = allExpenseData.reduce((sum, item) => {
+      const paidAmount = parseFloat(item.paidAmount) || 0;
+      return sum + paidAmount;
+    }, 0);
+
     // Calculate total advance payment (handle both array and number formats)
     let totalBalance = 0;
     let advancePaymentDetails = [];
@@ -294,6 +299,7 @@ export const getSupplierOrderDetails = async (req, res) => {
           totalBalance,
           purchaseTotal,
           dueTotal,
+          paidTotal,
         },
         advancePayments: advancePaymentDetails,
       },
@@ -309,10 +315,10 @@ export const getSupplierOrderDetails = async (req, res) => {
   }
 };
 
-// Mark Payment as Done
+// Mark Payment as Paid
 export const markPaymentDone = async (req, res) => {
   try {
-    const { expenseId, supplierId, bankId } = req.body;
+    const { expenseId, supplierId, paidAmount, paymentDate, purchasePrice, bankId } = req.body;
 
     // Set cache-control headers to prevent browser caching (304 responses)
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -320,27 +326,72 @@ export const markPaymentDone = async (req, res) => {
     res.setHeader('Expires', '0');
 
     // Validate required fields
-    if (!expenseId || !supplierId || !bankId) {
+    if (!expenseId || !supplierId) {
       return res.status(400).json({
         success: false,
         status: 400,
-        message: "expenseId, supplierId, and bankId are required",
+        message: "expenseId and supplierId are required",
+      });
+    }
+
+    // Validate paidAmount is provided and not zero
+    if (paidAmount === undefined || paidAmount === null) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: "paidAmount is required",
+      });
+    }
+
+    const paidAmountNum = parseFloat(paidAmount);
+    if (isNaN(paidAmountNum) || paidAmountNum < 0) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: "paidAmount must be a valid positive number",
+      });
+    }
+
+    // If paidAmount is 0, don't update status
+    if (paidAmountNum === 0) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: "paidAmount cannot be 0. Status will not be updated.",
       });
     }
 
     let normalizedExpenseId;
     let normalizedSupplierId;
-    let normalizedBankId;
+    let normalizedBankId = null;
+
     try {
       normalizedExpenseId = normalizeObjectIdOrThrow(expenseId, "expenseId");
       normalizedSupplierId = normalizeObjectIdOrThrow(supplierId, "supplierId");
-      normalizedBankId = await normalizeBankIdOrThrow(bankId);
+      
+      // bankId is optional - only normalize if provided
+      if (bankId) {
+        normalizedBankId = await normalizeBankIdOrThrow(bankId);
+      }
     } catch (error) {
       return res.status(error.status || 400).json({
         success: false,
         status: error.status || 400,
         message: error.message || "Invalid identifiers provided",
       });
+    }
+
+    // Validate purchasePrice if provided
+    let purchasePriceNum = null;
+    if (purchasePrice !== undefined && purchasePrice !== null) {
+      purchasePriceNum = parseFloat(purchasePrice);
+      if (isNaN(purchasePriceNum) || purchasePriceNum < 0) {
+        return res.status(400).json({
+          success: false,
+          status: 400,
+          message: "purchasePrice must be a valid positive number",
+        });
+      }
     }
 
     // Find the expense record
@@ -354,10 +405,10 @@ export const markPaymentDone = async (req, res) => {
     }
 
     // Check if payment is already paid
-    if (expense.status === PAYMENT_STATUS.PAID ) {
-      return res.status(201).json({
+    if (expense.status === PAYMENT_STATUS.PAID) {
+      return res.status(400).json({
         success: false,
-        status: 201,
+        status: 400,
         message: "Payment is already checked/paid",
       });
     }
@@ -374,61 +425,83 @@ export const markPaymentDone = async (req, res) => {
 
     // Ensure advancePayment is an array
     if (!Array.isArray(supplier.advancePayment)) {
-      return res.status(400).json({
-        success: false,
-        status: 400,
-        message: "Supplier advance payment data is invalid",
-      });
+      supplier.advancePayment = [];
     }
 
-    // Find the bank payment entry
-    const bankPaymentIndex = supplier.advancePayment.findIndex((payment) => {
-      if (!payment.bankId) {
-        return false;
+    // Calculate total advancePayment across all banks
+    const totalAdvancePayment = supplier.advancePayment.reduce((sum, payment) => {
+      return sum + (parseFloat(payment.amount) || 0);
+    }, 0);
+
+    // Deduct paidAmount from total advancePayment (not purchasePrice)
+    let remainingToDeduct = paidAmountNum;
+
+    // Deduct from banks sequentially (first to last)
+    for (let i = 0; i < supplier.advancePayment.length && remainingToDeduct > 0; i++) {
+      const currentAmount = parseFloat(supplier.advancePayment[i].amount) || 0;
+      
+      if (currentAmount > 0) {
+        if (currentAmount >= remainingToDeduct) {
+          // This bank has enough, deduct and stop
+          supplier.advancePayment[i].amount = currentAmount - remainingToDeduct;
+          remainingToDeduct = 0;
+        } else {
+          // This bank doesn't have enough, deduct all and continue
+          remainingToDeduct -= currentAmount;
+          supplier.advancePayment[i].amount = 0;
+        }
       }
-      const storedBankId =
-        typeof payment.bankId === "object"
-          ? payment.bankId.toString()
-          : payment.bankId;
-      return storedBankId === normalizedBankId.toString();
+    }
+
+    // Remove bank entries with 0 amount
+    supplier.advancePayment = supplier.advancePayment.filter(payment => {
+      const amount = parseFloat(payment.amount) || 0;
+      return amount > 0;
     });
 
-    if (bankPaymentIndex === -1) {
-      return res.status(404).json({
-        success: false,
-        status: 404,
-        message: "Bank payment entry not found for this supplier",
-      });
-    }
-
-    const bankPayment = supplier.advancePayment[bankPaymentIndex];
-    const dueAmount = expense.dueAmount || 0;
-
-    // Check if bank balance is sufficient
-    if (bankPayment.amount < dueAmount) {
-      return res.status(400).json({
-        success: false,
-        status: 409,
-        message: `Insufficient balance. Required: ${formatCurrency(dueAmount)}, Available: ${formatCurrency(bankPayment.amount)}`,
-      });
-    }
-
-    // Deduct dueAmount from bank's advance payment
-    supplier.advancePayment[bankPaymentIndex].amount -= dueAmount;
-    const remainingBalance = supplier.advancePayment[bankPaymentIndex].amount;
-
-    // Remove the bank entry if amount becomes 0
-    if (supplier.advancePayment[bankPaymentIndex].amount === 0) {
-      supplier.advancePayment.splice(bankPaymentIndex, 1);
-    }
+    // Calculate new total advancePayment
+    const newTotalAdvancePayment = supplier.advancePayment.reduce((sum, payment) => {
+      return sum + (parseFloat(payment.amount) || 0);
+    }, 0);
 
     await supplier.save();
 
     // Update expense record
-    expense.paidAmount = dueAmount;
-    expense.dueAmount = 0;
-    expense.status = PAYMENT_STATUS.PAID;
-    expense.bankId = normalizedBankId; // Store bank ID in expense
+    const currentPaidAmount = parseFloat(expense.paidAmount) || 0;
+    const currentDueAmount = parseFloat(expense.dueAmount) || 0;
+    
+    // Calculate new dueAmount
+    let newDueAmount;
+    if (purchasePriceNum !== null) {
+      // If purchasePrice is provided, calculate: purchasePrice - (currentPaidAmount + paidAmount)
+      const totalPaid = currentPaidAmount + paidAmountNum;
+      newDueAmount = Math.max(0, purchasePriceNum - totalPaid);
+    } else {
+      // If purchasePrice not provided, deduct from current dueAmount
+      newDueAmount = Math.max(0, currentDueAmount - paidAmountNum);
+    }
+
+    expense.paidAmount = currentPaidAmount + paidAmountNum;
+    expense.dueAmount = newDueAmount;
+    
+    // Mark as PAID if paidAmount is provided and > 0 (even if not fully paid)
+    if (paidAmountNum > 0) {
+      expense.status = PAYMENT_STATUS.PAID;
+    }
+    
+    // Set bankId if provided
+    if (normalizedBankId) {
+      expense.bankId = normalizedBankId;
+    }
+    
+    // Set paymentDate if provided
+    if (paymentDate) {
+      const date = new Date(paymentDate);
+      if (!isNaN(date.getTime())) {
+        expense.date = date;
+      }
+    }
+    
     await expense.save();
 
     const populatedExpense = await ExpanceIncome.findById(expense._id)
@@ -460,7 +533,12 @@ export const markPaymentDone = async (req, res) => {
           bankId: expenseBankId,
           bank,
         },
-        remainingBalance: remainingBalance,
+        advancePayment: {
+          previousTotal: totalAdvancePayment,
+          deducted: paidAmountNum,
+          newTotal: newTotalAdvancePayment,
+          remainingToDeduct: remainingToDeduct > 0 ? remainingToDeduct : 0,
+        },
       },
     });
   } catch (error) {

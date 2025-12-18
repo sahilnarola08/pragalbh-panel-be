@@ -1231,7 +1231,7 @@ export const addIncomeEntry = async (req, res) => {
 // Add Expense Entry (linked to order & supplier)
 export const addExpanseEntry = async (req, res) => {
   try {
-    const { orderId, date, description, paidAmount, status, bankId } = req.body;
+    const { orderId, date, description, paidAmount, dueAmount, status, bankId } = req.body;
 
     // ✅ Validate required fields
     if (!orderId) {
@@ -1239,6 +1239,48 @@ export const addExpanseEntry = async (req, res) => {
         status: 400,
         message: "orderId is required",
       });
+    }
+
+    if (!description) {
+      return res.status(400).json({
+        status: 400,
+        message: "description is required",
+      });
+    }
+
+    if (!date) {
+      return res.status(400).json({
+        status: 400,
+        message: "date is required",
+      });
+    }
+
+    if (paidAmount === undefined || paidAmount === null) {
+      return res.status(400).json({
+        status: 400,
+        message: "paidAmount is required",
+      });
+    }
+
+    // Validate paidAmount is a valid number
+    const paidAmountNum = parseFloat(paidAmount);
+    if (isNaN(paidAmountNum) || paidAmountNum < 0) {
+      return res.status(400).json({
+        status: 400,
+        message: "paidAmount must be a valid positive number or 0",
+      });
+    }
+
+    // Validate dueAmount if provided
+    let dueAmountNum = null;
+    if (dueAmount !== undefined && dueAmount !== null) {
+      dueAmountNum = parseFloat(dueAmount);
+      if (isNaN(dueAmountNum) || dueAmountNum < 0) {
+        return res.status(400).json({
+          status: 400,
+          message: "dueAmount must be a valid positive number or 0",
+        });
+      }
     }
 
     // ✅ Find order by orderId field
@@ -1287,29 +1329,76 @@ export const addExpanseEntry = async (req, res) => {
       });
     }
 
+    // ✅ bankId is optional - only normalize if provided
     let normalizedBankId = null;
-    try {
-      normalizedBankId = await normalizeBankIdOrThrow(bankId);
-    } catch (error) {
-      return res.status(error.status || 400).json({
-        status: error.status || 400,
-        message: error.message || "Invalid bank ID",
-      });
+    if (bankId !== undefined && bankId !== null && bankId !== "") {
+      try {
+        normalizedBankId = await normalizeBankIdOrThrow(bankId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid bank ID",
+        });
+      }
     }
 
+    // Get order product details for matching
     const orderProductDetails = getOrderProductDetails(order, {
       productNameHint: description,
     });
 
+    // Validate date format
+    const expenseDate = new Date(date);
+    if (isNaN(expenseDate.getTime())) {
+      return res.status(400).json({
+        status: 400,
+        message: "Invalid date format",
+      });
+    }
+
+    // Determine status: if paidAmount > 0, set to provided status or "paid", otherwise "pending"
+    let expenseStatus = status || "pending";
+    if (paidAmountNum > 0 && !status) {
+      expenseStatus = "paid";
+    } else if (paidAmountNum === 0) {
+      expenseStatus = "pending";
+    }
+
+    // Calculate dueAmount: use provided dueAmount, or try to get from order products
+    let finalDueAmount = 0;
+    if (dueAmountNum !== null) {
+      // Use provided dueAmount
+      finalDueAmount = dueAmountNum;
+    } else {
+      // Try to get from order product details
+      finalDueAmount = orderProductDetails.purchasePrice || 0;
+      
+      // If still 0, try to find product by matching description with product names
+      if (finalDueAmount === 0 && Array.isArray(order.products) && order.products.length > 0) {
+        const descriptionLower = description.toLowerCase().trim();
+        const matchedProduct = order.products.find(product => {
+          const productName = (product.productName || "").toLowerCase().trim();
+          return productName === descriptionLower || productName.includes(descriptionLower) || descriptionLower.includes(productName);
+        });
+        
+        if (matchedProduct && matchedProduct.purchasePrice) {
+          finalDueAmount = roundAmount(matchedProduct.purchasePrice);
+        } else if (order.products[0] && order.products[0].purchasePrice) {
+          // Fallback to first product's purchasePrice
+          finalDueAmount = roundAmount(order.products[0].purchasePrice);
+        }
+      }
+    }
+
     // ✅ Create new expense entry (supports multiple per order)
     const newExpense = await ExpanceIncome.create({
-      date: date || new Date(),
+      date: expenseDate,
       orderId: order._id,
-      description: description || orderProductDetails.productName,
-      dueAmount: orderProductDetails.purchasePrice,
-      paidAmount: roundAmount(paidAmount || 0),
+      description: description.trim(),
+      dueAmount: roundAmount(finalDueAmount),
+      paidAmount: roundAmount(paidAmountNum),
       supplierId: supplier._id,
-      status: status || "pending",
+      status: expenseStatus,
       bankId: normalizedBankId,
     });
 
@@ -1338,8 +1427,8 @@ export const addExpanseEntry = async (req, res) => {
 
     const expenseResponse = docToPlainWithBank(populatedExpense);
 
-    return res.status(201).json({
-      status: 201,
+    return res.status(200).json({
+      status: 200,
       message: "Expense entry added successfully",
       data: expenseResponse,
     });

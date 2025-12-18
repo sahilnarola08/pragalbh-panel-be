@@ -287,6 +287,7 @@ export const createOrder = async (req, res, next) => {
       if (existingSupplier) {
         expensePromises.push(
           ExpanseIncome.create({
+            date: new Date(),
             orderId: order._id,
             description: product.productName,
             paidAmount: 0,
@@ -907,6 +908,7 @@ const updateOrder = async (req, res, next) => {
         const newProducts = products.slice(orderExpenses.length);
         const newExpensePromises = newProducts.map((product) =>
           ExpanseIncome.create({
+            date: new Date(),
             orderId: id,
             description: product.productName,
             paidAmount: 0,
