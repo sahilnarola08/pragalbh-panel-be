@@ -23,6 +23,9 @@ const app = express();
 // Trust proxy - important for reading x-forwarded-* headers behind reverse proxy/load balancer
 app.set('trust proxy', true);
 
+// Disable ETag to prevent 304 Not Modified responses
+app.set('etag', false);
+
 // Connect to database
 connectDB();
 
@@ -44,6 +47,17 @@ app.use(compression({
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Disable caching globally to prevent 304 responses
+app.use((req, res, next) => {
+  // Set headers to prevent browser caching and 304 responses
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  // Explicitly disable ETag for this response
+  res.removeHeader('ETag');
+  next();
+});
 
 // Cache middleware - must be before routes
 app.use(cacheMiddleware);

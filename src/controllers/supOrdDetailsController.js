@@ -61,6 +61,53 @@ const buildOrderDetails = (orderDoc, expenseItem = {}) => {
       return null;
     }
 
+    // Calculate purchase price from expense: dueAmount + paidAmount
+    const expenseDueAmount = typeof expenseItem.dueAmount === "number" 
+      ? expenseItem.dueAmount 
+      : parseFloat(expenseItem.dueAmount) || 0;
+    const expensePaidAmount = typeof expenseItem.paidAmount === "number" 
+      ? expenseItem.paidAmount 
+      : parseFloat(expenseItem.paidAmount) || 0;
+    const calculatedPurchasePrice = expenseDueAmount + expensePaidAmount;
+
+    // Priority 1: Match by name AND purchasePrice together (most accurate for duplicates)
+    // This handles cases where same product name has different prices
+    if (normalizedDescription && calculatedPurchasePrice > 0) {
+      const matchedByNameAndPrice = products.find((product) => {
+        const productNameMatch = product.productName && 
+          product.productName.toLowerCase().trim() === normalizedDescription;
+        if (!productNameMatch) return false;
+        
+        const productPrice = Number(product.purchasePrice || 0);
+        // Match by calculated purchase price (dueAmount + paidAmount)
+        return Math.abs(productPrice - calculatedPurchasePrice) < 0.01; // Allow small floating point difference
+      });
+      if (matchedByNameAndPrice) {
+        return matchedByNameAndPrice;
+      }
+    }
+
+    // Priority 2: Match by purchasePrice only (reliable when price is unique)
+    if (calculatedPurchasePrice > 0) {
+      const matchedByPrice = products.find(
+        (product) => Math.abs(Number(product.purchasePrice || 0) - calculatedPurchasePrice) < 0.01
+      );
+      if (matchedByPrice) {
+        return matchedByPrice;
+      }
+    }
+
+    // Priority 3: Match by dueAmount only (if purchasePrice calculation failed)
+    if (expenseDueAmount > 0) {
+      const matchedByDueAmount = products.find(
+        (product) => Math.abs(Number(product.purchasePrice || 0) - expenseDueAmount) < 0.01
+      );
+      if (matchedByDueAmount) {
+        return matchedByDueAmount;
+      }
+    }
+
+    // Priority 4: Match by name only (less reliable for duplicates, but better than nothing)
     if (normalizedDescription) {
       const nameMatchedProduct = products.find(
         (product) =>
@@ -72,23 +119,7 @@ const buildOrderDetails = (orderDoc, expenseItem = {}) => {
       }
     }
 
-    const amountPriorities = [];
-    if (typeof expenseItem.dueAmount === "number" && expenseItem.dueAmount > 0) {
-      amountPriorities.push(expenseItem.dueAmount);
-    }
-    if (typeof expenseItem.paidAmount === "number" && expenseItem.paidAmount > 0) {
-      amountPriorities.push(expenseItem.paidAmount);
-    }
-
-    for (const amount of amountPriorities) {
-      const matchedByAmount = products.find(
-        (product) => Number(product.purchasePrice || 0) === Number(amount)
-      );
-      if (matchedByAmount) {
-        return matchedByAmount;
-      }
-    }
-
+    // Priority 5: Fallback to first product
     return products[0];
   };
 
@@ -145,12 +176,11 @@ export const getSupplierOrderDetails = async (req, res) => {
     const sortObj = {};
     sortObj[sortField] = sortOrder === "asc" ? 1 : -1;
 
-    // Get total count of records
-    const totalCount = await ExpanceIncome.countDocuments({
-      supplierId: supplierId,
-    });
+    // Get total count efficiently - we'll calculate it from allExpenseData later
+    // This avoids an extra query since we need allExpenseData anyway for totals
 
     // find all expense/income records for given supplier with pagination
+    // Filter out records where orderId is null or order is deleted
     const supplierExpanseData = await ExpanceIncome.find({
       supplierId: supplierId,
     })
@@ -158,7 +188,8 @@ export const getSupplierOrderDetails = async (req, res) => {
       .populate({
         path: "orderId",
         select:
-          "orderId products.productName products.orderDate products.dispatchDate products.purchasePrice products.sellingPrice",
+          "orderId products.productName products.orderDate products.dispatchDate products.purchasePrice products.sellingPrice isDeleted",
+        match: { isDeleted: { $ne: true } }, // Exclude deleted orders
       })
       .populate({
         path: "bankId",
@@ -169,8 +200,11 @@ export const getSupplierOrderDetails = async (req, res) => {
       .skip(offset)
       .limit(limitNum)
       .lean();
+    
+    // Filter out records where orderId is null (deleted orders)
+    const filteredExpanseData = supplierExpanseData.filter(item => item.orderId !== null && item.orderId !== undefined);
 
-    if (!supplierExpanseData || supplierExpanseData.length === 0) {
+    if (!filteredExpanseData || filteredExpanseData.length === 0) {
       return res.status(404).json({
         success: false,
         status: 404,
@@ -195,13 +229,15 @@ export const getSupplierOrderDetails = async (req, res) => {
     }
 
     // Calculate totals from ALL records (not just paginated ones)
-    const allExpenseData = await ExpanceIncome.find({
+    // Filter out records where orderId is null or order is deleted
+    const allExpenseDataRaw = await ExpanceIncome.find({
       supplierId: supplierId,
     })
       .populate({
         path: "orderId",
         select:
-          "orderId products.productName products.orderDate products.dispatchDate products.purchasePrice products.sellingPrice",
+          "orderId products.productName products.orderDate products.dispatchDate products.purchasePrice products.sellingPrice isDeleted",
+        match: { isDeleted: { $ne: true } }, // Exclude deleted orders
       })
       .populate({
         path: "bankId",
@@ -209,26 +245,51 @@ export const getSupplierOrderDetails = async (req, res) => {
         match: { isDeleted: false },
       })
       .lean();
+    
+    // Filter out records where orderId is null (deleted orders)
+    const allExpenseData = allExpenseDataRaw.filter(item => item.orderId !== null && item.orderId !== undefined);
+    
+    // Calculate total count from filtered data
+    const totalCount = allExpenseData.length;
 
     const purchaseTotal = allExpenseData.reduce((sum, item) => {
-      const { purchasePrice: orderPurchasePrice } = buildOrderDetails(
-        item.orderId,
-        item
-      );
-      return sum + orderPurchasePrice;
+      // Use expense's calculated purchase price: dueAmount + paidAmount
+      const expenseDueAmount = parseFloat(item.dueAmount) || 0;
+      const expensePaidAmount = parseFloat(item.paidAmount) || 0;
+      const calculatedPurchasePrice = expenseDueAmount + expensePaidAmount;
+      
+      if (calculatedPurchasePrice > 0) {
+        // Use calculated purchase price from expense (most accurate)
+        return sum + calculatedPurchasePrice;
+      } else {
+        // Fallback to order's purchase price if expense values are not set
+        const { purchasePrice: orderPurchasePrice } = buildOrderDetails(
+          item.orderId,
+          item
+        );
+        return sum + orderPurchasePrice;
+      }
     }, 0);
 
     const dueTotal = allExpenseData.reduce((sum, item) => {
-      const { purchasePrice: orderPurchasePrice } = buildOrderDetails(
-        item.orderId,
-        item
-      );
-      // If dueAmount is set, use it; otherwise fall back to selected product purchase price for old records
-      const due =
-        item.dueAmount !== undefined && item.dueAmount !== null
-          ? item.dueAmount
-          : orderPurchasePrice;
-      return sum + due;
+      // Use expense's stored dueAmount directly (most accurate)
+      const expenseDueAmount = parseFloat(item.dueAmount) || 0;
+      if (expenseDueAmount > 0 || item.dueAmount !== undefined) {
+        return sum + expenseDueAmount;
+      } else {
+        // Fallback: calculate from purchasePrice - paidAmount
+        const expensePaidAmount = parseFloat(item.paidAmount) || 0;
+        const { purchasePrice: orderPurchasePrice } = buildOrderDetails(
+          item.orderId,
+          item
+        );
+        return sum + Math.max(0, orderPurchasePrice - expensePaidAmount);
+      }
+    }, 0);
+
+    const paidTotal = allExpenseData.reduce((sum, item) => {
+      const paidAmount = parseFloat(item.paidAmount) || 0;
+      return sum + paidAmount;
     }, 0);
 
     // Calculate total advance payment (handle both array and number formats)
@@ -249,30 +310,66 @@ export const getSupplierOrderDetails = async (req, res) => {
       totalBalance = supplier?.advancePayment || 0;
     }
 
-    const formattedData = supplierExpanseData.map((item) => {
+    const formattedData = filteredExpanseData.map((item) => {
       const { bankId, bank } = buildBankResponse(item.bankId);
+      
+      // Use expense's stored values for accurate product matching
+      const expenseDueAmount = parseFloat(item.dueAmount) || 0;
+      const expensePaidAmount = parseFloat(item.paidAmount) || 0;
+      const calculatedPurchasePrice = expenseDueAmount + expensePaidAmount;
+      
+      // Build order details with expense item (includes dueAmount and paidAmount for matching)
       const {
         order: orderDetails,
         purchasePrice: orderPurchasePrice,
-      } = buildOrderDetails(item.orderId, item);
-      const dueAmount =
-        item.dueAmount !== undefined && item.dueAmount !== null
-          ? item.dueAmount
-          : orderPurchasePrice;
+      } = buildOrderDetails(item.orderId, {
+        ...item,
+        dueAmount: expenseDueAmount,
+        paidAmount: expensePaidAmount,
+      });
+      
+      // Use expense's dueAmount if set, otherwise calculate from purchasePrice - paidAmount
+      let dueAmount;
+      if (expenseDueAmount > 0 || item.dueAmount !== undefined) {
+        // Use the stored dueAmount from expense record
+        dueAmount = expenseDueAmount;
+      } else {
+        // Fallback: calculate from purchasePrice - paidAmount
+        dueAmount = Math.max(0, orderPurchasePrice - expensePaidAmount);
+      }
+      
+      // Use calculated purchase price if available, otherwise use order's purchasePrice
+      const purchasePrice = calculatedPurchasePrice > 0 ? calculatedPurchasePrice : orderPurchasePrice;
+
+      // Get order date from order details or use expense date
+      let orderDate = item.date || item.createdAt;
+      if (orderDetails && orderDetails.products && orderDetails.products.length > 0) {
+        const firstProduct = orderDetails.products[0];
+        if (firstProduct.orderDate) {
+          orderDate = firstProduct.orderDate;
+        }
+      }
 
       return {
         _id: item._id,
         orderId: orderDetails,
-        paidAmount: item.paidAmount,
-        purchasePrice: orderPurchasePrice,
-        dueAmount,
+        orderDate: orderDate,
+        paidAmount: expensePaidAmount,
+        purchasePrice: purchasePrice,
+        dueAmount: dueAmount,
         status: item.status,
         bankId,
         bank,
+        paymentDate: item.date || null,
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
       };
     });
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return res.status(200).json({
       success: true,
@@ -289,6 +386,7 @@ export const getSupplierOrderDetails = async (req, res) => {
           totalBalance,
           purchaseTotal,
           dueTotal,
+          paidTotal,
         },
         advancePayments: advancePaymentDetails,
       },
@@ -304,27 +402,64 @@ export const getSupplierOrderDetails = async (req, res) => {
   }
 };
 
-// Mark Payment as Done
+// Mark Payment as Paid
 export const markPaymentDone = async (req, res) => {
   try {
-    const { expenseId, supplierId, bankId } = req.body;
+    const { expenseId, supplierId, paidAmount, paymentDate, purchasePrice, bankId } = req.body;
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     // Validate required fields
-    if (!expenseId || !supplierId || !bankId) {
+    if (!expenseId || !supplierId) {
       return res.status(400).json({
         success: false,
         status: 400,
-        message: "expenseId, supplierId, and bankId are required",
+        message: "expenseId and supplierId are required",
+      });
+    }
+
+    // Validate paidAmount is provided and not zero
+    if (paidAmount === undefined || paidAmount === null) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: "paidAmount is required",
+      });
+    }
+
+    const paidAmountNum = parseFloat(paidAmount);
+    if (isNaN(paidAmountNum) || paidAmountNum < 0) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: "paidAmount must be a valid positive number",
+      });
+    }
+
+    // If paidAmount is 0, don't update status
+    if (paidAmountNum === 0) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: "paidAmount cannot be 0. Status will not be updated.",
       });
     }
 
     let normalizedExpenseId;
     let normalizedSupplierId;
-    let normalizedBankId;
+    let normalizedBankId = null;
+
     try {
       normalizedExpenseId = normalizeObjectIdOrThrow(expenseId, "expenseId");
       normalizedSupplierId = normalizeObjectIdOrThrow(supplierId, "supplierId");
-      normalizedBankId = await normalizeBankIdOrThrow(bankId);
+      
+      // bankId is optional - only normalize if provided
+      if (bankId) {
+        normalizedBankId = await normalizeBankIdOrThrow(bankId);
+      }
     } catch (error) {
       return res.status(error.status || 400).json({
         success: false,
@@ -333,8 +468,25 @@ export const markPaymentDone = async (req, res) => {
       });
     }
 
-    // Find the expense record
-    const expense = await ExpanceIncome.findById(normalizedExpenseId);
+    // Validate purchasePrice if provided
+    let purchasePriceNum = null;
+    if (purchasePrice !== undefined && purchasePrice !== null) {
+      purchasePriceNum = parseFloat(purchasePrice);
+      if (isNaN(purchasePriceNum) || purchasePriceNum < 0) {
+        return res.status(400).json({
+          success: false,
+          status: 400,
+          message: "purchasePrice must be a valid positive number",
+        });
+      }
+    }
+
+    // Find the expense record with order populated
+    const expense = await ExpanceIncome.findById(normalizedExpenseId)
+      .populate({
+        path: "orderId",
+        select: "orderId products.productName products.purchasePrice",
+      });
     if (!expense) {
       return res.status(404).json({
         success: false,
@@ -343,12 +495,22 @@ export const markPaymentDone = async (req, res) => {
       });
     }
 
-    // Check if payment is already paid
-    if (expense.status === PAYMENT_STATUS.PAID ) {
-      return res.status(201).json({
+    // Get purchasePrice from order if not provided in request
+    if (purchasePriceNum === null && expense.orderId) {
+      const { purchasePrice: orderPurchasePrice } = buildOrderDetails(expense.orderId, expense);
+      if (orderPurchasePrice > 0) {
+        purchasePriceNum = orderPurchasePrice;
+      }
+    }
+
+    // Check if payment is fully paid (dueAmount is 0)
+    // Allow updates if there's still a due amount, even if status is PAID
+    const currentDueCheck = parseFloat(expense.dueAmount) || 0;
+    if (currentDueCheck === 0 && expense.status === PAYMENT_STATUS.PAID) {
+      return res.status(400).json({
         success: false,
-        status: 201,
-        message: "Payment is already checked/paid",
+        status: 400,
+        message: "Payment is already fully paid. No due amount remaining.",
       });
     }
 
@@ -364,61 +526,113 @@ export const markPaymentDone = async (req, res) => {
 
     // Ensure advancePayment is an array
     if (!Array.isArray(supplier.advancePayment)) {
-      return res.status(400).json({
-        success: false,
-        status: 400,
-        message: "Supplier advance payment data is invalid",
-      });
+      supplier.advancePayment = [];
     }
 
-    // Find the bank payment entry
-    const bankPaymentIndex = supplier.advancePayment.findIndex((payment) => {
-      if (!payment.bankId) {
-        return false;
+    // Calculate total advancePayment across all banks
+    const totalAdvancePayment = supplier.advancePayment.reduce((sum, payment) => {
+      return sum + (parseFloat(payment.amount) || 0);
+    }, 0);
+
+    // Calculate the difference: new paid amount - current paid amount
+    // This is the amount to deduct from advance payment
+    const currentPaidAmountForDeduction = parseFloat(expense.paidAmount) || 0;
+    let amountToDeductFromAdvance;
+    
+    if (purchasePriceNum !== null) {
+      // If purchasePrice is provided, paidAmount is the new total, so deduct the difference
+      amountToDeductFromAdvance = paidAmountNum - currentPaidAmountForDeduction;
+    } else {
+      // If purchasePrice not provided, treat as incremental
+      amountToDeductFromAdvance = paidAmountNum;
+    }
+    
+    // Deduct the difference from total advancePayment
+    let remainingToDeduct = Math.max(0, amountToDeductFromAdvance);
+
+    // Deduct from banks sequentially (first to last)
+    for (let i = 0; i < supplier.advancePayment.length && remainingToDeduct > 0; i++) {
+      const currentAmount = parseFloat(supplier.advancePayment[i].amount) || 0;
+      
+      if (currentAmount > 0) {
+        if (currentAmount >= remainingToDeduct) {
+          // This bank has enough, deduct and stop
+          supplier.advancePayment[i].amount = currentAmount - remainingToDeduct;
+          remainingToDeduct = 0;
+        } else {
+          // This bank doesn't have enough, deduct all and continue
+          remainingToDeduct -= currentAmount;
+          supplier.advancePayment[i].amount = 0;
+        }
       }
-      const storedBankId =
-        typeof payment.bankId === "object"
-          ? payment.bankId.toString()
-          : payment.bankId;
-      return storedBankId === normalizedBankId.toString();
+    }
+
+    // Remove bank entries with 0 amount
+    supplier.advancePayment = supplier.advancePayment.filter(payment => {
+      const amount = parseFloat(payment.amount) || 0;
+      return amount > 0;
     });
 
-    if (bankPaymentIndex === -1) {
-      return res.status(404).json({
-        success: false,
-        status: 404,
-        message: "Bank payment entry not found for this supplier",
-      });
-    }
-
-    const bankPayment = supplier.advancePayment[bankPaymentIndex];
-    const dueAmount = expense.dueAmount || 0;
-
-    // Check if bank balance is sufficient
-    if (bankPayment.amount < dueAmount) {
-      return res.status(400).json({
-        success: false,
-        status: 409,
-        message: `Insufficient balance. Required: ${formatCurrency(dueAmount)}, Available: ${formatCurrency(bankPayment.amount)}`,
-      });
-    }
-
-    // Deduct dueAmount from bank's advance payment
-    supplier.advancePayment[bankPaymentIndex].amount -= dueAmount;
-    const remainingBalance = supplier.advancePayment[bankPaymentIndex].amount;
-
-    // Remove the bank entry if amount becomes 0
-    if (supplier.advancePayment[bankPaymentIndex].amount === 0) {
-      supplier.advancePayment.splice(bankPaymentIndex, 1);
-    }
+    // Calculate new total advancePayment
+    const newTotalAdvancePayment = supplier.advancePayment.reduce((sum, payment) => {
+      return sum + (parseFloat(payment.amount) || 0);
+    }, 0);
 
     await supplier.save();
 
     // Update expense record
-    expense.paidAmount = dueAmount;
-    expense.dueAmount = 0;
-    expense.status = PAYMENT_STATUS.PAID;
-    expense.bankId = normalizedBankId; // Store bank ID in expense
+    const currentPaidAmount = parseFloat(expense.paidAmount) || 0;
+    const currentDueAmount = parseFloat(expense.dueAmount) || 0;
+    
+    // Calculate new dueAmount based on purchasePrice and paidAmount
+    let newDueAmount;
+    let newPaidAmount;
+    
+    if (purchasePriceNum !== null) {
+      // If purchasePrice is provided, use paidAmount as the new total paid amount
+      // paidAmount from request is the NEW total paid amount (not incremental)
+      newPaidAmount = paidAmountNum;
+      
+      // Calculate dueAmount: purchasePrice - paidAmount
+      newDueAmount = Math.max(0, purchasePriceNum - newPaidAmount);
+      
+      // Validate: paidAmount should not exceed purchasePrice
+      if (newPaidAmount > purchasePriceNum) {
+        return res.status(400).json({
+          success: false,
+          status: 400,
+          message: `paidAmount (${newPaidAmount}) cannot exceed purchasePrice (${purchasePriceNum})`,
+        });
+      }
+    } else {
+      // If purchasePrice not provided, treat paidAmount as incremental
+      newPaidAmount = currentPaidAmount + paidAmountNum;
+      newDueAmount = Math.max(0, currentDueAmount - paidAmountNum);
+    }
+
+    expense.paidAmount = newPaidAmount;
+    expense.dueAmount = newDueAmount;
+    
+    // Update status to PAID when a payment is made
+    // Case 1: purchasePrice = 300, paidAmount = 300 → dueAmount = 0, status = PAID
+    // Case 2: purchasePrice = 300, paidAmount = 150 → dueAmount = 150, status = PAID
+    if (paidAmountNum > 0) {
+      expense.status = PAYMENT_STATUS.PAID;
+    }
+    
+    // Set bankId if provided
+    if (normalizedBankId) {
+      expense.bankId = normalizedBankId;
+    }
+    
+    // Set paymentDate if provided
+    if (paymentDate) {
+      const date = new Date(paymentDate);
+      if (!isNaN(date.getTime())) {
+        expense.date = date;
+      }
+    }
+    
     await expense.save();
 
     const populatedExpense = await ExpanceIncome.findById(expense._id)
@@ -433,6 +647,19 @@ export const markPaymentDone = async (req, res) => {
 
     const { bankId: expenseBankId, bank } = buildBankResponse(populatedExpense?.bankId);
 
+    // Invalidate cache after payment update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    const { clearCacheByRoute } = await import("../middlewares/cache.js");
+    
+    invalidateCache('income');
+    invalidateCache('supplier', normalizedSupplierId);
+    invalidateCache('supplier');
+    invalidateCache('dashboard');
+    
+    // Clear supplier-orderdetails cache to ensure fresh data
+    clearCacheByRoute(`/supplier-orderdetails/${normalizedSupplierId}`);
+    clearCacheByRoute('/supplier-orderdetails');
+
     return res.status(200).json({
       success: true,
       status: 200,
@@ -443,7 +670,12 @@ export const markPaymentDone = async (req, res) => {
           bankId: expenseBankId,
           bank,
         },
-        remainingBalance: remainingBalance,
+        advancePayment: {
+          previousTotal: totalAdvancePayment,
+          deducted: amountToDeductFromAdvance,
+          newTotal: newTotalAdvancePayment,
+          remainingToDeduct: remainingToDeduct > 0 ? remainingToDeduct : 0,
+        },
       },
     });
   } catch (error) {

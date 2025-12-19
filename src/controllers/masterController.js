@@ -39,25 +39,48 @@ const createMaster = async (req, res, next) => {
 
         const trimmedName = name.trim();
 
-        // Check if master already exists and is not deleted
-        const existingMaster = await Master.findOne({
+        // Prepare master ObjectId for comparison
+        const masterObjectId = master && mongoose.Types.ObjectId.isValid(master) 
+            ? new mongoose.Types.ObjectId(master) 
+            : null;
+
+        // Build query to check for duplicate name + master combination
+        const duplicateQuery = {
             name: trimmedName,
             isDeleted: false
-        });
+        };
+
+        // Include master in the duplicate check
+        if (masterObjectId) {
+            duplicateQuery.master = masterObjectId;
+        } else {
+            duplicateQuery.master = null;
+        }
+
+        // Check if master with same name AND same master already exists and is not deleted
+        const existingMaster = await Master.findOne(duplicateQuery);
 
         if (existingMaster) {
             return sendErrorResponse({
                 res,
-                message: `"${trimmedName}" already exists`,
+                message: `"${trimmedName}" already exists with the same MasterType`,
                 status: 400
             });
         }
 
-        // Check if master exists but is deleted (inactive)
-        const deletedMaster = await Master.findOne({
+        // Check if master exists but is deleted (inactive) - same name and master combination
+        const deletedQuery = {
             name: trimmedName,
             isDeleted: true
-        });
+        };
+
+        if (masterObjectId) {
+            deletedQuery.master = masterObjectId;
+        } else {
+            deletedQuery.master = null;
+        }
+
+        const deletedMaster = await Master.findOne(deletedQuery);
 
         if (deletedMaster) {
             return sendErrorResponse({
@@ -70,7 +93,7 @@ const createMaster = async (req, res, next) => {
         // Create master
         const newMaster = await Master.create({
             name: trimmedName,
-            master: master && mongoose.Types.ObjectId.isValid(master) ? master : undefined,
+            master: masterObjectId || undefined,
             isActive: isActive !== undefined ? isActive : true
         });
 
@@ -153,6 +176,11 @@ const getAllMasters = async (req, res, next) => {
             hasPrevPage: pageNum > 1
         };
 
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
         return sendSuccessResponse({
             status: 200,
             res,
@@ -193,6 +221,11 @@ const getMasterById = async (req, res, next) => {
         // Convert to plain object and add id field
         const masterObj = master.toObject();
         masterObj.id = masterObj._id.toString();
+
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
 
         sendSuccessResponse({
             res,
@@ -237,28 +270,11 @@ const updateMaster = async (req, res, next) => {
                     status: 400
                 });
             }
-            
-            // Check if name already exists (excluding current master)
-            const nameToCheck = name.trim();
-            
-            const duplicateMaster = await Master.findOne({
-                name: nameToCheck,
-                _id: { $ne: id },
-                isDeleted: false
-            });
-
-            if (duplicateMaster) {
-                return sendErrorResponse({
-                    res,
-                    message: `"${nameToCheck}" already exists`,
-                    status: 400
-                });
-            }
-
-            updateData.name = nameToCheck;
+            updateData.name = name.trim();
         }
 
         // Validate and update master (ObjectId) if provided
+        let masterObjectId = null;
         if (master !== undefined) {
             if (master !== null && !mongoose.Types.ObjectId.isValid(master)) {
                 return sendErrorResponse({
@@ -267,7 +283,59 @@ const updateMaster = async (req, res, next) => {
                     status: 400
                 });
             }
-            updateData.master = master && mongoose.Types.ObjectId.isValid(master) ? master : null;
+            
+            if (master && mongoose.Types.ObjectId.isValid(master)) {
+                masterObjectId = new mongoose.Types.ObjectId(master);
+                
+                // Verify that the master asset exists in MasterAssets
+                const masterAsset = await MasterAssets.findOne({
+                    _id: masterObjectId,
+                    isDeleted: false
+                });
+                
+                if (!masterAsset) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Master asset not found or is inactive",
+                        status: 400
+                    });
+                }
+            }
+            
+            updateData.master = masterObjectId || null;
+        }
+
+        // Determine the final name and master values after update
+        const finalName = updateData.name || existingMaster.name;
+        const finalMaster = updateData.hasOwnProperty('master') 
+            ? (updateData.master || null)
+            : existingMaster.master;
+
+        // Check for duplicate name + master combination (excluding current master)
+        // Only check if name or master is being updated
+        if (name !== undefined || master !== undefined) {
+            const duplicateQuery = {
+                name: finalName,
+                _id: { $ne: id },
+                isDeleted: false
+            };
+            
+            // Include master in the duplicate check
+            if (finalMaster) {
+                duplicateQuery.master = finalMaster;
+            } else {
+                duplicateQuery.master = null;
+            }
+            
+            const duplicateMaster = await Master.findOne(duplicateQuery);
+
+            if (duplicateMaster) {
+                return sendErrorResponse({
+                    res,
+                    message: `"${finalName}" already exists with the same MasterType`,
+                    status: 400
+                });
+            }
         }
 
         // Validate and update isActive if provided
@@ -436,6 +504,11 @@ const getAllMasterAssets = async (req, res, next) => {
             };
         });
 
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
         sendSuccessResponse({
             res,
             data: assetsList,
@@ -480,6 +553,11 @@ const getMasterAssetById = async (req, res, next) => {
             name: masterAsset.name,
             isDeleted: masterAsset.isDeleted
         };
+
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
 
         sendSuccessResponse({
             res,

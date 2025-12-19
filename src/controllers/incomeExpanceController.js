@@ -970,6 +970,11 @@ export const getIncomeExpance = async (req, res) => {
       data = sorted.slice(skip, skip + limitNum);
     }
 
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     // ✅ Final Response
     res.status(200).json({
       status: 200,
@@ -1226,7 +1231,7 @@ export const addIncomeEntry = async (req, res) => {
 // Add Expense Entry (linked to order & supplier)
 export const addExpanseEntry = async (req, res) => {
   try {
-    const { orderId, date, description, paidAmount, status, bankId } = req.body;
+    const { orderId, date, description, paidAmount, dueAmount, status, bankId } = req.body;
 
     // ✅ Validate required fields
     if (!orderId) {
@@ -1234,6 +1239,48 @@ export const addExpanseEntry = async (req, res) => {
         status: 400,
         message: "orderId is required",
       });
+    }
+
+    if (!description) {
+      return res.status(400).json({
+        status: 400,
+        message: "description is required",
+      });
+    }
+
+    if (!date) {
+      return res.status(400).json({
+        status: 400,
+        message: "date is required",
+      });
+    }
+
+    if (paidAmount === undefined || paidAmount === null) {
+      return res.status(400).json({
+        status: 400,
+        message: "paidAmount is required",
+      });
+    }
+
+    // Validate paidAmount is a valid number
+    const paidAmountNum = parseFloat(paidAmount);
+    if (isNaN(paidAmountNum) || paidAmountNum < 0) {
+      return res.status(400).json({
+        status: 400,
+        message: "paidAmount must be a valid positive number or 0",
+      });
+    }
+
+    // Validate dueAmount if provided
+    let dueAmountNum = null;
+    if (dueAmount !== undefined && dueAmount !== null) {
+      dueAmountNum = parseFloat(dueAmount);
+      if (isNaN(dueAmountNum) || dueAmountNum < 0) {
+        return res.status(400).json({
+          status: 400,
+          message: "dueAmount must be a valid positive number or 0",
+        });
+      }
     }
 
     // ✅ Find order by orderId field
@@ -1282,29 +1329,76 @@ export const addExpanseEntry = async (req, res) => {
       });
     }
 
+    // ✅ bankId is optional - only normalize if provided
     let normalizedBankId = null;
-    try {
-      normalizedBankId = await normalizeBankIdOrThrow(bankId);
-    } catch (error) {
-      return res.status(error.status || 400).json({
-        status: error.status || 400,
-        message: error.message || "Invalid bank ID",
-      });
+    if (bankId !== undefined && bankId !== null && bankId !== "") {
+      try {
+        normalizedBankId = await normalizeBankIdOrThrow(bankId);
+      } catch (error) {
+        return res.status(error.status || 400).json({
+          status: error.status || 400,
+          message: error.message || "Invalid bank ID",
+        });
+      }
     }
 
+    // Get order product details for matching
     const orderProductDetails = getOrderProductDetails(order, {
       productNameHint: description,
     });
 
+    // Validate date format
+    const expenseDate = new Date(date);
+    if (isNaN(expenseDate.getTime())) {
+      return res.status(400).json({
+        status: 400,
+        message: "Invalid date format",
+      });
+    }
+
+    // Determine status: if paidAmount > 0, set to provided status or "paid", otherwise "pending"
+    let expenseStatus = status || "pending";
+    if (paidAmountNum > 0 && !status) {
+      expenseStatus = "paid";
+    } else if (paidAmountNum === 0) {
+      expenseStatus = "pending";
+    }
+
+    // Calculate dueAmount: use provided dueAmount, or try to get from order products
+    let finalDueAmount = 0;
+    if (dueAmountNum !== null) {
+      // Use provided dueAmount
+      finalDueAmount = dueAmountNum;
+    } else {
+      // Try to get from order product details
+      finalDueAmount = orderProductDetails.purchasePrice || 0;
+      
+      // If still 0, try to find product by matching description with product names
+      if (finalDueAmount === 0 && Array.isArray(order.products) && order.products.length > 0) {
+        const descriptionLower = description.toLowerCase().trim();
+        const matchedProduct = order.products.find(product => {
+          const productName = (product.productName || "").toLowerCase().trim();
+          return productName === descriptionLower || productName.includes(descriptionLower) || descriptionLower.includes(productName);
+        });
+        
+        if (matchedProduct && matchedProduct.purchasePrice) {
+          finalDueAmount = roundAmount(matchedProduct.purchasePrice);
+        } else if (order.products[0] && order.products[0].purchasePrice) {
+          // Fallback to first product's purchasePrice
+          finalDueAmount = roundAmount(order.products[0].purchasePrice);
+        }
+      }
+    }
+
     // ✅ Create new expense entry (supports multiple per order)
     const newExpense = await ExpanceIncome.create({
-      date: date || new Date(),
+      date: expenseDate,
       orderId: order._id,
-      description: description || orderProductDetails.productName,
-      dueAmount: orderProductDetails.purchasePrice,
-      paidAmount: roundAmount(paidAmount || 0),
+      description: description.trim(),
+      dueAmount: roundAmount(finalDueAmount),
+      paidAmount: roundAmount(paidAmountNum),
       supplierId: supplier._id,
-      status: status || "pending",
+      status: expenseStatus,
       bankId: normalizedBankId,
     });
 
@@ -1333,8 +1427,8 @@ export const addExpanseEntry = async (req, res) => {
 
     const expenseResponse = docToPlainWithBank(populatedExpense);
 
-    return res.status(201).json({
-      status: 201,
+    return res.status(200).json({
+      status: 200,
       message: "Expense entry added successfully",
       data: expenseResponse,
     });
@@ -1609,11 +1703,54 @@ export const editExpanseEntry = async (req, res) => {
       return res.status(400).json({ message: "Invalid linked order or supplier" });
     }
 
+    // Get base purchasePrice (original price) to calculate dueAmount
+    // Strategy: dueAmount + paidAmount = original purchase price
+    const currentDueAmount = existingExpense.dueAmount || 0;
+    const currentPaidAmount = existingExpense.paidAmount || 0;
+    let basePurchasePrice = currentDueAmount + currentPaidAmount;
+    
+    // If the sum is 0 or seems incorrect, try to get from order
+    if (basePurchasePrice === 0 && existingExpense.orderId) {
+      const orderProductDetails = getOrderProductDetails(existingExpense.orderId, {
+        productNameHint: description || existingExpense.description,
+      });
+      if (orderProductDetails.purchasePrice > 0) {
+        basePurchasePrice = orderProductDetails.purchasePrice;
+      }
+    }
+    
+    // If still 0, use current dueAmount as fallback (assuming it's the original price)
+    if (basePurchasePrice === 0) {
+      basePurchasePrice = currentDueAmount;
+    }
+
     // Update fields
     if (date) existingExpense.date = date;
     if (description) existingExpense.description = description;
-    if (paidAmount !== undefined) existingExpense.paidAmount = Math.round(paidAmount * 100) / 100;
-    if (status) existingExpense.status = status;
+    
+    // Update paidAmount and recalculate dueAmount
+    if (paidAmount !== undefined) {
+      const newPaidAmount = Math.round(paidAmount * 100) / 100;
+      existingExpense.paidAmount = newPaidAmount;
+      
+      // Recalculate dueAmount: basePurchasePrice - paidAmount
+      const newDueAmount = Math.max(0, basePurchasePrice - newPaidAmount);
+      existingExpense.dueAmount = Math.round(newDueAmount * 100) / 100;
+    }
+    
+    // ALWAYS recalculate status based on current paidAmount (after any updates)
+    // This ensures status is always correct regardless of what fields are updated
+    const finalPaidAmount = existingExpense.paidAmount || 0;
+    if (finalPaidAmount > 0) {
+      existingExpense.status = "paid";
+    } else {
+      existingExpense.status = "pending";
+    }
+    
+    // Only override status if explicitly provided in request
+    if (status !== undefined && status !== null && status !== "") {
+      existingExpense.status = status;
+    }
 
     if (bankId !== undefined) {
       try {
@@ -1626,7 +1763,7 @@ export const editExpanseEntry = async (req, res) => {
       }
     }
 
-    // Recalculate remaining amount
+    // Recalculate remaining amount (for backward compatibility)
     existingExpense.remainingAmount =
       Math.round(((existingExpense.dueAmount || 0) - (existingExpense.paidAmount || 0)) * 100) / 100;
 
@@ -1654,8 +1791,20 @@ export const editExpanseEntry = async (req, res) => {
 
     // ✅ Invalidate cache after expense update
     const { invalidateCache } = await import("../util/cacheHelper.js");
+    const { clearCacheByRoute } = await import("../middlewares/cache.js");
+    
     invalidateCache('income');
     invalidateCache('dashboard');
+    
+    // Invalidate supplier cache to ensure getSupplierOrderDetails returns fresh data
+    if (existingExpense.supplierId) {
+      const supplierId = existingExpense.supplierId._id || existingExpense.supplierId;
+      invalidateCache('supplier', supplierId);
+      invalidateCache('supplier');
+      // Clear supplier-orderdetails cache to ensure fresh data
+      clearCacheByRoute(`/supplier-orderdetails/${supplierId}`);
+      clearCacheByRoute('/supplier-orderdetails');
+    }
 
     return res.status(200).json({
       message: "Expense entry updated successfully",
@@ -2147,6 +2296,11 @@ export const getExpenseById = async (req, res) => {
       createdAt: expense.createdAt,
       updatedAt: expense.updatedAt,
     };
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return res.status(200).json({
       status: 200,
@@ -2680,6 +2834,11 @@ export const getIncomeById = async (req, res) => {
       createdAt: income.createdAt,
       updatedAt: income.updatedAt,
     };
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return res.status(200).json({
       status: 200,
