@@ -1703,11 +1703,54 @@ export const editExpanseEntry = async (req, res) => {
       return res.status(400).json({ message: "Invalid linked order or supplier" });
     }
 
+    // Get base purchasePrice (original price) to calculate dueAmount
+    // Strategy: dueAmount + paidAmount = original purchase price
+    const currentDueAmount = existingExpense.dueAmount || 0;
+    const currentPaidAmount = existingExpense.paidAmount || 0;
+    let basePurchasePrice = currentDueAmount + currentPaidAmount;
+    
+    // If the sum is 0 or seems incorrect, try to get from order
+    if (basePurchasePrice === 0 && existingExpense.orderId) {
+      const orderProductDetails = getOrderProductDetails(existingExpense.orderId, {
+        productNameHint: description || existingExpense.description,
+      });
+      if (orderProductDetails.purchasePrice > 0) {
+        basePurchasePrice = orderProductDetails.purchasePrice;
+      }
+    }
+    
+    // If still 0, use current dueAmount as fallback (assuming it's the original price)
+    if (basePurchasePrice === 0) {
+      basePurchasePrice = currentDueAmount;
+    }
+
     // Update fields
     if (date) existingExpense.date = date;
     if (description) existingExpense.description = description;
-    if (paidAmount !== undefined) existingExpense.paidAmount = Math.round(paidAmount * 100) / 100;
-    if (status) existingExpense.status = status;
+    
+    // Update paidAmount and recalculate dueAmount
+    if (paidAmount !== undefined) {
+      const newPaidAmount = Math.round(paidAmount * 100) / 100;
+      existingExpense.paidAmount = newPaidAmount;
+      
+      // Recalculate dueAmount: basePurchasePrice - paidAmount
+      const newDueAmount = Math.max(0, basePurchasePrice - newPaidAmount);
+      existingExpense.dueAmount = Math.round(newDueAmount * 100) / 100;
+    }
+    
+    // ALWAYS recalculate status based on current paidAmount (after any updates)
+    // This ensures status is always correct regardless of what fields are updated
+    const finalPaidAmount = existingExpense.paidAmount || 0;
+    if (finalPaidAmount > 0) {
+      existingExpense.status = "paid";
+    } else {
+      existingExpense.status = "pending";
+    }
+    
+    // Only override status if explicitly provided in request
+    if (status !== undefined && status !== null && status !== "") {
+      existingExpense.status = status;
+    }
 
     if (bankId !== undefined) {
       try {
@@ -1720,7 +1763,7 @@ export const editExpanseEntry = async (req, res) => {
       }
     }
 
-    // Recalculate remaining amount
+    // Recalculate remaining amount (for backward compatibility)
     existingExpense.remainingAmount =
       Math.round(((existingExpense.dueAmount || 0) - (existingExpense.paidAmount || 0)) * 100) / 100;
 
@@ -1748,8 +1791,20 @@ export const editExpanseEntry = async (req, res) => {
 
     // ✅ Invalidate cache after expense update
     const { invalidateCache } = await import("../util/cacheHelper.js");
+    const { clearCacheByRoute } = await import("../middlewares/cache.js");
+    
     invalidateCache('income');
     invalidateCache('dashboard');
+    
+    // Invalidate supplier cache to ensure getSupplierOrderDetails returns fresh data
+    if (existingExpense.supplierId) {
+      const supplierId = existingExpense.supplierId._id || existingExpense.supplierId;
+      invalidateCache('supplier', supplierId);
+      invalidateCache('supplier');
+      // Clear supplier-orderdetails cache to ensure fresh data
+      clearCacheByRoute(`/supplier-orderdetails/${supplierId}`);
+      clearCacheByRoute('/supplier-orderdetails');
+    }
 
     return res.status(200).json({
       message: "Expense entry updated successfully",
