@@ -534,49 +534,46 @@ export const markPaymentDone = async (req, res) => {
       return sum + (parseFloat(payment.amount) || 0);
     }, 0);
 
-    // Calculate the difference: new paid amount - current paid amount
-    // This is the amount to deduct from advance payment
-    const currentPaidAmountForDeduction = parseFloat(expense.paidAmount) || 0;
-    let amountToDeductFromAdvance;
-    
-    if (purchasePriceNum !== null) {
-      // If purchasePrice is provided, paidAmount is the new total, so deduct the difference
-      amountToDeductFromAdvance = paidAmountNum - currentPaidAmountForDeduction;
-    } else {
-      // If purchasePrice not provided, treat as incremental
-      amountToDeductFromAdvance = paidAmountNum;
-    }
-    
-    // Deduct the difference from total advancePayment
-    let remainingToDeduct = Math.max(0, amountToDeductFromAdvance);
+    // Only deduct from advancePayment if total is greater than 0
+    let amountToDeductFromAdvance = 0;
+    let remainingToDeduct = 0;
+    let newTotalAdvancePayment = totalAdvancePayment;
 
-    // Deduct from banks sequentially (first to last)
-    for (let i = 0; i < supplier.advancePayment.length && remainingToDeduct > 0; i++) {
-      const currentAmount = parseFloat(supplier.advancePayment[i].amount) || 0;
-      
-      if (currentAmount > 0) {
-        if (currentAmount >= remainingToDeduct) {
-          // This bank has enough, deduct and stop
-          supplier.advancePayment[i].amount = currentAmount - remainingToDeduct;
-          remainingToDeduct = 0;
-        } else {
-          // This bank doesn't have enough, deduct all and continue
-          remainingToDeduct -= currentAmount;
-          supplier.advancePayment[i].amount = 0;
+    // Only proceed with deduction if advancePayment total is greater than 0
+    if (totalAdvancePayment > 0) {
+      // Deduct the paidAmount directly from advancePayment
+      // Example: paidAmount = 100, advancePayment = 28,400 → new balance = 28,300
+      amountToDeductFromAdvance = paidAmountNum;
+      remainingToDeduct = Math.max(0, amountToDeductFromAdvance);
+
+      // Deduct from banks sequentially (first to last)
+      for (let i = 0; i < supplier.advancePayment.length && remainingToDeduct > 0; i++) {
+        const currentAmount = parseFloat(supplier.advancePayment[i].amount) || 0;
+        
+        if (currentAmount > 0) {
+          if (currentAmount >= remainingToDeduct) {
+            // This bank has enough, deduct and stop
+            supplier.advancePayment[i].amount = currentAmount - remainingToDeduct;
+            remainingToDeduct = 0;
+          } else {
+            // This bank doesn't have enough, deduct all and continue
+            remainingToDeduct -= currentAmount;
+            supplier.advancePayment[i].amount = 0;
+          }
         }
       }
+
+      // Remove bank entries with 0 amount
+      supplier.advancePayment = supplier.advancePayment.filter(payment => {
+        const amount = parseFloat(payment.amount) || 0;
+        return amount > 0;
+      });
+
+      // Calculate new total advancePayment
+      newTotalAdvancePayment = supplier.advancePayment.reduce((sum, payment) => {
+        return sum + (parseFloat(payment.amount) || 0);
+      }, 0);
     }
-
-    // Remove bank entries with 0 amount
-    supplier.advancePayment = supplier.advancePayment.filter(payment => {
-      const amount = parseFloat(payment.amount) || 0;
-      return amount > 0;
-    });
-
-    // Calculate new total advancePayment
-    const newTotalAdvancePayment = supplier.advancePayment.reduce((sum, payment) => {
-      return sum + (parseFloat(payment.amount) || 0);
-    }, 0);
 
     await supplier.save();
 
