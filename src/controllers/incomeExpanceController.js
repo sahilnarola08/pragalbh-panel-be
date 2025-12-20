@@ -1703,6 +1703,10 @@ export const editExpanseEntry = async (req, res) => {
       return res.status(400).json({ message: "Invalid linked order or supplier" });
     }
 
+    // Save original status and paidAmount BEFORE updates (needed for supplier deduction logic)
+    const originalStatus = existingExpense.status?.toLowerCase();
+    const originalPaidAmount = existingExpense.paidAmount || 0;
+
     // Get base purchasePrice (original price) to calculate dueAmount
     // Strategy: dueAmount + paidAmount = original purchase price
     const currentDueAmount = existingExpense.dueAmount || 0;
@@ -1766,6 +1770,80 @@ export const editExpanseEntry = async (req, res) => {
     // Recalculate remaining amount (for backward compatibility)
     existingExpense.remainingAmount =
       Math.round(((existingExpense.dueAmount || 0) - (existingExpense.paidAmount || 0)) * 100) / 100;
+
+    // Deduct from supplier's advancePayment if status is PAID
+    const finalStatus = existingExpense.status?.toLowerCase();
+    const finalPaidAmountValue = existingExpense.paidAmount || 0;
+    
+    // Calculate amount to deduct from supplier's advancePayment
+    // Logic:
+    // 1. If status changes from non-"paid" to "paid": deduct the paidAmount at that time
+    // 2. If status is already "paid" and paidAmount increases: deduct only the difference
+    let amountToDeduct = 0;
+    
+    if (finalStatus === "paid" && finalPaidAmountValue > 0 && existingExpense.supplierId) {
+      if (originalStatus !== "paid") {
+        // Status changed from non-"paid" to "paid": deduct the current paidAmount
+        amountToDeduct = finalPaidAmountValue;
+      } else {
+        // Status was already "paid": deduct only the difference (increase in paidAmount)
+        const paidAmountDifference = finalPaidAmountValue - originalPaidAmount;
+        if (paidAmountDifference > 0) {
+          amountToDeduct = paidAmountDifference;
+        }
+      }
+    }
+    
+    // Only deduct if there's an amount to deduct and status is "paid"
+    if (amountToDeduct > 0 && finalStatus === "paid") {
+      const Supplier = (await import("../models/supplier.js")).default;
+      const supplierId = existingExpense.supplierId._id || existingExpense.supplierId;
+      
+      const supplier = await Supplier.findById(supplierId);
+      if (supplier) {
+        // Ensure advancePayment is an array
+        if (!Array.isArray(supplier.advancePayment)) {
+          supplier.advancePayment = [];
+        }
+
+        // Calculate total advancePayment across all banks
+        const totalAdvancePayment = supplier.advancePayment.reduce((sum, payment) => {
+          return sum + (parseFloat(payment.amount) || 0);
+        }, 0);
+
+        // Only deduct if advancePayment total is greater than 0
+        if (totalAdvancePayment > 0) {
+          // Deduct the calculated amount (difference or full amount) from advancePayment
+          // Example: paidAmount increased from 200 to 400, deduct 200 (the difference)
+          let remainingToDeduct = amountToDeduct;
+
+          // Deduct from banks sequentially (first to last)
+          for (let i = 0; i < supplier.advancePayment.length && remainingToDeduct > 0; i++) {
+            const currentAmount = parseFloat(supplier.advancePayment[i].amount) || 0;
+            
+            if (currentAmount > 0) {
+              if (currentAmount >= remainingToDeduct) {
+                // This bank has enough, deduct and stop
+                supplier.advancePayment[i].amount = currentAmount - remainingToDeduct;
+                remainingToDeduct = 0;
+              } else {
+                // This bank doesn't have enough, deduct all and continue
+                remainingToDeduct -= currentAmount;
+                supplier.advancePayment[i].amount = 0;
+              }
+            }
+          }
+
+          // Remove bank entries with 0 amount
+          supplier.advancePayment = supplier.advancePayment.filter(payment => {
+            const amount = parseFloat(payment.amount) || 0;
+            return amount > 0;
+          });
+
+          await supplier.save();
+        }
+      }
+    }
 
     // Save updated document
     await existingExpense.save();
