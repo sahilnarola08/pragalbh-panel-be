@@ -60,8 +60,15 @@ const userRegistrationSchema = yup.object().shape({
     .of(platformSchema)
     .optional(),
 
+  // Client type as multi-select (array of ObjectId strings)
   clientType: yup
-    .string()
+    .array()
+    .of(
+      yup
+        .string()
+        .matches(/^[0-9a-fA-F]{24}$/, 'Client type must be a valid ObjectId')
+    )
+    .min(1, 'At least one client type is required')
     .required('Client type is required'),
 
   company: yup
@@ -135,8 +142,14 @@ const userUpdateSchema = yup.object().shape({
     .of(platformSchema)
     .optional(),
 
+  // Optional multi-select client type on update
   clientType: yup
-    .string()
+    .array()
+    .of(
+      yup
+        .string()
+        .matches(/^[0-9a-fA-F]{24}$/, 'Client type must be a valid ObjectId')
+    )
     .optional(),
 
   company: yup

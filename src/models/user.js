@@ -48,11 +48,13 @@ const userSchema = new mongoose.Schema({
           unique: true,
           index: true,
      },
-     clientType: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "master",
-          index: true,
-     },
+     // Allow multiple client types (multi-select)
+     clientType: [
+          {
+               type: mongoose.Schema.Types.ObjectId,
+               ref: "master",
+          }
+     ],
      isDeleted: {
           type: Boolean,
           default: false,

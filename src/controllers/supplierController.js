@@ -311,6 +311,16 @@ const createSupplier = async (req, res, next) => {
 
         const supplierPayload = await fetchSupplierWithAggregates(supplier._id);
 
+        // ✅ Invalidate cache after supplier creation
+        const { invalidateCache } = await import("../util/cacheHelper.js");
+        invalidateCache('supplier');
+        invalidateCache('dashboard');
+
+        // Set cache-control headers to prevent browser caching
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
         sendSuccessResponse({
             res,
             data: supplierPayload || supplier,
@@ -336,11 +346,12 @@ const getAllSuppliers = async (req, res) => {
             endDate = ""
         } = req.query;
 
-        const pageNum = parseInt(page, 10);
-        const limitNum = parseInt(limit, 10);
+        // Parse page and limit to integers with proper defaults and validation
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
+        const limitNum = Math.max(1, parseInt(limit, 10) || 10);
         const offset = (pageNum - 1) * limitNum;
 
-        // Build match stage for filtering
+        // Build match stage for filtering - always exclude deleted suppliers
         const matchStage = { isDeleted: false };
         const normalizedSearch = typeof search === "string" ? search.trim() : "";
 
@@ -368,7 +379,14 @@ const getAllSuppliers = async (req, res) => {
                 });
             }
 
-            matchStage.$or = orConditions;
+            // Use $and to explicitly combine isDeleted: false with $or conditions
+            // This ensures isDeleted: false is always enforced
+            matchStage.$and = [
+                { isDeleted: false },
+                { $or: orConditions }
+            ];
+            // Remove the top-level isDeleted since it's now in $and
+            delete matchStage.isDeleted;
         }
 
         // Date range filter
@@ -456,6 +474,11 @@ const getAllSuppliers = async (req, res) => {
 
         // Get total count
         const totalSuppliers = await Supplier.countDocuments(matchStage);
+
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
 
         return sendSuccessResponse({
             status: 200,
@@ -564,6 +587,17 @@ const updateSupplier = async (req, res, next) => {
 
         const supplierPayload = await fetchSupplierWithAggregates(id);
 
+        // ✅ Invalidate cache after supplier update
+        const { invalidateCache } = await import("../util/cacheHelper.js");
+        invalidateCache('supplier', id);
+        invalidateCache('supplier');
+        invalidateCache('dashboard');
+
+        // Set cache-control headers to prevent browser caching
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
         sendSuccessResponse({
             res,
             data: supplierPayload || updatedSupplier,
@@ -597,6 +631,17 @@ const deleteSupplier = async (req, res, next) => {
             { isDeleted: true },
             { new: true }
         );
+
+        // ✅ Invalidate cache after supplier deletion
+        const { invalidateCache } = await import("../util/cacheHelper.js");
+        invalidateCache('supplier', id);
+        invalidateCache('supplier');
+        invalidateCache('dashboard');
+
+        // Set cache-control headers to prevent browser caching
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
 
         sendSuccessResponse({
             res,
@@ -641,6 +686,11 @@ const getSupplierById = async (req, res, next) => {
         }
 
         const { createdAt, updatedAt, ...supplierPayload } = supplierData[0];
+
+        // Set cache-control headers to prevent browser caching (304 responses)
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
 
         sendSuccessResponse({
             res,
@@ -764,6 +814,17 @@ export const updateSupplierBalance = async (req, res) => {
       }
   
       const { createdAt, updatedAt, ...supplierPayload } = supplierData[0];
+
+      // ✅ Invalidate cache after supplier balance update
+      const { invalidateCache } = await import("../util/cacheHelper.js");
+      invalidateCache('supplier', supplierId);
+      invalidateCache('supplier');
+      invalidateCache('dashboard');
+
+      // Set cache-control headers to prevent browser caching
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
 
       return sendSuccessResponse({
         res,

@@ -141,8 +141,9 @@ const getAllProducts = async (req, res) => {
       endDate = ""
     } = req.query;
 
-    const pageNum = parseInt(page, 10);
-    const limitNum = parseInt(limit, 10);
+    // Parse page and limit to integers with proper defaults and validation
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 10);
     const offset = (pageNum - 1) * limitNum;
 
     // Sorting
@@ -260,6 +261,11 @@ const getAllProducts = async (req, res) => {
         .lean(),
       Product.countDocuments(filter)
     ]);
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return sendSuccessResponse({
       status: 200,
@@ -458,6 +464,11 @@ const getProductById = async (req, res, next) => {
         message: "Product not found."
       });
     }
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     sendSuccessResponse({
       res,

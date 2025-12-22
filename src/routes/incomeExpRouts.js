@@ -28,7 +28,7 @@ router.post("/add-extra-expense", incomeExpController.addExtraExpense);
 router.put("/edit-extra-expense/:expenseId", incomeExpController.editExtraExpense);
 router.get("/get-expense/:expenseId", incomeExpController.getExpenseById);
 
-// Payment Status route - Mark expense payment as done
+// Payment Status route - Mark expense payment as paid
 router.post("/payment-status", supOrdDetailsController.markPaymentDone);
 
 

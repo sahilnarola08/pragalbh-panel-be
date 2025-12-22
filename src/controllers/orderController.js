@@ -287,6 +287,7 @@ export const createOrder = async (req, res, next) => {
       if (existingSupplier) {
         expensePromises.push(
           ExpanseIncome.create({
+            date: new Date(),
             orderId: order._id,
             description: product.productName,
             paidAmount: 0,
@@ -349,8 +350,9 @@ const getAllOrders = async (req, res) => {
       endDate = ""
     } = req.query;
 
-    const pageNum = parseInt(page, 10);
-    const limitNum = parseInt(limit, 10);
+    // Parse page and limit to integers with proper defaults and validation
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 10);
     const offset = (pageNum - 1) * limitNum;
 
     // Sorting
@@ -581,6 +583,11 @@ const getAllOrders = async (req, res) => {
       };
     });
 
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     return sendSuccessResponse({
       status: 200,
       res,
@@ -620,9 +627,12 @@ const updateOrder = async (req, res, next) => {
       });
     }
 
-    // ✅ Validate client existence if clientName is being updated - optimized
+    let existingClient = null;
+    let existingSupplier = null;
+
+    // Validate client existence if clientName is being updated
     if (updateData.clientName) {
-      const existingClient = await User.findOne({
+      existingClient = await User.findOne({
         $or: [
           { firstName: { $regex: updateData.clientName.trim(), $options: "i" } },
           { lastName: { $regex: updateData.clientName.trim(), $options: "i" } },
@@ -642,7 +652,7 @@ const updateOrder = async (req, res, next) => {
 
     // ✅ Validate supplier existence if supplier is being updated - optimized
     if (updateData.supplier && updateData.supplier.trim()) {
-      const existingSupplier = await Supplier.findOne({
+      existingSupplier = await Supplier.findOne({
         $or: [
           { firstName: { $regex: updateData.supplier.trim(), $options: "i" } },
           { lastName: { $regex: updateData.supplier.trim(), $options: "i" } },
@@ -782,6 +792,143 @@ const updateOrder = async (req, res, next) => {
     invalidateCache('order', id);
     invalidateCache('dashboard');
 
+    // --- Sync related Income and Expense records for this order ---
+    try {
+      // Get client and supplier IDs (use existing if not updated)
+      let clientId = existingClient?._id;
+      let supplierId = existingSupplier?._id;
+
+      // If client wasn't updated, get it from existing order
+      if (!clientId && existingOrder.clientName) {
+        const clientFromOrder = await User.findOne({
+          $or: [
+            { firstName: { $regex: existingOrder.clientName.trim(), $options: "i" } },
+            { lastName: { $regex: existingOrder.clientName.trim(), $options: "i" } },
+            { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: existingOrder.clientName.trim(), options: "i" } } }
+          ],
+          isDeleted: false
+        }).select("_id").lean();
+        clientId = clientFromOrder?._id;
+      }
+
+      // If supplier wasn't updated, get it from existing order
+      if (!supplierId && existingOrder.supplier) {
+        const supplierFromOrder = await Supplier.findOne({
+          $or: [
+            { firstName: { $regex: existingOrder.supplier.trim(), $options: "i" } },
+            { lastName: { $regex: existingOrder.supplier.trim(), $options: "i" } },
+            { company: { $regex: existingOrder.supplier.trim(), $options: "i" } },
+            { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: existingOrder.supplier.trim(), options: "i" } } }
+          ],
+          isDeleted: false
+        }).select("_id").lean();
+        supplierId = supplierFromOrder?._id;
+      }
+
+      const [orderIncomes, orderExpenses] = await Promise.all([
+        Income.find({ orderId: id }).sort({ createdAt: 1, _id: 1 }),
+        ExpanseIncome.find({ orderId: id }).sort({ createdAt: 1, _id: 1 }),
+      ]);
+
+      // Update client reference in Income if client changed
+      if (existingClient && orderIncomes.length > 0) {
+        orderIncomes.forEach((inc) => {
+          inc.clientId = existingClient._id;
+        });
+      }
+
+      // Update supplier reference in Expense if supplier changed
+      if (existingSupplier && orderExpenses.length > 0) {
+        orderExpenses.forEach((exp) => {
+          exp.supplierId = existingSupplier._id;
+        });
+      }
+
+      const products = Array.isArray(updatedOrder.products)
+        ? updatedOrder.products
+        : [];
+
+      // ✅ Remove Income and ExpanseIncome records for removed products (do this first)
+      if (products.length < orderIncomes.length) {
+        const excessIncomes = orderIncomes.slice(products.length);
+        const incomeIdsToDelete = excessIncomes.map((inc) => inc._id);
+        await Income.deleteMany({ _id: { $in: incomeIdsToDelete } });
+        // Remove from array to avoid saving deleted records
+        orderIncomes.splice(products.length);
+      }
+
+      if (products.length < orderExpenses.length) {
+        const excessExpenses = orderExpenses.slice(products.length);
+        const expenseIdsToDelete = excessExpenses.map((exp) => exp._id);
+        await ExpanseIncome.deleteMany({ _id: { $in: expenseIdsToDelete } });
+        // Remove from array to avoid saving deleted records
+        orderExpenses.splice(products.length);
+      }
+
+      // Only try to sync per-product details when counts match to avoid corrupting extra manual entries
+      // (Sync after deletion so remaining records match product count)
+      if (products.length > 0 && products.length === orderIncomes.length) {
+        products.forEach((product, index) => {
+          const income = orderIncomes[index];
+          if (!income) return;
+          income.Description = product.productName;
+          income.sellingPrice = product.sellingPrice;
+          income.initialPayment = product.initialPayment;
+        });
+      }
+
+      if (products.length > 0 && products.length === orderExpenses.length) {
+        products.forEach((product, index) => {
+          const expense = orderExpenses[index];
+          if (!expense) return;
+          expense.description = product.productName;
+          expense.dueAmount = product.purchasePrice;
+        });
+      }
+
+      // ✅ Create Income and ExpanseIncome records for newly added products
+      if (products.length > orderIncomes.length) {
+        const newProducts = products.slice(orderIncomes.length);
+        const newIncomePromises = newProducts.map((product) =>
+          Income.create({
+            date: new Date(),
+            orderId: id,
+            Description: product.productName,
+            sellingPrice: product.sellingPrice,
+            initialPayment: product.initialPayment,
+            receivedAmount: 0,
+            clientId: clientId || existingClient?._id,
+            status: DEFAULT_PAYMENT_STATUS,
+          })
+        );
+        await Promise.all(newIncomePromises);
+      }
+
+      if (products.length > orderExpenses.length && (supplierId || existingSupplier?._id)) {
+        const newProducts = products.slice(orderExpenses.length);
+        const newExpensePromises = newProducts.map((product) =>
+          ExpanseIncome.create({
+            date: new Date(),
+            orderId: id,
+            description: product.productName,
+            paidAmount: 0,
+            dueAmount: product.purchasePrice,
+            supplierId: supplierId || existingSupplier._id,
+            status: DEFAULT_PAYMENT_STATUS,
+          })
+        );
+        await Promise.all(newExpensePromises);
+      }
+
+      await Promise.all([
+        ...orderIncomes.map((doc) => doc.save()),
+        ...orderExpenses.map((doc) => doc.save()),
+      ]);
+    } catch (syncError) {
+      // Log but don't break main order update flow
+      console.error("Error syncing income/expense with updated order:", syncError);
+    }
+
     sendSuccessResponse({
       res,
       data: updatedOrder,
@@ -794,7 +941,7 @@ const updateOrder = async (req, res, next) => {
   }
 };
 
-// Delete order by ID
+// Delete order by ID (and all related income/expense entries)
 const deleteOrder = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -809,6 +956,12 @@ const deleteOrder = async (req, res, next) => {
       });
     }
 
+    // Delete all related Income & Expense records for this order
+    await Promise.all([
+      Income.deleteMany({ orderId: id }),
+      ExpanseIncome.deleteMany({ orderId: id })
+    ]);
+
     // Hard delete the order
     await Order.findByIdAndDelete(id);
 
@@ -820,7 +973,7 @@ const deleteOrder = async (req, res, next) => {
     sendSuccessResponse({
       res,
       data: null,
-      message: "Order deleted successfully",
+      message: "Order and all related income/expense entries deleted successfully",
       status: 200
     });
 
@@ -856,6 +1009,11 @@ const getOrderById = async (req, res, next) => {
         message: "Order not found."
       });
     }
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     sendSuccessResponse({
       res,
@@ -956,7 +1114,7 @@ const getKanbanData = async (req, res) => {
     const promises = statuses.map(async (status) => {
       const queryFilter = { status, ...dateFilter };
       const orders = await Order.find(queryFilter)
-        .select("_id clientName address products status trackingId courierCompany createdAt")
+        .select("_id clientName address products status trackingId courierCompany createdAt checklist shippingCost")
         .populate({
           path: "products.orderPlatform",
           select: "_id name",
@@ -973,6 +1131,11 @@ const getKanbanData = async (req, res) => {
     });
 
     await Promise.all(promises);
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return sendSuccessResponse({
       res,

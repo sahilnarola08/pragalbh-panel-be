@@ -141,11 +141,34 @@ orderSchema.index({ "products.orderPlatform": 1 }); // For platform filtering
 // Text index for search optimization
 orderSchema.index({ clientName: "text", address: "text", supplier: "text", "products.productName": "text" });
 
-// Generate order ID 
+// Generate order ID in format: PJMMYYNN
+// PJ: Pragalbh Jewels (Static)
+// MM: Month (2 digits)
+// YY: Year (last 2 digits)
+// NN: Order sequence for the month (starts from 01 each month)
 orderSchema.pre('save', async function (next) {
      if (!this.orderId) {
-          const count = await mongoose.model('Order').countDocuments();
-          this.orderId = `ORD-${String(count + 1).padStart(4, '0')}`;
+          const now = new Date();
+          const month = String(now.getMonth() + 1).padStart(2, '0'); // 01-12
+          const year = String(now.getFullYear()).slice(-2); // Last 2 digits of year
+          
+          // Get the start and end of current month
+          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+          const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+          
+          // Count orders created in the current month
+          const count = await mongoose.model('Order').countDocuments({
+               createdAt: {
+                    $gte: startOfMonth,
+                    $lte: endOfMonth
+               }
+          });
+          
+          // Generate sequence number (starts from 01)
+          const sequence = String(count + 1).padStart(2, '0');
+          
+          // Generate order ID: PJ + MM + YY + NN
+          this.orderId = `PJ${month}${year}${sequence}`;
      }
      next();
 });

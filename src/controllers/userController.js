@@ -59,7 +59,20 @@ const register = async (req, res, next) => {
       }
 
       // Convert empty contactNumber to undefined to avoid unique index issues
-      const contactNumberValue = contactNumber && contactNumber.trim() !== '' ? contactNumber.trim() : undefined;
+      const contactNumberValue =
+        contactNumber && contactNumber.trim() !== "" ? contactNumber.trim() : undefined;
+
+      // Check if user already exists by contact number (if provided)
+      if (contactNumberValue) {
+        const existingUserByContact = await User.findOne({ contactNumber: contactNumberValue });
+        if (existingUserByContact) {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Contact number already exists.",
+          });
+        }
+      }
       
       // Convert empty company to undefined
       const companyValue = company && company.trim() !== '' ? company.trim() : undefined;
@@ -85,15 +98,45 @@ const register = async (req, res, next) => {
         path: 'platforms.platformName',
         select: '_id name'
       });
+
+      // ✅ Invalidate cache after user creation
+      const { invalidateCache } = await import("../util/cacheHelper.js");
+      invalidateCache('user');
+      invalidateCache('dashboard');
+
+      // Set cache-control headers to prevent browser caching
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
   
-      sendSuccessResponse({ 
-        res, 
-        data: user, 
+      sendSuccessResponse({
+        res,
+        data: user,
         message: "User registered successfully",
-        status: 200
+        status: 200,
       });
-  
+
     } catch (error) {
+      // Handle duplicate key errors more gracefully
+      if (error && error.code === 11000) {
+        const duplicateField = error.keyPattern
+          ? Object.keys(error.keyPattern)[0]
+          : null;
+
+        let message = "Duplicate value not allowed.";
+        if (duplicateField === "email") {
+          message = "Email already exists.";
+        } else if (duplicateField === "contactNumber") {
+          message = "Contact number already exists.";
+        }
+
+        return sendErrorResponse({
+          status: 400,
+          res,
+          message,
+        });
+      }
+
       next(error);
     }
   };
@@ -102,21 +145,48 @@ const register = async (req, res, next) => {
  const  getAllUsers = async (req, res) => {
   try {
     const { page = 1, limit = 10, search, sortField = 'createdAt', sortOrder = 'desc', startDate = "", endDate = "" } = req.query;
-    const offset = (page - 1) * limit;
+    
+    // Parse page and limit to integers
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 10;
+    const offset = (pageNum - 1) * limitNum;
+    
     const sort = {};
     sort[sortField] = sortOrder === "asc" ? 1 : -1;
 
-    // Search filter
-    const filter = {};
-    if (search) {
-      filter.$or = [
-        { firstName: new RegExp(search, "i") },
-        { lastName: new RegExp(search, "i") },
-        { email: new RegExp(search, "i") },
-        { contactNumber: new RegExp(search, "i") },
-        { company: new RegExp(search, "i") },
-        { clientType: new RegExp(search, "i") }
+    // Search filter - always exclude deleted users
+    const filter = { isDeleted: false };
+    
+    // Build search conditions if search parameter exists and is not empty
+    const normalizedSearch = search && typeof search === 'string' ? search.trim() : '';
+    if (normalizedSearch) {
+      const searchRegex = new RegExp(normalizedSearch, "i");
+      const orConditions = [
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { email: searchRegex },
+        { contactNumber: searchRegex },
+        { company: searchRegex }
       ];
+
+      // If search is a valid ObjectId, include clientType match
+      if (mongoose.Types.ObjectId.isValid(normalizedSearch)) {
+        orConditions.push({ clientType: normalizedSearch });
+      }
+
+      // Search clientType names in Master collection
+      const matchingClientTypes = await Master.find({
+        name: searchRegex,
+        isDeleted: false,
+      }).select("_id").lean();
+
+      if (matchingClientTypes.length > 0) {
+        const clientTypeIds = matchingClientTypes.map((ct) => ct._id);
+        orConditions.push({ clientType: { $in: clientTypeIds } });
+      }
+
+      // Add $or condition to filter
+      filter.$or = orConditions;
     }
 
     // Date range filter
@@ -191,10 +261,10 @@ const register = async (req, res, next) => {
 
     // Fetch users with populated clientType and platforms
     const users = await User
-      .find({...filter ,isDeleted: false})
+      .find(filter)
       .sort(sort)
       .skip(offset)
-      .limit(limit)
+      .limit(limitNum)
       .select("-password -__v -createdAt -updatedAt")
       .populate({
         path: 'clientType',
@@ -208,7 +278,12 @@ const register = async (req, res, next) => {
       });
 
 
-    const totalUsers = await User.countDocuments({...filter ,isDeleted: false});
+    const totalUsers = await User.countDocuments(filter);
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     return sendSuccessResponse({
       status: 200,
@@ -216,8 +291,8 @@ const register = async (req, res, next) => {
       data: {
         users,
         totalUsers,
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: pageNum,
+        limit: limitNum,
       },
       message: "User data retrieved successfully."
     });
@@ -341,6 +416,17 @@ const updateUser = async (req, res, next) => {
       match: { isDeleted: false }
     });
 
+    // ✅ Invalidate cache after user update
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('user', id);
+    invalidateCache('user');
+    invalidateCache('dashboard');
+
+    // Set cache-control headers to prevent browser caching
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     sendSuccessResponse({
       res,
       data: updatedUser,
@@ -358,9 +444,9 @@ const deleteUser = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Check if user exists
+    // Check if user exists and is not already deleted
     const existingUser = await User.findById(id);
-    if (!existingUser) {
+    if (!existingUser || existingUser.isDeleted) {
       return sendErrorResponse({
         status: 404,
         res,
@@ -368,9 +454,23 @@ const deleteUser = async (req, res, next) => {
       });
     }
 
-    // Delete user
-    await User.updateOne({_id: id}, {$set: {isDeleted: true}});
-    
+    // Soft delete - set isDeleted to true
+    await User.findByIdAndUpdate(
+      id,
+      { isDeleted: true },
+      { new: true }
+    );
+
+    // ✅ Invalidate cache after user deletion
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('user', id);
+    invalidateCache('user');
+    invalidateCache('dashboard');
+
+    // Set cache-control headers to prevent browser caching
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     sendSuccessResponse({
       res,
@@ -409,6 +509,11 @@ const getUserById = async (req, res, next) => {
         message: "User not found."
       });
     }
+
+    // Set cache-control headers to prevent browser caching (304 responses)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     sendSuccessResponse({
       res,
