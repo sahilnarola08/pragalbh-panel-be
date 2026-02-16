@@ -10,6 +10,10 @@ import masterRouter from "./masterRoute.js";
 import uploadRouter from "./uploadRoute.js";
 import dashboardRouter from "./dashboardRoute.js";
 import authRouter from "./authRoute.js";
+import coastRouter from "./coastRoute.js";
+import laborPriceRouter from "./laborPriceRoute.js";
+import diamondMasterRouter from "./diamondMasterRoute.js";
+import pricingProductRouter from "./pricingProductRoute.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
@@ -24,6 +28,10 @@ const routes = (app) => {
   app.use("/master", masterRouter);
   app.use("/upload", uploadRouter);
   app.use("/dashboard", dashboardRouter);
+  app.use("/coast", coastRouter);
+  app.use("/labor-pricing", laborPriceRouter);
+  app.use("/diamond-master", diamondMasterRouter);
+  app.use("/pricing-products", pricingProductRouter);
 };
 
 export default routes;
