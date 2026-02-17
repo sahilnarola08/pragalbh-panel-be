@@ -171,10 +171,8 @@ export const getDashboardStats = async (req, res) => {
       processingPayment: Math.round(processingPayment * 100) / 100
     };
 
-    // Set cache-control headers to prevent browser caching (304 responses)
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
+    // Short cache for dashboard (30s) to speed up repeat navigations
+    res.setHeader('Cache-Control', 'private, max-age=30');
 
     return sendSuccessResponse({
       res,
