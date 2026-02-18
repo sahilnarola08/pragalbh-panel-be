@@ -3,7 +3,6 @@ import cors from "cors";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import connectDB from "./config/db.js";
 import routes from "./routes/allrouts.js";
 import { startSchedulers } from "./services/schedulerService.js";
 import compression from "compression";
@@ -25,9 +24,6 @@ app.set('trust proxy', true);
 
 // Disable ETag to prevent 304 Not Modified responses
 app.set('etag', false);
-
-// Connect to database
-connectDB();
 
 // Middleware
 app.use(cors());

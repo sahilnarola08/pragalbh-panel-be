@@ -48,8 +48,11 @@ const connectDB = async () => {
 
     console.log("MongoDB Connected successfully with optimized settings");
   } catch (error) {
-    console.error("MongoDB Error ", error.message);
-    process.exit(1);
+    console.error("MongoDB Error:", error.message);
+    console.warn(
+      "Server will continue without DB. Live metal rates (gold/silver/platinum) will still work; other routes may fail until MongoDB is reachable (check DATABASE_URL, network, and Atlas IP whitelist)."
+    );
+    // Do not exit - coast rate endpoints use external APIs only and can work without DB
   }
 };
 
