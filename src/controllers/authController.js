@@ -2,6 +2,9 @@ import Auth from '../models/auth.js';
 import { sendSuccessResponse, sendErrorResponse } from '../util/commonResponses.js';
 import jwt from 'jsonwebtoken';
 import { secret } from '../config/secret.js';
+import { getEffectivePermissions } from '../services/permissionResolver.js';
+import { parseUserAgent } from '../util/parseUserAgent.js';
+import * as loginSessionService from '../services/loginSessionService.js';
 
 // Signup - Register new user
 const signup = async (req, res, next) => {
@@ -22,12 +25,20 @@ const signup = async (req, res, next) => {
       });
     }
 
-    // Create new user with default role 1 (admin) - role managed by backend only
     const authUser = await Auth.create({
       email: email.toLowerCase(),
       password
-      // role will default to 1 (admin) from schema
     });
+
+    // First user in system gets SuperAdmin role so they can access panel and assign roles
+    if ((await Auth.countDocuments()) === 1) {
+      const Role = (await import("../models/role.js")).default;
+      const superAdmin = await Role.findOne({ name: "SuperAdmin" });
+      if (superAdmin) {
+        authUser.roleId = superAdmin._id;
+        await authUser.save();
+      }
+    }
 
     // Generate JWT token
     const token = jwt.sign(
@@ -40,16 +51,12 @@ const signup = async (req, res, next) => {
       { expiresIn: '7d' }
     );
 
-    // Return user data (password excluded by schema transform)
+    const permissions = await getEffectivePermissions(authUser._id);
+    const userObj = authUser.toJSON ? authUser.toJSON() : { id: authUser._id, email: authUser.email, role: authUser.role, isActive: authUser.isActive, name: authUser.name, roleId: authUser.roleId };
     sendSuccessResponse({
       res,
       data: {
-        user: {
-          id: authUser._id,
-          email: authUser.email,
-          role: authUser.role,
-          isActive: authUser.isActive
-        },
+        user: { ...userObj, permissions },
         token
       },
       message: "register successfull ",
@@ -100,27 +107,35 @@ const signin = async (req, res, next) => {
       });
     }
 
-    // Generate JWT token
+    const ip = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || '';
+    const userAgent = req.headers['user-agent'] || '';
+    const { browser, deviceType, deviceName } = parseUserAgent(userAgent);
+    const session = await loginSessionService.createSession(authUser._id, {
+      ip,
+      userAgent,
+      deviceName,
+      deviceType,
+      browser,
+      location: ''
+    });
+
     const token = jwt.sign(
-      { 
-        id: authUser._id, 
+      {
+        id: authUser._id,
         email: authUser.email,
-        role: authUser.role 
+        role: authUser.role,
+        sessionId: session._id.toString()
       },
       secret.tokenSecret || 'default-secret-key',
       { expiresIn: '7d' }
     );
 
-    // Return user data and token
+    const permissions = await getEffectivePermissions(authUser._id);
+    const userObj = authUser.toJSON ? authUser.toJSON() : { id: authUser._id, email: authUser.email, role: authUser.role, isActive: authUser.isActive, name: authUser.name, roleId: authUser.roleId };
     sendSuccessResponse({
       res,
       data: {
-        user: {
-          id: authUser._id,
-          email: authUser.email,
-          role: authUser.role,
-          isActive: authUser.isActive
-        },
+        user: { ...userObj, permissions },
         token
       },
       message: "Login successful",
@@ -132,8 +147,19 @@ const signin = async (req, res, next) => {
   }
 };
 
+const me = async (req, res, next) => {
+  try {
+    const permissions = await getEffectivePermissions(req.user._id);
+    const user = req.user.toJSON ? req.user.toJSON() : { id: req.user._id, email: req.user.email, name: req.user.name, roleId: req.user.roleId, isActive: req.user.isActive };
+    sendSuccessResponse({ res, data: { user: { ...user, permissions } }, message: "Profile", status: 200 });
+  } catch (e) {
+    next(e);
+  }
+};
+
 export default {
   signup,
-  signin
+  signin,
+  me
 };
 

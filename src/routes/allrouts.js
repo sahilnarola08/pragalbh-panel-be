@@ -17,10 +17,18 @@ import pricingProductRouter from "./pricingProductRoute.js";
 import partnerRouter from "./partnerRoute.js";
 import assetRouter from "./assetRoute.js";
 import targetRouter from "./targetRoute.js";
+import roleRouter from "./roleRoute.js";
+import permissionRouter from "./permissionRoute.js";
+import panelUserRouter from "./panelUserRoute.js";
+import loginSessionRouter from "./loginSessionRoute.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
   app.use("/auth", authRouter);
+  app.use("/roles", roleRouter);
+  app.use("/permissions", permissionRouter);
+  app.use("/sessions", loginSessionRouter);
+  app.use("/users", panelUserRouter);
   app.use("/user", userRouter);
   app.use("/supplier", supplierRouter);
   app.use("/order", orderRouter);

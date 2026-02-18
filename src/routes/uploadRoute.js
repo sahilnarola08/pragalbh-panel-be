@@ -7,13 +7,13 @@ import {
   uploadProductImages as uploadImagesMiddleware,
   processImages,
 } from "../middlewares/upload.js";
+import { authenticateJWT } from "../middlewares/authenticateJWT.js";
+import { authorize } from "../middlewares/authorize.js";
 
 const router = express.Router();
+router.use(authenticateJWT);
 
-// Upload between 1 and 5 images
-router.post("/images", uploadImagesMiddleware, processImages, uploadProductImages);
-
-// Delete uploaded image
-router.delete("/image", deleteUploadedImage);
+router.post("/images", authorize("upload.manage"), uploadImagesMiddleware, processImages, uploadProductImages);
+router.delete("/image", authorize("upload.manage"), deleteUploadedImage);
 
 export default router;

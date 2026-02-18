@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
 const authSchema = new mongoose.Schema({
+  name: { type: String, trim: true, default: "" },
   email: {
     type: String,
     required: [true, 'Email is required'],
@@ -18,18 +19,13 @@ const authSchema = new mongoose.Schema({
   },
   role: {
     type: Number,
-    required: true,
-    enum: [1, 2], // 1 = admin, 2 = user
+    enum: [1, 2],
     default: 1
   },
-  isActive: {
-    type: Boolean,
-    default: true
-  },
-  isDeleted: {
-    type: Boolean,
-    default: false
-  }
+  roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role", default: null },
+  customPermissions: [{ type: String, trim: true }],
+  isActive: { type: Boolean, default: true },
+  isDeleted: { type: Boolean, default: false }
 }, {
   timestamps: true,
   toJSON: { 

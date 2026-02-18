@@ -1,39 +1,21 @@
 import express from "express";
 import masterController from "../controllers/masterController.js";
+import { authenticateJWT } from "../middlewares/authenticateJWT.js";
+import { authorize } from "../middlewares/authorize.js";
 
 const router = express.Router();
+router.use(authenticateJWT);
 
-// ==================== Master Routes ====================
-// Create master - accepts single object
-router.post("/create", masterController.createMaster);
-
-// Get all masters with filtering, search, and pagination
-router.get("/get", masterController.getAllMasters);
-
-// Get master by ID
-router.get("/get-by-id/:id", masterController.getMasterById);
-
-// Update master by ID
-router.put("/update/:id", masterController.updateMaster);
-
-// Delete master by ID (soft delete)
-router.delete("/delete/:id", masterController.deleteMaster);
-
-// ==================== Master Assets Routes ====================
-// Create master asset
-router.post("/assets/create", masterController.createMasterAsset);
-
-// Get all master assets sorted alphabetically
-router.get("/assets/get", masterController.getAllMasterAssets);
-
-// Get master asset by ID
-router.get("/assets/get-by-id/:id", masterController.getMasterAssetById);
-
-// Update master asset by ID
-router.put("/assets/update/:id", masterController.updateMasterAsset);
-
-// Delete master asset by ID (soft delete)
-router.delete("/assets/delete/:id", masterController.deleteMasterAsset);
+router.post("/create", authorize("master.create"), masterController.createMaster);
+router.get("/get", authorize("master.view"), masterController.getAllMasters);
+router.get("/get-by-id/:id", authorize("master.view"), masterController.getMasterById);
+router.put("/update/:id", authorize("master.edit"), masterController.updateMaster);
+router.delete("/delete/:id", authorize("master.delete"), masterController.deleteMaster);
+router.post("/assets/create", authorize("master.create"), masterController.createMasterAsset);
+router.get("/assets/get", authorize("master.view"), masterController.getAllMasterAssets);
+router.get("/assets/get-by-id/:id", authorize("master.view"), masterController.getMasterAssetById);
+router.put("/assets/update/:id", authorize("master.edit"), masterController.updateMasterAsset);
+router.delete("/assets/delete/:id", authorize("master.delete"), masterController.deleteMasterAsset);
 
 
 export default router;
