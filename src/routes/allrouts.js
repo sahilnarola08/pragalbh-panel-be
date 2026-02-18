@@ -14,6 +14,9 @@ import coastRouter from "./coastRoute.js";
 import laborPriceRouter from "./laborPriceRoute.js";
 import diamondMasterRouter from "./diamondMasterRoute.js";
 import pricingProductRouter from "./pricingProductRoute.js";
+import partnerRouter from "./partnerRoute.js";
+import assetRouter from "./assetRoute.js";
+import targetRouter from "./targetRoute.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
@@ -32,6 +35,9 @@ const routes = (app) => {
   app.use("/labor-pricing", laborPriceRouter);
   app.use("/diamond-master", diamondMasterRouter);
   app.use("/pricing-products", pricingProductRouter);
+  app.use("/partners", partnerRouter);
+  app.use("/assets", assetRouter);
+  app.use("/targets", targetRouter);
 };
 
 export default routes;

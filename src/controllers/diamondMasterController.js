@@ -132,6 +132,40 @@ export const remove = async (req, res) => {
   }
 };
 
+export const bulkDelete = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return sendErrorResponse({ res, message: "Body must contain non-empty array of ids", status: 400 });
+    }
+    const result = await DiamondMaster.deleteMany({ _id: { $in: ids } });
+    clearCacheByRoute("/diamond-master");
+    return sendSuccessResponse({ res, data: { deletedCount: result.deletedCount }, message: "Entries deleted" });
+  } catch (error) {
+    return sendErrorResponse({ res, message: error.message, status: 500 });
+  }
+};
+
+export const bulkUpdate = async (req, res) => {
+  try {
+    const { ids, isActive, displayOrder } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return sendErrorResponse({ res, message: "Body must contain non-empty array of ids", status: 400 });
+    }
+    const update = {};
+    if (typeof isActive === "boolean") update.isActive = isActive;
+    if (Number.isFinite(Number(displayOrder))) update.displayOrder = Number(displayOrder);
+    if (Object.keys(update).length === 0) {
+      return sendErrorResponse({ res, message: "Provide isActive and/or displayOrder to update", status: 400 });
+    }
+    const result = await DiamondMaster.updateMany({ _id: { $in: ids } }, { $set: update });
+    clearCacheByRoute("/diamond-master");
+    return sendSuccessResponse({ res, data: { modifiedCount: result.modifiedCount }, message: "Entries updated" });
+  } catch (error) {
+    return sendErrorResponse({ res, message: error.message, status: 500 });
+  }
+};
+
 const DIAMOND_MASTER_TYPES = ["diamondType", "clarity", "color", "cut", "shape"];
 
 export const getTypes = async (req, res) => {

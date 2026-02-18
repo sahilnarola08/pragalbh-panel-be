@@ -13,6 +13,7 @@ router.get("/diamond-prices", coastController.getDiamondPrices);
 router.post("/diamond-prices", coastController.createDiamondPrice);
 router.put("/diamond-prices/:id", coastController.updateDiamondPrice);
 router.delete("/diamond-prices/:id", coastController.deleteDiamondPrice);
+router.post("/diamond-prices/bulk-delete", coastController.bulkDeleteDiamondPrices);
 router.get("/origins", coastController.getOrigins);
 router.get("/origins/:origin/shapes", coastController.getShapesForOrigin);
 router.get("/origins/:origin/shapes/:shape/colors", coastController.getColorsForOriginShape);
@@ -23,5 +24,9 @@ router.get(
 );
 router.post("/calculate-price", coastController.calculateFinalPrice);
 router.post("/diamond-prices/bulk", coastController.bulkUpdateDiamondPrices);
+router.get("/diamond-mm-carat", coastController.getDiamondMmCaratList);
+router.get("/diamond-mm-carat/categories", coastController.getDiamondMmCaratCategories);
+router.get("/diamond-mm-carat/seed", coastController.seedDiamondMmCarat);
+router.post("/diamond-mm-carat/seed", coastController.seedDiamondMmCarat);
 
 export default router;

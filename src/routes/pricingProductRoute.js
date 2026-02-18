@@ -7,5 +7,6 @@ router.get("/", pricingProductController.list);
 router.post("/", pricingProductController.create);
 router.put("/:id", pricingProductController.update);
 router.delete("/:id", pricingProductController.remove);
+router.post("/bulk-delete", pricingProductController.bulkDelete);
 
 export default router;

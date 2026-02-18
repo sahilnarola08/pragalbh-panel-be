@@ -157,8 +157,10 @@ export const getDashboardStats = async (req, res) => {
     const pendingPayment = pendingPaymentResult[0]?.pendingPayment || 0;
     const processingPayment = processingPaymentResult[0]?.processingPayment || 0;
 
-    // Calculate Net Profit (Total Income - Total Expense)
+    // Calculate Net Profit and Company Balance (Total Income - Total Expense)
+    // Includes partner investments (as Income) and partner withdrawals (as Expense)
     const netProfit = Math.round((totalIncome - totalExpense) * 100) / 100;
+    const companyBalance = netProfit;
 
     // Prepare response data
     const dashboardData = {
@@ -166,6 +168,7 @@ export const getDashboardStats = async (req, res) => {
       totalIncome: Math.round(totalIncome * 100) / 100,
       totalExpense: Math.round(totalExpense * 100) / 100,
       netProfit: netProfit,
+      companyBalance: companyBalance,
       receivedPayment: Math.round(receivedPayment * 100) / 100,
       pendingPayment: Math.round(pendingPayment * 100) / 100,
       processingPayment: Math.round(processingPayment * 100) / 100

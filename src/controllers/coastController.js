@@ -1,6 +1,8 @@
 import CoastSettings from "../models/coastSettings.js";
 import MetalLabor from "../models/metalLabor.js";
 import DiamondPrice from "../models/diamondPrice.js";
+import DiamondMmCarat from "../models/diamondMmCarat.js";
+import { DIAMOND_MM_CARAT_SEED } from "../data/diamondMmCaratSeed.js";
 import { getGoldRateResponse, getSilverRateResponse, getPlatinumRateResponse } from "../services/goldRateService.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 
@@ -16,6 +18,8 @@ const DEFAULT_METAL_LABOR = [
   { metal_type: "Gold", purity_name: "22K", purity_factor: 0.9167, labor_per_gram: 450 },
   { metal_type: "Gold", purity_name: "18K", purity_factor: 0.75, labor_per_gram: 400 },
   { metal_type: "Gold", purity_name: "14K", purity_factor: 0.5833, labor_per_gram: 350 },
+  { metal_type: "Gold", purity_name: "10K", purity_factor: 10 / 24, labor_per_gram: 320 },
+  { metal_type: "Gold", purity_name: "8K", purity_factor: 8 / 24, labor_per_gram: 300 },
   { metal_type: "Silver", purity_name: "925", purity_factor: 0.925, labor_per_gram: 80 },
   { metal_type: "Silver", purity_name: "999", purity_factor: 1.0, labor_per_gram: 100 },
   { metal_type: "Platinum", purity_name: "950", purity_factor: 0.95, labor_per_gram: 800 },
@@ -43,16 +47,16 @@ async function ensureSettings() {
 }
 
 async function ensureMetalLabor() {
-  const count = await MetalLabor.countDocuments();
-  if (count === 0) {
-    await MetalLabor.insertMany(DEFAULT_METAL_LABOR);
-  }
-}
-
-async function ensureDiamondPrices() {
-  const count = await DiamondPrice.countDocuments();
-  if (count === 0) {
-    await DiamondPrice.insertMany(DEFAULT_DIAMOND_PRICES);
+  // Upsert defaults (do not overwrite existing custom values)
+  const ops = DEFAULT_METAL_LABOR.map((row) => ({
+    updateOne: {
+      filter: { metal_type: row.metal_type, purity_name: row.purity_name },
+      update: { $setOnInsert: row },
+      upsert: true,
+    },
+  }));
+  if (ops.length) {
+    await MetalLabor.bulkWrite(ops, { ordered: false });
   }
 }
 
@@ -103,7 +107,6 @@ export const getMetalLabor = async (req, res) => {
 
 export const getDiamondPrices = async (req, res) => {
   try {
-    await ensureDiamondPrices();
     const list = await DiamondPrice.find().sort({ origin: 1, shape: 1, carat_min: 1 }).lean();
     const withId = list.map((r) => ({ id: r._id.toString(), ...r, _id: undefined }));
     return sendSuccessResponse({ res, data: withId, message: "Diamond prices list" });
@@ -116,7 +119,6 @@ export const getDiamondPrices = async (req, res) => {
 
 export const getOrigins = async (req, res) => {
   try {
-    await ensureDiamondPrices();
     const origins = await DiamondPrice.distinct("origin").sort();
     return sendSuccessResponse({ res, data: origins, message: "Origins" });
   } catch (error) {
@@ -190,6 +192,7 @@ export const calculateFinalPrice = async (req, res) => {
     } = req.body;
 
     const settings = await ensureSettings();
+    await ensureMetalLabor();
     const metalRow = await MetalLabor.findOne({ metal_type: metalType, purity_name: purityName });
     if (!metalRow) {
       return sendErrorResponse({ res, message: `Metal ${metalType} ${purityName} not found`, status: 400 });
@@ -301,14 +304,41 @@ export const deleteDiamondPrice = async (req, res) => {
   }
 };
 
+export const bulkDeleteDiamondPrices = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return sendErrorResponse({ res, message: "Body must contain non-empty array of ids", status: 400 });
+    }
+    const result = await DiamondPrice.deleteMany({ _id: { $in: ids } });
+    return sendSuccessResponse({ res, data: { deletedCount: result.deletedCount }, message: "Diamond prices deleted" });
+  } catch (error) {
+    return sendErrorResponse({ res, message: error.message, status: 500 });
+  }
+};
+
 export const bulkUpdateDiamondPrices = async (req, res) => {
   try {
-    const updates = req.body; // [{ id, price_per_carat }, ...]
+    const body = req.body;
+    // Support "add to price" for selected ids: { ids: string[], addToPricePerCarat: number }
+    if (body.ids != null && Array.isArray(body.ids) && body.ids.length > 0 && Number.isFinite(Number(body.addToPricePerCarat))) {
+      const delta = Number(body.addToPricePerCarat);
+      const docs = await DiamondPrice.find({ _id: { $in: body.ids } }).lean();
+      for (const doc of docs) {
+        const newPrice = Math.max(0, (doc.price_per_carat || 0) + delta);
+        await DiamondPrice.findByIdAndUpdate(doc._id, { price_per_carat: newPrice });
+      }
+      return sendSuccessResponse({ res, data: null, message: "Diamond prices updated (add to price)" });
+    }
+    // Legacy: array of { id, price_per_carat }
+    const updates = body;
     if (!Array.isArray(updates)) {
-      return sendErrorResponse({ res, message: "Body must be an array of { id, price_per_carat }", status: 400 });
+      return sendErrorResponse({ res, message: "Body must be an array of { id, price_per_carat } or { ids, addToPricePerCarat }", status: 400 });
     }
     for (const u of updates) {
-      await DiamondPrice.findByIdAndUpdate(u.id, { price_per_carat: u.price_per_carat });
+      if (u.id != null && Number.isFinite(Number(u.price_per_carat))) {
+        await DiamondPrice.findByIdAndUpdate(u.id, { price_per_carat: Number(u.price_per_carat) });
+      }
     }
     return sendSuccessResponse({ res, data: null, message: "Diamond prices updated" });
   } catch (error) {
@@ -374,5 +404,74 @@ export const getPlatinumRate = async (req, res) => {
       unitNote: "—",
       error: error.message,
     });
+  }
+};
+
+async function ensureDiamondMmCarat() {
+  const count = await DiamondMmCarat.countDocuments();
+  if (count === 0 && Array.isArray(DIAMOND_MM_CARAT_SEED) && DIAMOND_MM_CARAT_SEED.length > 0) {
+    await DiamondMmCarat.insertMany(DIAMOND_MM_CARAT_SEED);
+  }
+}
+
+export const getDiamondMmCaratList = async (req, res) => {
+  try {
+    await ensureDiamondMmCarat();
+    const { category } = req.query;
+    const filter = category ? { category: String(category).trim() } : {};
+    const list = await DiamondMmCarat.find(filter)
+      .sort({ category: 1, caratWeight: 1 })
+      .lean();
+    const data = list.map((r) => ({
+      id: r._id.toString(),
+      category: r.category,
+      millimeter: r.millimeter,
+      caratWeight: r.caratWeight,
+    }));
+    return sendSuccessResponse({ res, data, message: "Diamond mm to carat list" });
+  } catch (error) {
+    console.error("Coast getDiamondMmCaratList error:", error.message);
+    return sendErrorResponse({ res, message: error.message, status: 500 });
+  }
+};
+
+export const getDiamondMmCaratCategories = async (req, res) => {
+  try {
+    await ensureDiamondMmCarat();
+    const categories = await DiamondMmCarat.distinct("category").sort();
+    return sendSuccessResponse({ res, data: categories, message: "Diamond mm-carat categories" });
+  } catch (error) {
+    console.error("Coast getDiamondMmCaratCategories error:", error.message);
+    return sendErrorResponse({ res, message: error.message, status: 500 });
+  }
+};
+
+/** Seed diamond mm–carat collection. GET/POST: seed if empty. ?force=1: clear and re-seed. */
+export const seedDiamondMmCarat = async (req, res) => {
+  try {
+    const force = String(req.query.force || req.body?.force || "").toLowerCase() === "1" || String(req.query.force || req.body?.force || "").toLowerCase() === "true";
+    const count = await DiamondMmCarat.countDocuments();
+    if (force && count > 0) {
+      await DiamondMmCarat.deleteMany({});
+    }
+    const currentCount = await DiamondMmCarat.countDocuments();
+    if (currentCount === 0 && Array.isArray(DIAMOND_MM_CARAT_SEED) && DIAMOND_MM_CARAT_SEED.length > 0) {
+      await DiamondMmCarat.insertMany(DIAMOND_MM_CARAT_SEED);
+      const total = await DiamondMmCarat.countDocuments();
+      return sendSuccessResponse({
+        res,
+        data: { seeded: true, inserted: DIAMOND_MM_CARAT_SEED.length, total },
+        message: `Inserted ${DIAMOND_MM_CARAT_SEED.length} diamond mm–carat records.`,
+      });
+    }
+    const total = await DiamondMmCarat.countDocuments();
+    return sendSuccessResponse({
+      res,
+      data: { seeded: false, total },
+      message: force ? "Collection was empty; no seed data to insert." : `Collection already has ${total} records. Use ?force=1 to clear and re-seed.`,
+    });
+  } catch (error) {
+    console.error("Coast seedDiamondMmCarat error:", error.message);
+    return sendErrorResponse({ res, message: error.message, status: 500 });
   }
 };

@@ -13,5 +13,7 @@ router.get("/type/:type", diamondMasterController.getByType);
 router.post("/", validateCreateDiamondMaster, diamondMasterController.create);
 router.put("/:id", validateUpdateDiamondMaster, diamondMasterController.update);
 router.delete("/:id", diamondMasterController.remove);
+router.post("/bulk-delete", diamondMasterController.bulkDelete);
+router.post("/bulk-update", diamondMasterController.bulkUpdate);
 
 export default router;
