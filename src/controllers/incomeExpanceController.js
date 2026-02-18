@@ -266,6 +266,38 @@ const formatOrderMediatorInfo = (order, hints = {}) => {
   };
 };
 
+/** Sync Order.products[].initialPayment from Income receivedAmount (per product, capped at sellingPrice) */
+const syncOrderInitialPaymentFromIncome = async (orderId) => {
+  if (!orderId) return;
+  const Order = (await import("../models/order.js")).default;
+  const incomes = await Income.find({ orderId }).select("Description receivedAmount").lean();
+  const byDesc = {};
+  for (const inc of incomes) {
+    const key = (inc.Description || "").trim().toLowerCase();
+    if (!key) continue;
+    byDesc[key] = roundAmount((byDesc[key] || 0) + (inc.receivedAmount || 0));
+  }
+  const order = await Order.findById(orderId);
+  if (!order || !Array.isArray(order.products)) return;
+  let changed = false;
+  for (const p of order.products) {
+    const key = (p.productName || "").trim().toLowerCase();
+    const received = byDesc[key] || 0;
+    const selling = roundAmount(p.sellingPrice || 0);
+    const initial = roundAmount(Math.min(received, selling));
+    if (roundAmount(p.initialPayment || 0) !== initial) {
+      p.initialPayment = initial;
+      changed = true;
+    }
+  }
+  if (changed) {
+    await order.save();
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("order", orderId);
+    invalidateCache("dashboard");
+  }
+};
+
 // Helper function to normalize and validate mediator
 const normalizeMediatorIdOrThrow = async (mediatorId) => {
   if (!mediatorId) {
@@ -1481,9 +1513,9 @@ export const editIncomeEntry = async (req, res) => {
     let order = null;
     let orderProductDetails = null;
 
-    // Update orderId if provided
+    // Update orderId if provided (orderId is the Order document _id)
     if (orderId) {
-      order = await Order.findOne({ orderId: orderId });
+      order = await Order.findById(orderId);
       if (!order) {
         return res.status(404).json({
           status: 404,
@@ -1616,6 +1648,10 @@ export const editIncomeEntry = async (req, res) => {
     }
 
     await income.save();
+
+    if (income.orderId) {
+      await syncOrderInitialPaymentFromIncome(income.orderId);
+    }
 
     const populatedIncome = await Income.findById(income._id)
       .populate({
@@ -2072,6 +2108,10 @@ export const updateIncomePaymentStatus = async (req, res) => {
     income.status = targetStatus;
 
     await income.save();
+
+    if (income.orderId) {
+      await syncOrderInitialPaymentFromIncome(income.orderId);
+    }
 
     const populatedIncome = await Income.findById(income._id)
       .populate({

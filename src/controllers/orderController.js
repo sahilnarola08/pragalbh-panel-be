@@ -111,26 +111,51 @@ export const createOrder = async (req, res, next) => {
       paymentAmount,
       supplier,
       otherDetails,
-      shippingCost
+      shippingCost,
+      newClient,
     } = req.body;
 
-    // ✅ Validate client existence - optimized with text index
-    const existingClient = await User.findOne({
+    let existingClient = await User.findOne({
       $or: [
-        { firstName: { $regex: clientName.trim(), $options: "i" } },
-        { lastName: { $regex: clientName.trim(), $options: "i" } },
-        { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: clientName.trim(), options: "i" } } }
+        { firstName: { $regex: (clientName || "").trim(), $options: "i" } },
+        { lastName: { $regex: (clientName || "").trim(), $options: "i" } },
+        { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: (clientName || "").trim(), options: "i" } } }
       ],
       isDeleted: false
     }).lean();
 
+    if (!existingClient && newClient && typeof newClient === "object") {
+      const { firstName, lastName, address: newAddress, contactNumber, email } = newClient;
+      if (!firstName || !lastName) {
+        return sendErrorResponse({
+          res,
+          message: "New client requires firstName and lastName.",
+          status: 400,
+        });
+      }
+      const uniqueSuffix = String(new mongoose.Types.ObjectId()).slice(-8);
+      const created = await User.create({
+        firstName: String(firstName).trim(),
+        lastName: String(lastName).trim(),
+        address: (newAddress || address || "").trim(),
+        contactNumber: (contactNumber && String(contactNumber).trim()) || `ord_${uniqueSuffix}`,
+        email: (email && String(email).trim()) || `client_${uniqueSuffix}@order.local`,
+      });
+      existingClient = created.toObject();
+    }
+
     if (!existingClient) {
       return sendErrorResponse({
         res,
-        message: `Client ${clientName} does not exist. Please add client first.`,
+        message: `Client "${(clientName || "").trim()}" not found. Select an existing client or add new client details.`,
         status: 400,
       });
     }
+
+    const resolvedClientName = existingClient.firstName && existingClient.lastName
+      ? `${existingClient.firstName} ${existingClient.lastName}`.trim()
+      : (clientName || "").trim();
+    const resolvedAddress = (address || existingClient.address || "").trim();
 
     // Validate products array
     if (!Array.isArray(products) || products.length === 0) {
@@ -251,8 +276,8 @@ export const createOrder = async (req, res, next) => {
 
     // Create order with products array
     const order = await Order.create({
-      clientName,
-      address,
+      clientName: resolvedClientName,
+      address: resolvedAddress,
       products: processedProducts,
       bankName: bankName || "",
       paymentAmount: paymentAmount !== undefined && paymentAmount !== null ? Math.round(paymentAmount * 100) / 100 : paymentAmount,
@@ -945,8 +970,8 @@ const updateOrder = async (req, res, next) => {
 const deleteOrder = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const removeFromSupplier = req.body?.removeFromSupplier === true || req.query?.removeFromSupplier === "true";
 
-    // Check if order exists
     const existingOrder = await Order.findById(id);
     if (!existingOrder) {
       return sendErrorResponse({
@@ -956,16 +981,33 @@ const deleteOrder = async (req, res, next) => {
       });
     }
 
-    // Delete all related Income & Expense records for this order
+    if (removeFromSupplier) {
+      const PAYMENT_STATUS = (await import("../helper/enums.js")).PAYMENT_STATUS;
+      const orderExpenses = await ExpanseIncome.find({ orderId: id, status: PAYMENT_STATUS.PAID, paidAmount: { $gt: 0 }, supplierId: { $exists: true, $ne: null } }).lean();
+      for (const exp of orderExpenses) {
+        if (!exp.supplierId) continue;
+        const supplier = await Supplier.findById(exp.supplierId);
+        if (!supplier || !Array.isArray(supplier.advancePayment)) continue;
+        const amount = Math.round((exp.paidAmount || 0) * 100) / 100;
+        const bankId = exp.bankId || (supplier.advancePayment[0] && supplier.advancePayment[0].bankId);
+        if (!bankId) continue;
+        const idx = supplier.advancePayment.findIndex((p) => p.bankId && String(p.bankId) === String(bankId));
+        if (idx >= 0) {
+          supplier.advancePayment[idx].amount = Math.round((Number(supplier.advancePayment[idx].amount) + amount) * 100) / 100;
+        } else {
+          supplier.advancePayment.push({ bankId, amount });
+        }
+        await supplier.save();
+      }
+    }
+
     await Promise.all([
       Income.deleteMany({ orderId: id }),
       ExpanseIncome.deleteMany({ orderId: id })
     ]);
 
-    // Hard delete the order
     await Order.findByIdAndDelete(id);
 
-    // ✅ Invalidate cache after order deletion
     const { invalidateCache } = await import("../util/cacheHelper.js");
     invalidateCache('order', id);
     invalidateCache('dashboard');
@@ -973,10 +1015,11 @@ const deleteOrder = async (req, res, next) => {
     sendSuccessResponse({
       res,
       data: null,
-      message: "Order and all related income/expense entries deleted successfully",
+      message: removeFromSupplier
+        ? "Order, related income/expense deleted, and supplier balance reversed."
+        : "Order and all related income/expense entries deleted successfully",
       status: 200
     });
-
   } catch (error) {
     next(error);
   }
