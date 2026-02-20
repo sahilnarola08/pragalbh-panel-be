@@ -303,8 +303,10 @@ export async function adjust(partnerId, body, createdBy = null) {
 
 /**
  * Get transactions for a partner with pagination.
+ * @param {Object} options - { page, limit, deletedOnly }
+ * deletedOnly: if true, returns only soft-deleted transactions; otherwise excludes deleted.
  */
-export async function getTransactions(partnerId, { page = 1, limit = 20 } = {}) {
+export async function getTransactions(partnerId, { page = 1, limit = 20, deletedOnly = false } = {}) {
   const exists = await Partner.findById(partnerId).select("_id").lean();
   if (!exists) {
     const err = new Error("Partner not found");
@@ -312,15 +314,99 @@ export async function getTransactions(partnerId, { page = 1, limit = 20 } = {}) 
     throw err;
   }
   const skip = (Math.max(1, page) - 1) * Math.max(1, limit);
+  const deletedFilter = deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } };
+  const query = { partnerId, ...deletedFilter };
   const [transactions, totalCount] = await Promise.all([
-    PartnerTransaction.find({ partnerId })
+    PartnerTransaction.find(query)
       .sort({ transactionDate: -1, createdAt: -1 })
       .skip(skip)
       .limit(Math.max(1, limit))
       .lean(),
-    PartnerTransaction.countDocuments({ partnerId }),
+    PartnerTransaction.countDocuments(query),
   ]);
   return { transactions, totalCount };
+}
+
+/**
+ * Recalculate partner totals and all transaction balanceAfterTransaction from non-deleted transactions.
+ */
+async function recalculatePartnerBalances(partnerId, session) {
+  const partner = await Partner.findById(partnerId).session(session);
+  if (!partner) return;
+
+  const txs = await PartnerTransaction.find({ partnerId, isDeleted: { $ne: true } })
+    .sort({ transactionDate: 1, createdAt: 1 })
+    .session(session)
+    .lean();
+
+  let runningBalance = partner.openingBalance ?? 0;
+  let totalInvested = 0;
+  let totalWithdrawn = 0;
+
+  for (const t of txs) {
+    const amount = Number(t.amount) || 0;
+    if (t.type === "investment") {
+      runningBalance += amount;
+      totalInvested += amount;
+    } else if (t.type === "withdrawal") {
+      runningBalance -= amount;
+      totalWithdrawn += amount;
+    } else if (t.type === "adjustment") {
+      runningBalance += amount; // adjustment amount can be + or -
+    }
+    await PartnerTransaction.updateOne(
+      { _id: t._id },
+      { $set: { balanceAfterTransaction: Math.round(runningBalance * 100) / 100 } },
+      { session }
+    );
+  }
+
+  await Partner.updateOne(
+    { _id: partnerId },
+    {
+      $set: {
+        currentBalance: Math.round(runningBalance * 100) / 100,
+        totalInvested: Math.round(totalInvested * 100) / 100,
+        totalWithdrawn: Math.round(totalWithdrawn * 100) / 100,
+      },
+    },
+    { session }
+  );
+}
+
+/**
+ * Soft delete a partner transaction and recalculate all related entries.
+ */
+export async function softDeleteTransaction(partnerId, transactionId) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const tx = await PartnerTransaction.findOne({ _id: transactionId, partnerId }).session(session);
+    if (!tx) {
+      const err = new Error("Transaction not found");
+      err.status = 404;
+      throw err;
+    }
+    if (tx.isDeleted) {
+      const err = new Error("Transaction is already deleted");
+      err.status = 400;
+      throw err;
+    }
+    tx.isDeleted = true;
+    tx.deletedAt = new Date();
+    await tx.save({ session });
+
+    await recalculatePartnerBalances(partnerId, session);
+
+    await session.commitTransaction();
+    const saved = await PartnerTransaction.findById(transactionId).lean();
+    return saved;
+  } catch (e) {
+    await session.abortTransaction();
+    throw e;
+  } finally {
+    session.endSession();
+  }
 }
 
 /**

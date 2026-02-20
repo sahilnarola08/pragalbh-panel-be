@@ -15,8 +15,7 @@ router.put("/update-expense/:ExpId", authorize("expense.edit"), incomeExpControl
 router.post("/add-extra-expense", authorize("expense.create"), incomeExpController.addExtraExpense);
 router.put("/edit-extra-expense/:expenseId", authorize("expense.edit"), incomeExpController.editExtraExpense);
 router.get("/get-expense/:expenseId", authorize("expense.view"), incomeExpController.getExpenseById);
+router.put("/soft-delete-expense/:expenseId", authorize("expense.delete"), incomeExpController.softDeleteExpense);
 router.post("/payment-status", authorize("expense.edit"), supOrdDetailsController.markPaymentDone);
-
-
 
 export default router;

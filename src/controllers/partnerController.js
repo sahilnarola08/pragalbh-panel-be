@@ -74,12 +74,23 @@ const adjust = async (req, res, next) => {
 
 const getTransactions = async (req, res, next) => {
   try {
-    const { page, limit } = req.query;
+    const { page, limit, deletedOnly } = req.query;
     const result = await partnerService.getTransactions(req.params.id, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
+      deletedOnly: deletedOnly === "true" || deletedOnly === true,
     });
     return sendSuccessResponse({ res, data: result, message: "Transactions fetched", status: 200 });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const softDeleteTransaction = async (req, res, next) => {
+  try {
+    const { id: partnerId, transactionId } = req.params;
+    await partnerService.softDeleteTransaction(partnerId, transactionId);
+    return sendSuccessResponse({ res, data: { deleted: true }, message: "Transaction deleted", status: 200 });
   } catch (err) {
     next(err);
   }
@@ -104,4 +115,5 @@ export default {
   adjust,
   getTransactions,
   getSummary,
+  softDeleteTransaction,
 };

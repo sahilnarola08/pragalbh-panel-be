@@ -24,6 +24,7 @@ router.post("/:id/withdraw", authorize("partners.withdraw"), validateWithdraw, p
 router.post("/:id/adjust", authorize("partners.edit"), validateAdjust, partnerController.adjust);
 
 router.get("/:id/transactions", authorize("partners.view"), validatePartnerId, partnerController.getTransactions);
+router.put("/:id/transactions/:transactionId/soft-delete", authorize("partners.delete"), validatePartnerId, partnerController.softDeleteTransaction);
 router.get("/:id/summary", authorize("partners.view"), validatePartnerId, partnerController.getSummary);
 
 export default router;

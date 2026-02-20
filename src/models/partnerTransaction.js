@@ -51,6 +51,16 @@ const partnerTransactionSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

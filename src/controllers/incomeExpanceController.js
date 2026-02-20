@@ -615,7 +615,12 @@ export const getIncomeExpance = async (req, res) => {
 
     // ====================== CASE 2: EXPENSE ======================
     else if (incExpType == 2) {
-      const expenseQuery = { ...searchQuery, ...orderFilter, isDeleted: { $ne: true } };
+      const deletedOnly = req.query.deletedOnly === "true" || req.query.deletedOnly === true;
+      const expenseQuery = {
+        ...searchQuery,
+        ...orderFilter,
+        ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
+      };
       // For expense, check both date and createdAt fields
       if (dateFilter) {
         expenseQuery.$or = [
@@ -733,6 +738,8 @@ export const getIncomeExpance = async (req, res) => {
           status: item.status,
           bankId,
           bank,
+          isDeleted: item.isDeleted || false,
+          deletedAt: item.deletedAt || null,
         };
       });
 
@@ -1654,7 +1661,55 @@ export const getExpenseById = async (req, res) => {
   }
 };
 
+// Soft delete expense (sets isDeleted: true, deletedAt: Date)
+export const softDeleteExpense = async (req, res) => {
+  try {
+    const { expenseId } = req.params;
 
+    if (!expenseId) {
+      return res.status(400).json({
+        status: 400,
+        message: "expenseId is required",
+      });
+    }
+
+    const expense = await ExpanceIncome.findById(expenseId);
+    if (!expense) {
+      return res.status(404).json({
+        status: 404,
+        message: "Expense entry not found",
+      });
+    }
+
+    if (expense.isDeleted) {
+      return res.status(400).json({
+        status: 400,
+        message: "Expense is already deleted",
+      });
+    }
+
+    expense.isDeleted = true;
+    expense.deletedAt = new Date();
+    await expense.save();
+
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("income");
+    invalidateCache("dashboard");
+
+    return res.status(200).json({
+      status: 200,
+      message: "Expense deleted successfully",
+      data: { _id: expense._id, isDeleted: true, deletedAt: expense.deletedAt },
+    });
+  } catch (error) {
+    console.error("Error soft-deleting expense:", error);
+    return res.status(500).json({
+      status: 500,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+};
 
 export default {
   getIncomeExpance,
@@ -1663,4 +1718,5 @@ export default {
   addExtraExpense,
   editExtraExpense,
   getExpenseById,
+  softDeleteExpense,
 };
