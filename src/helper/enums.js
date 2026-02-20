@@ -3,6 +3,7 @@ export const ORDER_STATUS = {
     // New status added to match your "Pending Order" column
     PENDING: "pending",
     OVER_DUE: "over_due",
+    WITH_DISPUTE: "with_dispute",
     STOCK: "stock",
     FACTORY_PROCESS: "factory_process",
     VIDEO_CONFIRMATION: "video_confirmation", 

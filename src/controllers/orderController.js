@@ -1084,6 +1084,7 @@ const deleteOrder = async (req, res, next) => {
     const { invalidateCache } = await import("../util/cacheHelper.js");
     invalidateCache('order', String(orderMongoId));
     invalidateCache('dashboard');
+    invalidateCache('kanban');
 
     sendSuccessResponse({
       res,
@@ -1161,6 +1162,7 @@ const bulkDeleteOrders = async (req, res, next) => {
     const { invalidateCache } = await import("../util/cacheHelper.js");
     deleted.forEach((orderId) => invalidateCache("order", orderId));
     invalidateCache("dashboard");
+    invalidateCache("kanban");
 
     sendSuccessResponse({
       res,
@@ -1316,9 +1318,9 @@ const getKanbanData = async (req, res) => {
       }
     }
 
-    // ✅ Optimized Kanban query with lean() and selective fields
+    // ✅ Optimized Kanban query with lean() and selective fields (exclude soft-deleted orders)
     const promises = statuses.map(async (status) => {
-      const queryFilter = { status, ...dateFilter };
+      const queryFilter = { status, isDeleted: { $ne: true }, ...dateFilter };
       const orders = await Order.find(queryFilter)
         .select("_id clientName address products status trackingId courierCompany createdAt checklist shippingCost")
         .populate({
@@ -1337,6 +1339,25 @@ const getKanbanData = async (req, res) => {
     });
 
     await Promise.all(promises);
+
+    // Attach paymentStatus to each order for frontend (e.g. Dispatch gate)
+    const allOrderIds = [];
+    for (const status of statuses) {
+      const list = kanbanData[status] || [];
+      list.forEach((o) => {
+        if (o && o._id) allOrderIds.push(o._id);
+      });
+    }
+    const profitMap = allOrderIds.length > 0 ? await orderProfitService.getOrderProfitSummaryBulk(allOrderIds) : new Map();
+    for (const status of statuses) {
+      const list = kanbanData[status] || [];
+      list.forEach((order) => {
+        if (order && order._id) {
+          const summary = profitMap.get(String(order._id));
+          order.paymentStatus = summary?.paymentStatus ?? "Unpaid";
+        }
+      });
+    }
 
     // Set cache-control headers to prevent browser caching (304 responses)
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');

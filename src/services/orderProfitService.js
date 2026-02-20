@@ -20,12 +20,19 @@ export const getOrderProfitSummary = async (orderId) => {
   const order = await Order.findById(orderId).lean();
   if (!order) return null;
 
-  const payments = await Payment.find({
-    orderId: new mongoose.Types.ObjectId(orderId),
-    paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
-    isDeleted: { $ne: true },
-  }).lean();
+  const [creditedPayments, allPayments] = await Promise.all([
+    Payment.find({
+      orderId: new mongoose.Types.ObjectId(orderId),
+      paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
+      isDeleted: { $ne: true },
+    }).lean(),
+    Payment.find({
+      orderId: new mongoose.Types.ObjectId(orderId),
+      isDeleted: { $ne: true },
+    }).lean(),
+  ]);
 
+  const payments = creditedPayments;
   const purchasePrice = Array.isArray(order.products)
     ? round2(order.products.reduce((s, p) => s + (Number(p.purchasePrice) || 0), 0))
     : 0;
@@ -55,6 +62,12 @@ export const getOrderProfitSummary = async (orderId) => {
     totalExpectedINR += round2(p.expectedAmountINR || 0);
   }
 
+  // Total expected INR from ALL payment slots (including pending_with_mediator, processing) for modal "estimated profit"
+  let totalExpectedINRAllPayments = 0;
+  for (const p of allPayments) {
+    totalExpectedINRAllPayments += round2(p.expectedAmountINR || 0);
+  }
+
   const totalExpenses = round2(purchasePrice + supplierCost + shippingCost + packagingCost + totalCommissionINR + otherExpenses);
   const netProfit = round2(totalFinalBankCreditINR - totalExpenses);
   const sellingTotal = Array.isArray(order.products)
@@ -68,7 +81,7 @@ export const getOrderProfitSummary = async (orderId) => {
     grossUSD: totalGrossUSD,
     commissionDeductedUSD: totalCommissionUSD,
     netUSD: totalNetUSD,
-    totalExpectedINR,
+    totalExpectedINR: totalExpectedINRAllPayments || totalExpectedINR,
     totalActualINR: totalFinalBankCreditINR,
     exchangeDifference: totalExchangeDifference,
     purchasePrice,
@@ -97,14 +110,16 @@ export const getOrderExpenseEntries = async (orderId) => {
 /**
  * Bulk: get net profit and payment status per order (for order list).
  * Returns Map<orderIdStr, { netProfit, totalActualINR, totalExpenses, paymentStatus }>.
- * paymentStatus: "Paid" | "Partial" | "Unpaid" (Unpaid/Partial when not fully paid).
+ * paymentStatus: "Paid" when (1) all payments credited to bank, OR (2) customer has paid in full
+ * (total gross USD / expected INR from all payment slots >= order selling) but payment is still
+ * in mediator or processing. "Partial" when some payment exists; otherwise "Unpaid".
  */
 export const getOrderProfitSummaryBulk = async (orderIds) => {
   if (!orderIds || orderIds.length === 0) return new Map();
   const ids = orderIds.filter((id) => id && mongoose.Types.ObjectId.isValid(id)).map((id) => new mongoose.Types.ObjectId(id));
   if (ids.length === 0) return new Map();
 
-  const [creditedAgg, allPaymentsAgg, expectedAgg] = await Promise.all([
+  const [creditedAgg, allPaymentsAgg, expectedAgg, totalGrossUSDAgg] = await Promise.all([
     Payment.aggregate([
       { $match: { orderId: { $in: ids }, paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK, isDeleted: { $ne: true } } },
       {
@@ -133,6 +148,11 @@ export const getOrderProfitSummaryBulk = async (orderIds) => {
       { $match: { orderId: { $in: ids }, isDeleted: { $ne: true } } },
       { $group: { _id: "$orderId", totalExpectedINR: { $sum: { $ifNull: ["$expectedAmountINR", 0] } } } },
     ]),
+    // Total gross USD from ALL payments (any status: pending_with_mediator, processing, credited_to_bank) for "full payment by customer" check
+    Payment.aggregate([
+      { $match: { orderId: { $in: ids }, isDeleted: { $ne: true } } },
+      { $group: { _id: "$orderId", totalGrossUSD: { $sum: { $ifNull: ["$grossAmountUSD", 0] } } } },
+    ]),
   ]);
 
   const paymentMap = new Map();
@@ -156,6 +176,11 @@ export const getOrderProfitSummaryBulk = async (orderIds) => {
     const idStr = row._id ? String(row._id) : "";
     if (idStr) totalExpectedMap.set(idStr, round2(row.totalExpectedINR || 0));
   });
+  const totalGrossUSDMap = new Map();
+  totalGrossUSDAgg.forEach((row) => {
+    const idStr = row._id ? String(row._id) : "";
+    if (idStr) totalGrossUSDMap.set(idStr, round2(row.totalGrossUSD || 0));
+  });
 
   const orders = await Order.find({ _id: { $in: ids } }).select("products shippingCost supplierCost packagingCost otherExpenses").lean();
   const result = new Map();
@@ -164,6 +189,7 @@ export const getOrderProfitSummaryBulk = async (orderIds) => {
     const pay = paymentMap.get(orderIdStr) || { totalActualINR: 0, totalExpectedINR: 0, totalCommissionINR: 0, creditedCount: 0 };
     const totalPaymentsCount = allPaymentsMap.get(orderIdStr) || 0;
     const totalExpectedINR = totalExpectedMap.get(orderIdStr) ?? pay.totalExpectedINR ?? 0;
+    const totalGrossUSD = totalGrossUSDMap.get(orderIdStr) ?? 0;
     const purchasePrice = Array.isArray(order.products)
       ? round2(order.products.reduce((s, p) => s + (Number(p.purchasePrice) || 0), 0))
       : 0;
@@ -174,11 +200,28 @@ export const getOrderProfitSummaryBulk = async (orderIds) => {
     const totalExpenses = round2(purchasePrice + supplierCost + shippingCost + packagingCost + pay.totalCommissionINR + otherExpenses);
     const netProfit = round2(pay.totalActualINR - totalExpenses);
     const estimatedProfit = round2(totalExpectedINR - totalExpenses);
-    // Paid = all payments for this order are credited to bank (matches "Payment & Profit Summary" done state)
+    // Order total selling: USD and INR (from products)
+    let orderSellingUSD = 0;
+    let orderSellingINR = 0;
+    if (Array.isArray(order.products)) {
+      order.products.forEach((p) => {
+        const price = Number(p.sellingPrice) || 0;
+        const currency = (p.paymentCurrency || "INR").toUpperCase();
+        if (currency === "USD") orderSellingUSD += price;
+        else orderSellingINR += price;
+      });
+      orderSellingUSD = round2(orderSellingUSD);
+      orderSellingINR = round2(orderSellingINR);
+    }
+    // Paid when: (1) all payments credited to bank, OR (2) customer has paid in full but payment is in mediator/processing (total gross/expected >= selling)
     let paymentStatus = "Unpaid";
-    if (totalPaymentsCount > 0 && pay.creditedCount === totalPaymentsCount) {
+    const allCredited = totalPaymentsCount > 0 && pay.creditedCount === totalPaymentsCount;
+    const usdCovered = orderSellingUSD <= 0 || totalGrossUSD >= orderSellingUSD - 0.01;
+    const inrCovered = orderSellingINR <= 0 || totalExpectedINR >= orderSellingINR - 0.01;
+    const fullPaidInTransit = totalPaymentsCount > 0 && usdCovered && inrCovered;
+    if (allCredited || fullPaidInTransit) {
       paymentStatus = "Paid";
-    } else if (pay.creditedCount > 0) {
+    } else if (pay.creditedCount > 0 || totalGrossUSD > 0 || totalExpectedINR > 0) {
       paymentStatus = "Partial";
     }
     result.set(orderIdStr, { netProfit, totalActualINR: pay.totalActualINR, totalExpenses, totalExpectedINR, estimatedProfit, paymentStatus });
