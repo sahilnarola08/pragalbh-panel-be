@@ -100,8 +100,29 @@ const buildSupplierAggregationPipeline = ({
         {
             $lookup: {
                 from: "expanseincomes",
-                localField: "_id",
-                foreignField: "supplierId",
+                let: { supplierId: "$_id" },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: { $eq: ["$supplierId", "$$supplierId"] },
+                            isDeleted: { $ne: true }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "orders",
+                            localField: "orderId",
+                            foreignField: "_id",
+                            as: "orderDoc"
+                        }
+                    },
+                    {
+                        $match: {
+                            "orderDoc.0": { $exists: true },
+                            "orderDoc.0.isDeleted": { $ne: true }
+                        }
+                    }
+                ],
                 as: "expenseRecords"
             }
         },
@@ -356,12 +377,14 @@ const getAllSuppliers = async (req, res) => {
         const normalizedSearch = typeof search === "string" ? search.trim() : "";
 
         if (normalizedSearch) {
-            const searchRegex = new RegExp(normalizedSearch, "i");
+            const escapedForRegex = normalizedSearch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const searchRegex = new RegExp(escapedForRegex, "i");
             const orConditions = [
                 { firstName: searchRegex },
                 { lastName: searchRegex },
                 { company: searchRegex },
                 { contactNumber: searchRegex },
+                { $expr: { $regexMatch: { input: { $concat: [{ $ifNull: ["$firstName", ""] }, " ", { $ifNull: ["$lastName", ""] }] }, regex: escapedForRegex, options: "i" } } },
             ];
 
             if (mongoose.Types.ObjectId.isValid(normalizedSearch)) {

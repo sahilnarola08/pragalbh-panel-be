@@ -83,6 +83,23 @@ const incomeSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    /** Link to Payment when this Income was created from a credited payment */
+    paymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Payment",
+      required: false,
+      index: true,
+    },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

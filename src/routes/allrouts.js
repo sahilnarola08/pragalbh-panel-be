@@ -17,6 +17,8 @@ import pricingProductRouter from "./pricingProductRoute.js";
 import partnerRouter from "./partnerRoute.js";
 import assetRouter from "./assetRoute.js";
 import targetRouter from "./targetRoute.js";
+import mediatorRouter from "./mediatorRouter.js";
+import paymentRouter from "./paymentRouter.js";
 import roleRouter from "./roleRoute.js";
 import permissionRouter from "./permissionRoute.js";
 import panelUserRouter from "./panelUserRoute.js";
@@ -46,6 +48,8 @@ const routes = (app) => {
   app.use("/partners", partnerRouter);
   app.use("/assets", assetRouter);
   app.use("/targets", targetRouter);
+app.use("/mediators", mediatorRouter);
+app.use("/payments", paymentRouter);
 };
 
 export default routes;

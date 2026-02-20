@@ -1,7 +1,9 @@
-import Income from "../models/income.js";
 import ExpanceIncome from "../models/expance_inc.js";
 import Master from "../models/master.js";
+import Payment from "../models/payment.js";
+import ManualBankEntry from "../models/manualBankEntry.js";
 import mongoose from "mongoose";
+import { PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 
 const normalizeBankIdOrThrow = async (bankId) => {
   if (bankId === undefined || bankId === null || bankId === "") {
@@ -58,6 +60,28 @@ const docToPlainWithBank = (doc) => {
 
 const roundAmount = (value) =>
   Math.round((Number(value) || 0) * 100) / 100;
+
+/** Cached USD→INR rate (5 min TTL) for income display */
+let usdToInrCache = { rate: null, ts: 0 };
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+const getUsdToInrRate = async () => {
+  if (usdToInrCache.rate != null && Date.now() - usdToInrCache.ts < CACHE_TTL_MS) {
+    return usdToInrCache.rate;
+  }
+  try {
+    const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=INR");
+    const data = await res.json();
+    const rate = data?.rates?.INR != null ? Number(data.rates.INR) : null;
+    if (rate != null && !isNaN(rate)) {
+      usdToInrCache = { rate, ts: Date.now() };
+      return rate;
+    }
+  } catch (e) {
+    console.warn("Could not fetch USD→INR rate:", e?.message);
+  }
+  return usdToInrCache.rate ?? 0;
+};
 
 const toPlainObject = (doc) => (doc?.toObject ? doc.toObject() : doc);
 
@@ -192,6 +216,13 @@ const getOrderProductDetails = (order, hints = {}) => {
     matchedProduct?.mediator ?? primaryProduct?.mediator ?? plainOrder.mediator ?? null;
   const mediatorInfo = extractMediatorInfo(mediatorSource);
 
+  const paymentCurrency = matchedProduct?.paymentCurrency ?? primaryProduct?.paymentCurrency ?? "INR";
+  const sellingPriceRaw = roundAmount(
+    matchedProduct?.sellingPrice ??
+      primaryProduct?.sellingPrice ??
+      plainOrder.sellingPrice ??
+      0
+  );
   return {
     productName: matchedProduct?.productName || plainOrder.product || "",
     purchasePrice: roundAmount(
@@ -200,12 +231,8 @@ const getOrderProductDetails = (order, hints = {}) => {
         plainOrder.purchasePrice ??
         0
     ),
-    sellingPrice: roundAmount(
-      matchedProduct?.sellingPrice ??
-        primaryProduct?.sellingPrice ??
-        plainOrder.sellingPrice ??
-        0
-    ),
+    sellingPrice: sellingPriceRaw,
+    paymentCurrency: paymentCurrency === "USD" ? "USD" : "INR",
     initialPayment: roundAmount(
       matchedProduct?.initialPayment ??
         primaryProduct?.initialPayment ??
@@ -220,7 +247,8 @@ const getOrderProductDetails = (order, hints = {}) => {
 };
 
 // format mediator amount details with populated mediator info
-const formatMediatorAmountDetails = (mediatorAmountArray, mediatorDetails = []) => {
+// usdToInrRate: when > 0 and amounts are in USD, convert to INR
+const formatMediatorAmountDetails = (mediatorAmountArray, mediatorDetails = [], usdToInrRate = 0) => {
   if (!mediatorAmountArray || !Array.isArray(mediatorAmountArray)) {
     return [];
   }
@@ -238,9 +266,11 @@ const formatMediatorAmountDetails = (mediatorAmountArray, mediatorDetails = []) 
         : null,
     };
 
-    // Only include amount if it exists and is not null/undefined
+    // Only include amount if it exists and is not null/undefined; convert USD→INR when rate provided
     if (item.amount !== undefined && item.amount !== null) {
-      result.amount = Math.round(item.amount * 100) / 100;
+      let amt = Math.round(item.amount * 100) / 100;
+      if (usdToInrRate > 0) amt = roundAmount(amt * usdToInrRate);
+      result.amount = amt;
     }
 
     return result;
@@ -264,38 +294,6 @@ const formatOrderMediatorInfo = (order, hints = {}) => {
     mediator: productDetails.mediator,
     products: productDetails.products,
   };
-};
-
-/** Sync Order.products[].initialPayment from Income receivedAmount (per product, capped at sellingPrice) */
-const syncOrderInitialPaymentFromIncome = async (orderId) => {
-  if (!orderId) return;
-  const Order = (await import("../models/order.js")).default;
-  const incomes = await Income.find({ orderId }).select("Description receivedAmount").lean();
-  const byDesc = {};
-  for (const inc of incomes) {
-    const key = (inc.Description || "").trim().toLowerCase();
-    if (!key) continue;
-    byDesc[key] = roundAmount((byDesc[key] || 0) + (inc.receivedAmount || 0));
-  }
-  const order = await Order.findById(orderId);
-  if (!order || !Array.isArray(order.products)) return;
-  let changed = false;
-  for (const p of order.products) {
-    const key = (p.productName || "").trim().toLowerCase();
-    const received = byDesc[key] || 0;
-    const selling = roundAmount(p.sellingPrice || 0);
-    const initial = roundAmount(Math.min(received, selling));
-    if (roundAmount(p.initialPayment || 0) !== initial) {
-      p.initialPayment = initial;
-      changed = true;
-    }
-  }
-  if (changed) {
-    await order.save();
-    const { invalidateCache } = await import("../util/cacheHelper.js");
-    invalidateCache("order", orderId);
-    invalidateCache("dashboard");
-  }
 };
 
 // Helper function to normalize and validate mediator
@@ -487,177 +485,137 @@ export const getIncomeExpance = async (req, res) => {
     let data = [];
     let total = 0;
 
-    // ====================== CASE 1: INCOME ======================
+    // ====================== CASE 1: CREDITS (Payment + ManualBankEntry) ======================
     if (incExpType == 1) {
-      const incomeQuery = { ...searchQuery, ...orderFilter };
+      const Order = (await import("../models/order.js")).default;
+      const paymentQuery = {
+        paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
+        actualBankCreditINR: { $exists: true, $ne: null, $gt: 0 },
+        bankId: { $exists: true, $ne: null },
+        isDeleted: { $ne: true },
+        ...orderFilter,
+      };
       if (dateFilter) {
-        incomeQuery.date = dateFilter;
+        paymentQuery.creditedDate = paymentQuery.creditedDate || {};
+        Object.assign(paymentQuery.creditedDate, dateFilter);
       }
-      
-      const incomeData = await Income.find(incomeQuery)
-      .populate({
-        path: "orderId",
-        select: "products clientName orderId",
-        populate: {
-          path: "products.mediator",
-          select: "_id name",
-          match: { isDeleted: false },
-        },
-      })
-        .populate("clientId", "firstName lastName")
-        .populate({
-          path: "bankId",
-          select: "_id name",
-          match: { isDeleted: false },
-        })
-        .populate({
-          path: "mediator",
-          select: "_id name",
-          match: { isDeleted: false },
-        })
-        .populate({
-          path: "mediatorAmount.mediatorId",
-          select: "_id name",
-          match: { isDeleted: false },
-        })
-        .sort(sortQuery)
-        .lean();
+      const [paymentData, depositEntries, transferEntries] = await Promise.all([
+        orderFilter.orderId
+          ? Payment.find(paymentQuery)
+              .populate("orderId", "products clientName orderId")
+              .populate("bankId", "_id name")
+              .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
+              .lean()
+          : Payment.find(paymentQuery)
+              .populate("orderId", "products clientName orderId")
+              .populate("bankId", "_id name")
+              .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
+              .lean(),
+        orderFilter.orderId
+          ? []
+          : ManualBankEntry.find({ type: "deposit", ...(dateFilter ? { date: dateFilter } : {}) })
+              .populate("bankId", "_id name")
+              .sort(sortQuery)
+              .lean(),
+        orderFilter.orderId
+          ? []
+          : ManualBankEntry.find({ type: "transfer", ...(dateFilter ? { date: dateFilter } : {}) })
+              .populate("bankId", "_id name")
+              .populate("toBankId", "_id name")
+              .sort(sortQuery)
+              .lean(),
+      ]);
 
-      // 🔍 Apply full text filtering manually
-      const filtered = incomeData.filter((item) => {
+      const creditItems = [];
+      paymentData.forEach((p) => {
+        const amt = roundAmount(p.actualBankCreditINR || 0);
+        if (amt <= 0) return;
+        const { bankId: bid, bank } = buildBankResponse(p.bankId);
+        const productName = p.orderId?.products?.[0]?.productName || "Payment";
+        const formattedOrder = p.orderId
+          ? formatOrderMediatorInfo(p.orderId, { productNameHint: productName })
+          : null;
+        creditItems.push({
+          _id: p._id,
+          incExpType: 1,
+          source: "payment",
+          date: p.creditedDate || p.createdAt,
+          receivedAmount: amt,
+          description: productName,
+          bankId: bid,
+          bank,
+          orderId: formattedOrder,
+          clientName: p.orderId?.clientName || "",
+          status: "credited_to_bank",
+        });
+      });
+      depositEntries.forEach((e) => {
+        const { bankId: bid, bank } = buildBankResponse(e.bankId);
+        creditItems.push({
+          _id: e._id,
+          incExpType: 1,
+          source: "manual",
+          date: e.date,
+          receivedAmount: roundAmount(e.amount || 0),
+          description: e.description || "Manual deposit",
+          bankId: bid,
+          bank,
+          orderId: null,
+          clientName: "",
+          status: "reserved",
+        });
+      });
+      transferEntries.forEach((e) => {
+        const toBank = e.toBankId;
+        const { bankId: bid, bank } = buildBankResponse(toBank);
+        creditItems.push({
+          _id: e._id,
+          incExpType: 1,
+          source: "manual",
+          date: e.date,
+          receivedAmount: roundAmount(e.amount || 0),
+          description: e.description || "Transfer received",
+          bankId: bid,
+          bank,
+          orderId: null,
+          clientName: "",
+          status: "reserved",
+        });
+      });
+
+      const filtered = creditItems.filter((item) => {
         if (!search) return true;
-
         const searchLower = search.toLowerCase().trim();
-
-        // Client Name
-        const clientName =
-          item.orderId?.clientName?.toLowerCase() ||
-          `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.toLowerCase().trim();
-
-        const productHints = { productNameHint: item.Description };
-        const orderProductDetails = getOrderProductDetails(
-          item.orderId,
-          productHints
-        );
-
-        // Product Name
-        const productName = (orderProductDetails.productName || "").toLowerCase();
-
-        // Description
-        const description = (item.Description || "").toLowerCase();
-
-        // Order ID
-        const orderId = (item.orderId?.orderId || "").toLowerCase();
-
-        // Bank Name
-        const bankName = (item.bankId?.name || "").toLowerCase();
-
-        // Status
-        const status = (item.status || "").toLowerCase();
-
-        // Date - multiple formats
+        const desc = (item.description || "").toLowerCase();
+        const clientName = (item.clientName || "").toLowerCase();
+        const orderIdStr = (item.orderId?.orderId || "").toLowerCase();
+        const bankName = (item.bank?.name || "").toLowerCase();
         let dateStr = "";
         if (item.date) {
-          const dateObj = new Date(item.date);
-          dateStr = dateObj.toLocaleDateString("en-GB").toLowerCase() + " " +
-            dateObj.toLocaleDateString("en-US").toLowerCase() + " " +
-            dateObj.toISOString().split("T")[0].toLowerCase();
+          const d = new Date(item.date);
+          dateStr = d.toLocaleDateString("en-GB").toLowerCase() + " " + d.toISOString().split("T")[0].toLowerCase();
         }
-
-        // Check if search matches any field
         return (
+          desc.includes(searchLower) ||
           clientName.includes(searchLower) ||
-          productName.includes(searchLower) ||
-          description.includes(searchLower) ||
+          orderIdStr.includes(searchLower) ||
           bankName.includes(searchLower) ||
-          orderId.includes(searchLower) ||
-          status.includes(searchLower) ||
           dateStr.includes(searchLower)
         );
       });
 
-      const count = filtered.length;
-      const sliced = filtered.slice(skip, skip + limitNum);
-
-      data = sliced.map((item) => {
-        const { bankId, bank } = buildBankResponse(item.bankId);
-        const productHints = { productNameHint: item.Description };
-        const formattedOrder = formatOrderMediatorInfo(
-          item.orderId,
-          productHints
-        );
-        const productDetails = getOrderProductDetails(
-          item.orderId,
-          productHints
-        );
-        
-        // Format mediator from Income model
-        let formattedMediator = null;
-        if (item.mediator) {
-          if (typeof item.mediator === 'object' && item.mediator._id) {
-            formattedMediator = {
-              _id: item.mediator._id,
-              name: item.mediator.name || null,
-            };
-          } else {
-            formattedMediator = null;
-          }
-        }
-
-        // Format mediatorAmount from Income model
-        let formattedMediatorAmount = [];
-        if (item.mediatorAmount && Array.isArray(item.mediatorAmount)) {
-          const mediatorDetails = item.mediatorAmount
-            .map((maItem) => maItem.mediatorId)
-            .filter((m) => m && typeof m === "object");
-          formattedMediatorAmount = formatMediatorAmountDetails(
-            item.mediatorAmount,
-            mediatorDetails
-          );
-        }
-
-        const storedInitialPayment = roundAmount(
-          item.initialPayment ?? productDetails.initialPayment ?? 0
-        );
-        const useProductDerivedValues =
-          Boolean(item.orderId) && storedInitialPayment !== 0;
-        const productNameValue = useProductDerivedValues
-          ? productDetails.productName || item.Description || ""
-          : item.Description || productDetails.productName || "";
-        const sellingPriceValue = useProductDerivedValues
-          ? productDetails.sellingPrice ||
-            roundAmount(item.sellingPrice || 0)
-          : roundAmount(item.sellingPrice || 0);
-
-        return {
-          _id: item._id,
-          incExpType: 1,
-          date: item.date,
-          orderId: formattedOrder,
-          description: item.Description || productNameValue,
-          product: productNameValue,
-          sellingPrice: sellingPriceValue,
-          receivedAmount: roundAmount(item.receivedAmount || 0),
-          initialPayment: storedInitialPayment,
-          clientName:
-            item.orderId?.clientName ||
-            `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
-          status: item.status,
-          bankId,
-          bank,
-          mediator: formattedMediator,
-          mediatorAmount: formattedMediatorAmount,
-          isBankReceived: Boolean(item.isBankReceived),
-          isMediatorReceived: Boolean(item.isMediatorReceived),
-        };
+      const sorted = filtered.sort((a, b) => {
+        const da = new Date(a.date);
+        const db = new Date(b.date);
+        return sortOrder === "asc" ? da - db : db - da;
       });
-
-      total = count;
+      total = sorted.length;
+      data = sorted.slice(skip, skip + limitNum);
     }
 
     // ====================== CASE 2: EXPENSE ======================
     else if (incExpType == 2) {
-      const expenseQuery = { ...searchQuery, ...orderFilter };
+      const expenseQuery = { ...searchQuery, ...orderFilter, isDeleted: { $ne: true } };
       // For expense, check both date and createdAt fields
       if (dateFilter) {
         expenseQuery.$or = [
@@ -767,6 +725,7 @@ export const getIncomeExpance = async (req, res) => {
               : productDetails.purchasePrice,
           clientName: item.orderId?.clientName || "",
           paidAmount: roundAmount(item.paidAmount || 0),
+          supplierId: item.supplierId?._id || item.supplierId || null,
           supplierName:
             `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
             item.supplierId?.company ||
@@ -780,17 +739,9 @@ export const getIncomeExpance = async (req, res) => {
       total = count;
     }
 
-    // ====================== CASE 3: BOTH ======================
+    // ====================== CASE 3: BOTH (Credits + Expense) ======================
     else if (incExpType == 3) {
-      const finalQuery = { ...searchQuery, ...orderFilter };
-      
-      // Build queries with date filter
-      const incomeQuery = { ...finalQuery };
-      if (dateFilter) {
-        incomeQuery.date = dateFilter;
-      }
-      
-      const expenseQuery = { ...finalQuery };
+      const expenseQuery = { ...searchQuery, ...orderFilter, isDeleted: { $ne: true } };
       if (dateFilter) {
         expenseQuery.$or = [
           { date: dateFilter },
@@ -798,35 +749,37 @@ export const getIncomeExpance = async (req, res) => {
         ];
       }
 
-      const [incomeData, expanceData] = await Promise.all([
-        Income.find(incomeQuery)
-          .populate({
-            path: "orderId",
-            select: "products clientName orderId",
-            populate: {
-              path: "products.mediator",
-              select: "_id name",
-              match: { isDeleted: false },
-            },
-          })
-          .populate("clientId", "firstName lastName")
-          .populate({
-            path: "bankId",
-            select: "_id name",
-            match: { isDeleted: false },
-          })
-          .populate({
-            path: "mediator",
-            select: "_id name",
-            match: { isDeleted: false },
-          })
-          .populate({
-            path: "mediatorAmount.mediatorId",
-            select: "_id name",
-            match: { isDeleted: false },
-          })
-          .sort(sortQuery)
+      const paymentQueryForBoth = {
+        paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
+        actualBankCreditINR: { $exists: true, $ne: null, $gt: 0 },
+        bankId: { $exists: true, $ne: null },
+        isDeleted: { $ne: true },
+        ...orderFilter,
+      };
+      if (dateFilter) {
+        paymentQueryForBoth.creditedDate = paymentQueryForBoth.creditedDate || {};
+        Object.assign(paymentQueryForBoth.creditedDate, dateFilter);
+      }
+
+      const [paymentDataBoth, depositEntriesBoth, transferEntriesBoth, expanceData] = await Promise.all([
+        Payment.find(paymentQueryForBoth)
+          .populate("orderId", "products clientName orderId")
+          .populate("bankId", "_id name")
+          .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
           .lean(),
+        orderFilter.orderId
+          ? []
+          : ManualBankEntry.find({ type: "deposit", ...(dateFilter ? { date: dateFilter } : {}) })
+              .populate("bankId", "_id name")
+              .sort(sortQuery)
+              .lean(),
+        orderFilter.orderId
+          ? []
+          : ManualBankEntry.find({ type: "transfer", ...(dateFilter ? { date: dateFilter } : {}) })
+              .populate("bankId", "_id name")
+              .populate("toBankId", "_id name")
+              .sort(sortQuery)
+              .lean(),
         ExpanceIncome.find(expenseQuery)
           .populate({
             path: "orderId",
@@ -847,71 +800,61 @@ export const getIncomeExpance = async (req, res) => {
           .lean(),
       ]);
 
-      const incomeList = incomeData.map((item) => {
-        const { bankId, bank } = buildBankResponse(item.bankId);
-        const productHints = { productNameHint: item.Description };
-        const formattedOrder = formatOrderMediatorInfo(item.orderId, productHints);
-        const productDetails = getOrderProductDetails(item.orderId, productHints);
-        
-        // Format mediator from Income model
-        let formattedMediator = null;
-        if (item.mediator) {
-          if (typeof item.mediator === 'object' && item.mediator._id) {
-            formattedMediator = {
-              _id: item.mediator._id,
-              name: item.mediator.name || null,
-            };
-          } else {
-            formattedMediator = null;
-          }
-        }
-
-        // Format mediatorAmount from Income model
-        let formattedMediatorAmount = [];
-        if (item.mediatorAmount && Array.isArray(item.mediatorAmount)) {
-          const mediatorDetails = item.mediatorAmount
-            .map((maItem) => maItem.mediatorId)
-            .filter((m) => m && typeof m === "object");
-          formattedMediatorAmount = formatMediatorAmountDetails(
-            item.mediatorAmount,
-            mediatorDetails
-          );
-        }
-
-        const storedInitialPayment = roundAmount(
-          item.initialPayment ?? productDetails.initialPayment ?? 0
-        );
-        const useProductDerivedValues =
-          Boolean(item.orderId) && storedInitialPayment !== 0;
-        const productNameValue = useProductDerivedValues
-          ? productDetails.productName || item.Description || ""
-          : item.Description || productDetails.productName || "";
-        const sellingPriceValue = useProductDerivedValues
-          ? productDetails.sellingPrice ||
-            roundAmount(item.sellingPrice || 0)
-          : roundAmount(item.sellingPrice || 0);
-
-        return {
-          _id: item._id,
+      const incomeList = [];
+      paymentDataBoth.forEach((p) => {
+        const amt = roundAmount(p.actualBankCreditINR || 0);
+        if (amt <= 0) return;
+        const { bankId: bid, bank } = buildBankResponse(p.bankId);
+        const productName = p.orderId?.products?.[0]?.productName || "Payment";
+        const formattedOrder = p.orderId
+          ? formatOrderMediatorInfo(p.orderId, { productNameHint: productName })
+          : null;
+        incomeList.push({
+          _id: p._id,
           incExpType: 1,
-          date: item.date,
-          orderId: formattedOrder,
-          description: item.Description || productNameValue,
-          product: productNameValue,
-          sellingPrice: sellingPriceValue,
-          receivedAmount: roundAmount(item.receivedAmount || 0),
-          initialPayment: storedInitialPayment,
-          clientName:
-            item.orderId?.clientName ||
-            `${item.clientId?.firstName || ""} ${item.clientId?.lastName || ""}`.trim(),
-          status: item.status,
-          bankId,
+          source: "payment",
+          date: p.creditedDate || p.createdAt,
+          receivedAmount: amt,
+          description: productName,
+          bankId: bid,
           bank,
-          mediator: formattedMediator,
-          mediatorAmount: formattedMediatorAmount,
-          isBankReceived: Boolean(item.isBankReceived),
-          isMediatorReceived: Boolean(item.isMediatorReceived),
-        };
+          orderId: formattedOrder,
+          clientName: p.orderId?.clientName || "",
+          status: "credited_to_bank",
+        });
+      });
+      depositEntriesBoth.forEach((e) => {
+        const { bankId: bid, bank } = buildBankResponse(e.bankId);
+        incomeList.push({
+          _id: e._id,
+          incExpType: 1,
+          source: "manual",
+          date: e.date,
+          receivedAmount: roundAmount(e.amount || 0),
+          description: e.description || "Manual deposit",
+          bankId: bid,
+          bank,
+          orderId: null,
+          clientName: "",
+          status: "reserved",
+        });
+      });
+      transferEntriesBoth.forEach((e) => {
+        const toBank = e.toBankId;
+        const { bankId: bid, bank } = buildBankResponse(toBank);
+        incomeList.push({
+          _id: e._id,
+          incExpType: 1,
+          source: "manual",
+          date: e.date,
+          receivedAmount: roundAmount(e.amount || 0),
+          description: e.description || "Transfer received",
+          bankId: bid,
+          bank,
+          orderId: null,
+          clientName: "",
+          status: "reserved",
+        });
       });
 
       const expanceList = expanceData.map((item) => {
@@ -934,11 +877,11 @@ export const getIncomeExpance = async (req, res) => {
               : productDetails.purchasePrice,
           clientName: item.orderId?.clientName || "",
           paidAmount: roundAmount(item.paidAmount || 0),
+          supplierId: item.supplierId?._id || item.supplierId || null,
           supplierName:
             `${item.supplierId?.firstName || ""} ${item.supplierId?.lastName || ""}`.trim() ||
             item.supplierId?.company ||
             "",
-          supplierId: item.supplierId,
           status: item.status,
           bankId,
           bank,
@@ -1022,237 +965,6 @@ export const getIncomeExpance = async (req, res) => {
   } catch (error) {
     console.error("Error fetching income and expance:", error);
     res.status(500).json({
-      status: 500,
-      message: "Internal Server Error",
-      error: error.message,
-    });
-  }
-};
-
-// Add New Income Entry
-export const addIncomeEntry = async (req, res) => {
-  try {
-    const {
-      orderId,
-      date,
-      description,
-      receivedAmount,
-      status,
-      bankId,
-      mediatorId,
-      mediatorAmount,
-      isBankReceived = false,
-      isMediatorReceived = false,
-    } = req.body;
-
-    // Validate required fields
-    if (!orderId) {
-      return res.status(400).json({
-        status: 400,
-        message: "orderId is required",
-      });
-    }
-
-    // Validation flow: Check if minimum required fields are provided
-    // Case 1: If only date, orderId, description are provided (no mediatorId, no bankId) → should NOT create income
-    const hasMediatorId = mediatorId !== undefined && mediatorId !== null && mediatorId !== "";
-    const hasBankId = bankId !== undefined && bankId !== null && bankId !== "";
-    const hasMediatorAmount = mediatorAmount !== undefined && mediatorAmount !== null && 
-      (Array.isArray(mediatorAmount) ? mediatorAmount.length > 0 : typeof mediatorAmount === 'number' && mediatorAmount > 0);
-    const hasReceivedAmount = receivedAmount !== undefined && receivedAmount !== null && receivedAmount > 0;
-
-    // If neither mediatorId nor bankId is provided, reject the request
-    if (!hasMediatorId && !hasBankId) {
-      return res.status(400).json({
-        status: 400,
-        message: "Either mediatorId or bankId must be provided to create income entry",
-      });
-    }
-
-    // Case 2: If mediatorId is provided but mediatorAmount is not provided → show error
-    if (hasMediatorId && !hasMediatorAmount) {
-      return res.status(400).json({
-        status: 400,
-        message: "mediatorAmount is required when mediatorId is provided",
-      });
-    }
-
-    // Case 4: If bankId is provided but receivedAmount is not provided → show error
-    if (hasBankId && !hasReceivedAmount) {
-      return res.status(400).json({
-        status: 400,
-        message: "receivedAmount is required when bankId is provided",
-      });
-    }
-
-    // Find order by orderId field
-    const Order = (await import("../models/order.js")).default;
-    const order = await Order.findOne({ orderId: orderId });
-
-    if (!order) {
-      return res.status(404).json({
-        status: 404,
-        message: "Order not found",
-      });
-    }
-
-    // Find client from order
-    const User = (await import("../models/user.js")).default;
-    const client = await User.findOne({
-      $or: [
-        { firstName: new RegExp(order.clientName, "i") },
-        { lastName: new RegExp(order.clientName, "i") },
-        { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: order.clientName, options: "i" } } }
-      ]
-    });
-
-    if (!client) {
-      return res.status(404).json({
-        status: 404,
-        message: "Client not found for this order",
-      });
-    }
-
-    let normalizedBankId = null;
-    try {
-      normalizedBankId = await normalizeBankIdOrThrow(bankId);
-    } catch (error) {
-      return res.status(error.status || 400).json({
-        status: error.status || 400,
-        message: error.message || "Invalid bank ID",
-      });
-    }
-
-    const orderProductDetails = getOrderProductDetails(order, {
-      productNameHint: description,
-    });
-
-    // Handle mediator: use provided mediatorId or default to order's mediator
-    let normalizedMediatorId = null;
-    const finalMediatorId = mediatorId || orderProductDetails.mediatorId;
-    
-    if (finalMediatorId) {
-      try {
-        normalizedMediatorId = await normalizeMediatorIdOrThrow(finalMediatorId);
-      } catch (error) {
-        return res.status(error.status || 400).json({
-          status: error.status || 400,
-          message: error.message || "Invalid mediator ID",
-        });
-      }
-    }
-
-    // Handle mediatorAmount: normalize array if provided
-    let normalizedMediatorAmountArray = [];
-    let shouldSetMediatorReceived = false;
-    
-    if (mediatorAmount !== undefined && mediatorAmount !== null) {
-      if (Array.isArray(mediatorAmount)) {
-        try {
-          normalizedMediatorAmountArray = await normalizeIncomeMediatorAmount(mediatorAmount);
-          // If mediatorAmount is provided and normalized array has items, set isMediatorReceived to true
-          shouldSetMediatorReceived = normalizedMediatorAmountArray.length > 0;
-        } catch (error) {
-          return res.status(error.status || 400).json({
-            status: error.status || 400,
-            message: error.message || "Invalid mediator amount data",
-          });
-        }
-      } else if (typeof mediatorAmount === 'number' && normalizedMediatorId) {
-        // If single number provided and mediatorId exists, create array entry
-        const roundedAmount = Math.round(mediatorAmount * 100) / 100;
-        if (roundedAmount > 0) {
-          normalizedMediatorAmountArray = [{
-            mediatorId: normalizedMediatorId,
-            amount: roundedAmount,
-          }];
-          // If mediatorAmount is provided as number > 0, set isMediatorReceived to true
-          shouldSetMediatorReceived = true;
-        }
-      }
-    }
-
-    // Create new income entry - automatically use order's data
-    // Multiple income entries allowed per order (for installment payments)
-    const newIncome = await Income.create({
-      date: date || new Date(),
-      orderId: order._id,
-      Description: description || orderProductDetails.productName,
-      sellingPrice: orderProductDetails.sellingPrice,
-      initialPayment: 0,
-      receivedAmount: roundAmount(receivedAmount || 0),
-      clientId: client._id,
-      status: status || "pending",
-      bankId: normalizedBankId,
-      mediator: normalizedMediatorId,
-      mediatorAmount: normalizedMediatorAmountArray,
-      isBankReceived: Boolean(isBankReceived),
-      // If mediatorAmount is provided and has valid entries, set isMediatorReceived to true
-      // Otherwise, use the provided isMediatorReceived value
-      isMediatorReceived: (mediatorAmount !== undefined && mediatorAmount !== null)
-        ? shouldSetMediatorReceived
-        : Boolean(isMediatorReceived),
-    });
-
-    const populatedIncome = await Income.findById(newIncome._id)
-      .populate({
-        path: "orderId",
-        select: "products clientName orderId",
-        populate: {
-          path: "products.mediator",
-          select: "_id name",
-          match: { isDeleted: false },
-        },
-      })
-      .populate("clientId", "firstName lastName")
-      .populate({
-        path: "bankId",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediator",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediatorAmount.mediatorId",
-        select: "_id name",
-        match: { isDeleted: false },
-      });
-
-    // Format mediatorAmount details
-    const incomeResponse = docToPlainWithBank(populatedIncome);
-    if (incomeResponse.mediatorAmount && Array.isArray(incomeResponse.mediatorAmount)) {
-      const mediatorDetails = populatedIncome.mediatorAmount
-        .map((item) => item.mediatorId)
-        .filter((m) => m && typeof m === "object");
-      incomeResponse.mediatorAmount = formatMediatorAmountDetails(
-        incomeResponse.mediatorAmount,
-        mediatorDetails
-      );
-    }
-
-    // Format mediator
-    if (incomeResponse.mediator) {
-      if (typeof incomeResponse.mediator === 'object' && incomeResponse.mediator._id) {
-        incomeResponse.mediator = {
-          _id: incomeResponse.mediator._id,
-          name: incomeResponse.mediator.name || null,
-        };
-      } else {
-        incomeResponse.mediator = null;
-      }
-    }
-
-    return res.status(201).json({
-      status: 201,
-      message: "Income entry added successfully",
-      data: incomeResponse,
-    });
-  } catch (error) {
-    console.error("Error adding income entry:", error);
-    return res.status(500).json({
       status: 500,
       message: "Internal Server Error",
       error: error.message,
@@ -1474,251 +1186,6 @@ export const addExpanseEntry = async (req, res) => {
   }
 };
 
-// Edit Income Entry
-export const editIncomeEntry = async (req, res) => {
-  try {
-    const { incomeId } = req.params;
-    const { 
-      date, 
-      description, 
-      receivedAmount, 
-      status, 
-      orderId, 
-      clientId, 
-      bankId,
-      mediatorId,
-      mediatorAmount,
-      isBankReceived,
-      isMediatorReceived,
-    } = req.body;
-
-    if (!incomeId) {
-      return res.status(400).json({
-        status: 400,
-        message: "incomeId is required",
-      });
-    }
-
-    // Find income entry
-    const income = await Income.findById(incomeId);
-    if (!income) {
-      return res.status(404).json({
-        status: 404,
-        message: "Income entry not found",
-      });
-    }
-
-    // Get order reference - either from provided orderId or existing income.orderId
-    const Order = (await import("../models/order.js")).default;
-    let order = null;
-    let orderProductDetails = null;
-
-    // Update orderId if provided (orderId is the Order document _id)
-    if (orderId) {
-      order = await Order.findById(orderId);
-      if (!order) {
-        return res.status(404).json({
-          status: 404,
-          message: "Order not found",
-        });
-      }
-      orderProductDetails = getOrderProductDetails(order, {
-        productNameHint: description,
-      });
-      income.orderId = order._id;
-      income.sellingPrice = orderProductDetails.sellingPrice;
-      income.initialPayment = orderProductDetails.initialPayment;
-      income.Description = orderProductDetails.productName;
-    } else if (income.orderId) {
-      // Use existing orderId if no new orderId provided
-      order = await Order.findById(income.orderId);
-      orderProductDetails = getOrderProductDetails(order, {
-        productNameHint: order?.product || income.Description,
-      });
-      if (orderProductDetails) {
-        income.initialPayment = orderProductDetails.initialPayment;
-      }
-    }
-
-    // Handle mediator: use provided mediatorId or default to order's mediator if no mediatorId in income
-    if (mediatorId !== undefined) {
-      if (mediatorId === null || mediatorId === "") {
-        income.mediator = null;
-      } else {
-        try {
-          income.mediator = await normalizeMediatorIdOrThrow(mediatorId);
-        } catch (error) {
-          return res.status(error.status || 400).json({
-            status: error.status || 400,
-            message: error.message || "Invalid mediator ID",
-          });
-        }
-      }
-    } else if (orderProductDetails?.mediatorId && !income.mediator) {
-      // If no mediatorId provided and income doesn't have mediator, use order's mediator as default
-      try {
-        income.mediator = await normalizeMediatorIdOrThrow(orderProductDetails.mediatorId);
-      } catch (error) {
-        // If order's mediator is invalid, leave income.mediator as is
-      }
-    }
-
-    // Handle mediatorAmount: normalize array if provided
-    if (mediatorAmount !== undefined && mediatorAmount !== null) {
-      if (Array.isArray(mediatorAmount)) {
-        // Handle array of mediator amounts
-        if (mediatorAmount.length === 0) {
-          // Empty array provided - clear mediatorAmount and set isMediatorReceived to false
-          income.mediatorAmount = [];
-          income.isMediatorReceived = false;
-        } else {
-          try {
-            income.mediatorAmount = await normalizeIncomeMediatorAmount(mediatorAmount);
-            // If mediatorAmount is provided and normalized array has items, set isMediatorReceived to true
-            income.isMediatorReceived = income.mediatorAmount.length > 0;
-          } catch (error) {
-            return res.status(error.status || 400).json({
-              status: error.status || 400,
-              message: error.message || "Invalid mediator amount data",
-            });
-          }
-        }
-      } else if (typeof mediatorAmount === 'number' && income.mediator) {
-        // Handle single number - convert to array entry
-        const roundedAmount = Math.round(mediatorAmount * 100) / 100;
-        if (roundedAmount > 0) {
-          income.mediatorAmount = [{
-            mediatorId: income.mediator,
-            amount: roundedAmount,
-          }];
-          // If mediatorAmount is provided as number > 0, set isMediatorReceived to true
-          income.isMediatorReceived = true;
-        } else {
-          // Number is 0 or negative - clear mediatorAmount and set isMediatorReceived to false
-          income.mediatorAmount = [];
-          income.isMediatorReceived = false;
-        }
-      }
-    } else if (isMediatorReceived !== undefined) {
-      // If mediatorAmount is not provided, allow manual override of isMediatorReceived
-      income.isMediatorReceived = Boolean(isMediatorReceived);
-    }
-
-    // Update clientId if provided
-    if (clientId) {
-      const User = (await import("../models/user.js")).default;
-      const client = await User.findById(clientId);
-      if (!client) {
-        return res.status(404).json({
-          status: 404,
-          message: "Client not found",
-        });
-      }
-      income.clientId = client._id;
-    }
-
-    // Update bank if provided
-    if (bankId !== undefined) {
-      try {
-        income.bankId = await normalizeBankIdOrThrow(bankId);
-      } catch (error) {
-        return res.status(error.status || 400).json({
-          status: error.status || 400,
-          message: error.message || "Invalid bank ID",
-        });
-      }
-    }
-
-    if (isBankReceived !== undefined) {
-      income.isBankReceived = Boolean(isBankReceived);
-    }
-
-    // Update fields if provided
-    if (date) income.date = date;
-    if (description) income.Description = description;
-    if (receivedAmount !== undefined) income.receivedAmount = Math.round(receivedAmount * 100) / 100;
-
-    // Auto-set receivedAmount when status is updated to paid or done
-    if (status) {
-      income.status = status;
-      if (status === "paid" || status === "done") {
-        income.receivedAmount = Math.round((income.sellingPrice || 0) * 100) / 100;
-        income.isBankReceived = true;
-      }
-    }
-
-    await income.save();
-
-    if (income.orderId) {
-      await syncOrderInitialPaymentFromIncome(income.orderId);
-    }
-
-    const populatedIncome = await Income.findById(income._id)
-      .populate({
-        path: "orderId",
-        select: "products clientName orderId",
-        populate: {
-          path: "products.mediator",
-          select: "_id name",
-          match: { isDeleted: false },
-        },
-      })
-      .populate("clientId", "firstName lastName")
-      .populate({
-        path: "bankId",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediator",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediatorAmount.mediatorId",
-        select: "_id name",
-        match: { isDeleted: false },
-      });
-
-    // Format mediatorAmount details
-    const incomeResponse = docToPlainWithBank(populatedIncome);
-    if (incomeResponse.mediatorAmount && Array.isArray(incomeResponse.mediatorAmount)) {
-      const mediatorDetails = populatedIncome.mediatorAmount
-        .map((item) => item.mediatorId)
-        .filter((m) => m && typeof m === "object");
-      incomeResponse.mediatorAmount = formatMediatorAmountDetails(
-        incomeResponse.mediatorAmount,
-        mediatorDetails
-      );
-    }
-
-    // Format mediator
-    if (incomeResponse.mediator) {
-      if (typeof incomeResponse.mediator === 'object' && incomeResponse.mediator._id) {
-        incomeResponse.mediator = {
-          _id: incomeResponse.mediator._id,
-          name: incomeResponse.mediator.name || null,
-        };
-      } else {
-        incomeResponse.mediator = null;
-      }
-    }
-
-    return res.status(200).json({
-      status: 200,
-      message: "Income entry updated successfully",
-      data: incomeResponse,
-    });
-  } catch (error) {
-    console.error("Error updating income entry:", error);
-    return res.status(500).json({
-      status: 500,
-      message: "Internal Server Error",
-      error: error.message,
-    });
-  }
-};
-
 // Edit Expanse Entry 
 export const editExpanseEntry = async (req, res) => {
   try {
@@ -1807,10 +1274,18 @@ export const editExpanseEntry = async (req, res) => {
     existingExpense.remainingAmount =
       Math.round(((existingExpense.dueAmount || 0) - (existingExpense.paidAmount || 0)) * 100) / 100;
 
-    // Deduct from supplier's advancePayment if status is PAID
     const finalStatus = existingExpense.status?.toLowerCase();
     const finalPaidAmountValue = existingExpense.paidAmount || 0;
-    
+    const hasBankId = existingExpense.bankId != null && (existingExpense.bankId._id || existingExpense.bankId);
+
+    if (finalStatus === "paid" && finalPaidAmountValue > 0 && !hasBankId) {
+      return res.status(400).json({
+        status: 400,
+        message: "Bank is required when marking expense as Paid. Please select a bank and save.",
+      });
+    }
+
+    // Deduct from supplier's advancePayment if status is PAID
     // Calculate amount to deduct from supplier's advancePayment
     // Logic:
     // 1. If status changes from non-"paid" to "paid": deduct the paidAmount at that time
@@ -1927,262 +1402,6 @@ export const editExpanseEntry = async (req, res) => {
   } catch (error) {
     console.error("Error updating expense:", error);
     res.status(500).json({ message: "Internal server error", error: error.message });
-  }
-};
-
-
-// Update Income Payment Status
-export const updateIncomePaymentStatus = async (req, res) => {
-  try {
-    const { 
-      incomeId, 
-      date, 
-      description, 
-      receivedAmount, 
-      bankId,
-      mediatorId,
-      mediatorAmount
-    } = req.body;
-
-    if (!incomeId) {
-      return res.status(400).json({
-        status: 400,
-        message: "incomeId is required",
-      });
-    }
-
-    // Find income entry
-    const income = await Income.findById(incomeId);
-    if (!income) {
-      return res.status(404).json({
-        status: 404,
-        message: "Income entry not found",
-      });
-    }
-
-    // Check if status is already reserved - cannot be changed once reserved
-    if (income.status === "reserved") {
-      const populatedIncome = await Income.findById(income._id)
-        .populate({
-          path: "orderId",
-          select: "products clientName orderId",
-          populate: {
-            path: "products.mediator",
-            select: "_id name",
-            match: { isDeleted: false },
-          },
-        })
-        .populate("clientId", "firstName lastName")
-        .populate({
-          path: "mediator",
-          select: "_id name",
-          match: { isDeleted: false },
-        })
-        .populate({
-          path: "mediatorAmount.mediatorId",
-          select: "_id name",
-          match: { isDeleted: false },
-        });
-
-      return res.status(201).json({
-        status: 201,
-        message: "This ID status is already RESERVED and cannot be changed",
-        data: populatedIncome,
-      });
-    }
-
-    // Allow update if current status is "pending" or "processing"
-    if (income.status !== "pending" && income.status !== "processing") {
-      return res.status(400).json({
-        status: 400,
-        message: `Cannot update payment status. Current status is "${income.status}". Only "pending" or "processing" status can be updated.`,
-      });
-    }
-
-    // Determine which status to set based on provided fields
-    const hasReceivedAmountAndBank = receivedAmount !== undefined && bankId !== undefined;
-    const hasMediatorData = mediatorId !== undefined || mediatorAmount !== undefined;
-    
-    // Scenario 1: Only mediatorId and mediatorAmount provided (without receivedAmount and bankId) -> PROCESSING
-    // Scenario 2: All fields including receivedAmount, bankId, mediatorId, mediatorAmount -> RESERVED
-    
-    let targetStatus = "reserved"; // Default to RESERVED (old behavior)
-    let targetMessage = "Income payment status updated to RESERVED successfully";
-    
-    if (hasMediatorData && !hasReceivedAmountAndBank) {
-      // Only mediator data provided without receivedAmount and bankId -> PROCESSING
-      targetStatus = "processing";
-      targetMessage = "Income payment status updated to PROCESSING successfully";
-    } else if (hasReceivedAmountAndBank && hasMediatorData) {
-      // All fields provided -> RESERVED
-      targetStatus = "reserved";
-      targetMessage = "Income payment status updated to RESERVED successfully";
-    } else if (hasReceivedAmountAndBank && !hasMediatorData) {
-      // Old behavior: only receivedAmount and bankId -> RESERVED
-      targetStatus = "reserved";
-      targetMessage = "Income payment status updated to RESERVED successfully";
-    }
-
-    // Validate receivedAmount if provided
-    if (receivedAmount !== undefined) {
-      if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
-        return res.status(400).json({
-          status: 400,
-          message: "receivedAmount must be a positive number",
-        });
-      }
-      income.receivedAmount = Math.round(receivedAmount * 100) / 100;
-    }
-
-    // Update fields if provided
-    if (date) income.date = date;
-    if (description) income.Description = description;
-    
-    if (bankId !== undefined) {
-      try {
-        income.bankId = await normalizeBankIdOrThrow(bankId);
-        income.isBankReceived = true;
-      } catch (error) {
-        return res.status(error.status || 400).json({
-          status: error.status || 400,
-          message: error.message || "Invalid bank ID",
-        });
-      }
-    }
-
-    // Handle mediator: use provided mediatorId or default to order's mediator
-    if (mediatorId !== undefined) {
-      if (mediatorId === null || mediatorId === "") {
-        income.mediator = null;
-      } else {
-        try {
-          income.mediator = await normalizeMediatorIdOrThrow(mediatorId);
-        } catch (error) {
-          return res.status(error.status || 400).json({
-            status: error.status || 400,
-            message: error.message || "Invalid mediator ID",
-          });
-        }
-      }
-    }
-
-    // Handle mediatorAmount: normalize array if provided
-    if (mediatorAmount !== undefined && mediatorAmount !== null) {
-      if (Array.isArray(mediatorAmount)) {
-        // Handle array of mediator amounts
-        if (mediatorAmount.length === 0) {
-          // Empty array provided - clear mediatorAmount and set isMediatorReceived to false
-          income.mediatorAmount = [];
-          income.isMediatorReceived = false;
-        } else {
-          try {
-            income.mediatorAmount = await normalizeIncomeMediatorAmount(mediatorAmount);
-            // If mediatorAmount is provided and normalized array has items, set isMediatorReceived to true
-            income.isMediatorReceived = income.mediatorAmount.length > 0;
-          } catch (error) {
-            return res.status(error.status || 400).json({
-              status: error.status || 400,
-              message: error.message || "Invalid mediator amount data",
-            });
-          }
-        }
-      } else if (typeof mediatorAmount === 'number' && income.mediator) {
-        // Handle single number - convert to array entry
-        const roundedAmount = Math.round(mediatorAmount * 100) / 100;
-        if (roundedAmount > 0) {
-          income.mediatorAmount = [{
-            mediatorId: income.mediator,
-            amount: roundedAmount,
-          }];
-          // If mediatorAmount is provided as number > 0, set isMediatorReceived to true
-          income.isMediatorReceived = true;
-        } else {
-          // Number is 0 or negative - clear mediatorAmount and set isMediatorReceived to false
-          income.mediatorAmount = [];
-          income.isMediatorReceived = false;
-        }
-      }
-    }
-
-    // Update status based on scenario
-    income.status = targetStatus;
-
-    await income.save();
-
-    if (income.orderId) {
-      await syncOrderInitialPaymentFromIncome(income.orderId);
-    }
-
-    const populatedIncome = await Income.findById(income._id)
-      .populate({
-        path: "orderId",
-        select: "products clientName orderId",
-        populate: {
-          path: "products.mediator",
-          select: "_id name",
-          match: { isDeleted: false },
-        },
-      })
-      .populate("clientId", "firstName lastName")
-      .populate({
-        path: "bankId",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediator",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediatorAmount.mediatorId",
-        select: "_id name",
-        match: { isDeleted: false },
-      });
-
-    // Format mediator and mediatorAmount
-    const incomeResponse = docToPlainWithBank(populatedIncome);
-    
-    // Format mediator
-    if (incomeResponse.mediator) {
-      if (typeof incomeResponse.mediator === 'object' && incomeResponse.mediator._id) {
-        incomeResponse.mediator = {
-          _id: incomeResponse.mediator._id,
-          name: incomeResponse.mediator.name || null,
-        };
-      } else {
-        incomeResponse.mediator = null;
-      }
-    }
-
-    // Format mediatorAmount
-    if (incomeResponse.mediatorAmount && Array.isArray(incomeResponse.mediatorAmount)) {
-      const mediatorDetails = populatedIncome.mediatorAmount
-        .map((item) => item.mediatorId)
-        .filter((m) => m && typeof m === "object");
-      incomeResponse.mediatorAmount = formatMediatorAmountDetails(
-        incomeResponse.mediatorAmount,
-        mediatorDetails
-      );
-    }
-
-    // ✅ Invalidate cache after payment status update
-    const { invalidateCache } = await import("../util/cacheHelper.js");
-    invalidateCache('income');
-    invalidateCache('dashboard');
-
-    return res.status(200).json({
-      status: 200,
-      message: targetMessage,
-      data: incomeResponse,
-    });
-  } catch (error) {
-    console.error("Error updating income payment status:", error);
-    return res.status(500).json({
-      status: 500,
-      message: "Internal Server Error",
-      error: error.message,
-    });
   }
 };
 
@@ -2435,555 +1654,13 @@ export const getExpenseById = async (req, res) => {
   }
 };
 
-// Add Extra Income (without order/client)
-export const addExtraIncome = async (req, res) => {
-  try {
-    const { 
-      date, 
-      description, 
-      receivedAmount, 
-      bankId,
-      mediatorId,
-      mediatorAmount
-    } = req.body;
 
-    // Validate required fields
-    if (!description) {
-      return res.status(400).json({
-        status: 400,
-        message: "description is required",
-      });
-    }
-
-    // Determine which status to set based on provided fields
-    const hasReceivedAmountAndBank = receivedAmount !== undefined && receivedAmount !== null && bankId !== undefined;
-    const hasMediatorData = mediatorId !== undefined || mediatorAmount !== undefined;
-    
-    // Scenario 1: Only mediatorId and mediatorAmount provided (without receivedAmount and bankId) -> PROCESSING
-    // Scenario 2: receivedAmount and bankId provided (with or without mediator data) -> RESERVED
-    // Note: "paid" status is not used for income, only for expense
-    
-    let targetStatus = null;
-    
-    if (hasMediatorData && !hasReceivedAmountAndBank) {
-      // Only mediator data provided without receivedAmount and bankId -> PROCESSING
-      targetStatus = "processing";
-    } else if (hasReceivedAmountAndBank) {
-      // receivedAmount and bankId provided (with or without mediator data) -> RESERVED
-      targetStatus = "reserved";
-    } else {
-      // No valid fields provided
-      return res.status(400).json({
-        status: 400,
-        message: "Either (receivedAmount and bankId) or (mediatorId/mediatorAmount) must be provided",
-      });
-    }
-
-    // Validate receivedAmount if provided (required for RESERVED status)
-    if (hasReceivedAmountAndBank) {
-      if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
-        return res.status(400).json({
-          status: 400,
-          message: "receivedAmount must be a positive number",
-        });
-      }
-    }
-
-    // Handle bankId if provided
-    let normalizedBankId = null;
-    if (bankId !== undefined) {
-      try {
-        normalizedBankId = await normalizeBankIdOrThrow(bankId);
-      } catch (error) {
-        return res.status(error.status || 400).json({
-          status: error.status || 400,
-          message: error.message || "Invalid bank ID",
-        });
-      }
-    }
-
-    // Handle mediator: validate if provided
-    let normalizedMediatorId = null;
-    if (mediatorId !== undefined && mediatorId !== null && mediatorId !== "") {
-      try {
-        normalizedMediatorId = await normalizeMediatorIdOrThrow(mediatorId);
-      } catch (error) {
-        return res.status(error.status || 400).json({
-          status: error.status || 400,
-          message: error.message || "Invalid mediator ID",
-        });
-      }
-    }
-
-    // Handle mediatorAmount: normalize array if provided
-    let normalizedMediatorAmountArray = [];
-    let shouldSetMediatorReceived = false;
-    
-    if (mediatorAmount !== undefined && mediatorAmount !== null) {
-      if (Array.isArray(mediatorAmount)) {
-        if (mediatorAmount.length === 0) {
-          normalizedMediatorAmountArray = [];
-          shouldSetMediatorReceived = false;
-        } else {
-          try {
-            normalizedMediatorAmountArray = await normalizeIncomeMediatorAmount(mediatorAmount);
-            shouldSetMediatorReceived = normalizedMediatorAmountArray.length > 0;
-          } catch (error) {
-            return res.status(error.status || 400).json({
-              status: error.status || 400,
-              message: error.message || "Invalid mediator amount data",
-            });
-          }
-        }
-      } else if (typeof mediatorAmount === 'number' && normalizedMediatorId) {
-        const roundedAmount = Math.round(mediatorAmount * 100) / 100;
-        if (roundedAmount > 0) {
-          normalizedMediatorAmountArray = [{
-            mediatorId: normalizedMediatorId,
-            amount: roundedAmount,
-          }];
-          shouldSetMediatorReceived = true;
-        }
-      }
-    }
-
-    // Calculate receivedAmount
-    const roundedReceivedAmount = hasReceivedAmountAndBank 
-      ? Math.round(receivedAmount * 100) / 100 
-      : 0;
-
-    // Create new income entry without orderId and clientId
-    const newIncome = await Income.create({
-      date: date || new Date(),
-      Description: description,
-      initialPayment: 0,
-      receivedAmount: roundedReceivedAmount,
-      bankId: normalizedBankId,
-      mediator: normalizedMediatorId,
-      mediatorAmount: normalizedMediatorAmountArray,
-      status: targetStatus,
-      isBankReceived: hasReceivedAmountAndBank,
-      isMediatorReceived: shouldSetMediatorReceived,
-    });
-
-    const populatedIncome = await Income.findById(newIncome._id)
-      .populate({
-        path: "bankId",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediator",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediatorAmount.mediatorId",
-        select: "_id name",
-        match: { isDeleted: false },
-      });
-
-    // Format mediator and mediatorAmount
-    const incomeResponse = docToPlainWithBank(populatedIncome);
-    
-    // Format mediator
-    if (incomeResponse.mediator) {
-      if (typeof incomeResponse.mediator === 'object' && incomeResponse.mediator._id) {
-        incomeResponse.mediator = {
-          _id: incomeResponse.mediator._id,
-          name: incomeResponse.mediator.name || null,
-        };
-      } else {
-        incomeResponse.mediator = null;
-      }
-    }
-
-    // Format mediatorAmount
-    if (incomeResponse.mediatorAmount && Array.isArray(incomeResponse.mediatorAmount)) {
-      const mediatorDetails = populatedIncome.mediatorAmount
-        .map((item) => item.mediatorId)
-        .filter((m) => m && typeof m === "object");
-      incomeResponse.mediatorAmount = formatMediatorAmountDetails(
-        incomeResponse.mediatorAmount,
-        mediatorDetails
-      );
-    }
-
-    // ✅ Invalidate cache after extra income creation
-    const { invalidateCache } = await import("../util/cacheHelper.js");
-    invalidateCache('income');
-    invalidateCache('dashboard');
-
-    return res.status(201).json({
-      status: 201,
-      message: `Extra income added successfully with status ${targetStatus.toUpperCase()}`,
-      data: incomeResponse,
-    });
-  } catch (error) {
-    console.error("Error adding extra income:", error);
-    return res.status(500).json({
-      status: 500,
-      message: "Internal Server Error",
-      error: error.message,
-    });
-  }
-};
-
-// Edit Extra Income (only if orderId doesn't exist)
-export const editExtraIncome = async (req, res) => {
-  try {
-    const { incomeId } = req.params;
-    const { 
-      date, 
-      description, 
-      receivedAmount, 
-      bankId,
-      mediatorId,
-      mediatorAmount
-    } = req.body;
-
-    if (!incomeId) {
-      return res.status(400).json({
-        status: 400,
-        message: "incomeId is required",
-      });
-    }
-
-    // Find income entry
-    const income = await Income.findById(incomeId);
-    if (!income) {
-      return res.status(404).json({
-        status: 404,
-        message: "Income entry not found",
-      });
-    }
-
-    // Check if orderId exists - if yes, cannot edit
-    if (income.orderId) {
-      return res.status(400).json({
-        status: 400,
-        message: "Cannot edit this income. This income is linked to an order. Only standalone income can be edited.",
-      });
-    }
-
-    // Check if status is already reserved - cannot be changed once reserved
-    if (income.status === "reserved") {
-      return res.status(400).json({
-        status: 400,
-        message: "Cannot edit income with RESERVED status",
-      });
-    }
-
-    // Determine which status to set based on provided fields
-    const hasReceivedAmountAndBank = receivedAmount !== undefined && receivedAmount !== null && bankId !== undefined;
-    const hasMediatorData = mediatorId !== undefined || mediatorAmount !== undefined;
-    const hasNewData = hasReceivedAmountAndBank || hasMediatorData || date || description;
-    
-    let targetStatus = income.status; // Keep current status by default
-    
-    // Only update status if new data is provided
-    // Note: "paid" status is not used for income, only for expense
-    if (hasNewData) {
-      if (hasMediatorData && !hasReceivedAmountAndBank) {
-        // Only mediator data provided without receivedAmount and bankId -> PROCESSING
-        targetStatus = "processing";
-      } else if (hasReceivedAmountAndBank) {
-        // receivedAmount and bankId provided (with or without mediator data) -> RESERVED
-        targetStatus = "reserved";
-      }
-    }
-
-    // Update fields if provided
-    if (date) income.date = date;
-    if (description) income.Description = description;
-    
-    if (bankId !== undefined) {
-      try {
-        income.bankId = await normalizeBankIdOrThrow(bankId);
-        income.isBankReceived = true;
-      } catch (error) {
-        return res.status(error.status || 400).json({
-          status: error.status || 400,
-          message: error.message || "Invalid bank ID",
-        });
-      }
-    }
-
-    if (receivedAmount !== undefined && receivedAmount !== null) {
-      if (typeof receivedAmount !== 'number' || receivedAmount < 0) {
-        return res.status(400).json({
-          status: 400,
-          message: "receivedAmount must be a positive number",
-        });
-      }
-      const roundedAmount = Math.round(receivedAmount * 100) / 100;
-      income.receivedAmount = roundedAmount;
-    }
-
-    // Handle mediator: validate if provided
-    if (mediatorId !== undefined) {
-      if (mediatorId === null || mediatorId === "") {
-        income.mediator = null;
-      } else {
-        try {
-          income.mediator = await normalizeMediatorIdOrThrow(mediatorId);
-        } catch (error) {
-          return res.status(error.status || 400).json({
-            status: error.status || 400,
-            message: error.message || "Invalid mediator ID",
-          });
-        }
-      }
-    }
-
-    // Handle mediatorAmount: normalize array if provided
-    if (mediatorAmount !== undefined && mediatorAmount !== null) {
-      if (Array.isArray(mediatorAmount)) {
-        if (mediatorAmount.length === 0) {
-          income.mediatorAmount = [];
-          income.isMediatorReceived = false;
-        } else {
-          try {
-            income.mediatorAmount = await normalizeIncomeMediatorAmount(mediatorAmount);
-            income.isMediatorReceived = income.mediatorAmount.length > 0;
-          } catch (error) {
-            return res.status(error.status || 400).json({
-              status: error.status || 400,
-              message: error.message || "Invalid mediator amount data",
-            });
-          }
-        }
-      } else if (typeof mediatorAmount === 'number' && income.mediator) {
-        const roundedAmount = Math.round(mediatorAmount * 100) / 100;
-        if (roundedAmount > 0) {
-          income.mediatorAmount = [{
-            mediatorId: income.mediator,
-            amount: roundedAmount,
-          }];
-          income.isMediatorReceived = true;
-        } else {
-          income.mediatorAmount = [];
-          income.isMediatorReceived = false;
-        }
-      }
-    }
-
-    // Update status
-    income.status = targetStatus;
-
-    await income.save();
-
-    const populatedIncome = await Income.findById(incomeId)
-      .populate({
-        path: "bankId",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediator",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediatorAmount.mediatorId",
-        select: "_id name",
-        match: { isDeleted: false },
-      });
-
-    // Format mediator and mediatorAmount
-    const incomeResponse = docToPlainWithBank(populatedIncome);
-    
-    // Format mediator
-    if (incomeResponse.mediator) {
-      if (typeof incomeResponse.mediator === 'object' && incomeResponse.mediator._id) {
-        incomeResponse.mediator = {
-          _id: incomeResponse.mediator._id,
-          name: incomeResponse.mediator.name || null,
-        };
-      } else {
-        incomeResponse.mediator = null;
-      }
-    }
-
-    // Format mediatorAmount
-    if (incomeResponse.mediatorAmount && Array.isArray(incomeResponse.mediatorAmount)) {
-      const mediatorDetails = populatedIncome.mediatorAmount
-        .map((item) => item.mediatorId)
-        .filter((m) => m && typeof m === "object");
-      incomeResponse.mediatorAmount = formatMediatorAmountDetails(
-        incomeResponse.mediatorAmount,
-        mediatorDetails
-      );
-    }
-
-    // ✅ Invalidate cache after extra income update
-    const { invalidateCache } = await import("../util/cacheHelper.js");
-    invalidateCache('income');
-    invalidateCache('dashboard');
-
-    return res.status(200).json({
-      status: 200,
-      message: `Extra income updated successfully with status ${targetStatus.toUpperCase()}`,
-      data: incomeResponse,
-    });
-  } catch (error) {
-    console.error("Error updating extra income:", error);
-    return res.status(500).json({
-      status: 500,
-      message: "Internal Server Error",
-      error: error.message,
-    });
-  }
-};
-
-// Get Single Income by ID
-export const getIncomeById = async (req, res) => {
-  try {
-    const { incomeId } = req.params;
-
-    if (!incomeId) {
-      return res.status(400).json({
-        status: 400,
-        message: "incomeId is required",
-      });
-    }
-
-    // Find income entry and populate related data
-    const income = await Income.findById(incomeId)
-      .populate({
-        path: "orderId",
-        select: "products clientName orderId",
-        populate: {
-          path: "products.mediator",
-          select: "_id name",
-          match: { isDeleted: false },
-        },
-      })
-      .populate("clientId", "firstName lastName")
-      .populate({
-        path: "bankId",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediator",
-        select: "_id name",
-        match: { isDeleted: false },
-      })
-      .populate({
-        path: "mediatorAmount.mediatorId",
-        select: "_id name",
-        match: { isDeleted: false },
-      });
-
-    if (!income) {
-      return res.status(404).json({
-        status: 404,
-        message: "Income entry not found",
-      });
-    }
-
-    // Format response
-    const { bankId: incomeBankId, bank: incomeBank } = buildBankResponse(income.bankId);
-
-    // Format mediator
-    let formattedMediator = null;
-    if (income.mediator) {
-      if (typeof income.mediator === 'object' && income.mediator._id) {
-        formattedMediator = {
-          _id: income.mediator._id,
-          name: income.mediator.name || null,
-        };
-      } else {
-        formattedMediator = null;
-      }
-    }
-
-    // Format mediatorAmount
-    let formattedMediatorAmount = [];
-    if (income.mediatorAmount && Array.isArray(income.mediatorAmount)) {
-      const mediatorDetails = income.mediatorAmount
-        .map((item) => item.mediatorId)
-        .filter((m) => m && typeof m === "object");
-      formattedMediatorAmount = formatMediatorAmountDetails(
-        income.mediatorAmount,
-        mediatorDetails
-      );
-    }
-
-    const productDetails = getOrderProductDetails(income.orderId, {
-      productNameHint: income.Description,
-      sellingPriceHint: income.sellingPrice,
-    });
-    const storedInitialPayment = roundAmount(
-      income.initialPayment ?? productDetails.initialPayment ?? 0
-    );
-    const useProductDetails =
-      Boolean(income.orderId) && storedInitialPayment !== 0;
-    const productNameValue = useProductDetails
-      ? productDetails.productName || income.Description || ""
-      : income.Description || productDetails.productName || "";
-    const sellingPriceValue = useProductDetails
-      ? Math.round((productDetails.sellingPrice || 0) * 100) / 100
-      : Math.round((income.sellingPrice || 0) * 100) / 100;
-    const receivedAmountValue = Math.round(
-      (income.receivedAmount || 0) * 100
-    ) / 100;
-
-    const formattedIncome = {
-      _id: income._id,
-      date: income.date,
-      orderId: income.orderId,
-      description: income.Description,
-      sellingPrice: sellingPriceValue,
-      receivedAmount: receivedAmountValue,
-      clientId: income.clientId,
-      clientName: income.orderId?.clientName ||
-        (income.clientId ? `${income.clientId.firstName || ""} ${income.clientId.lastName || ""}`.trim() : ""),
-      product: productNameValue,
-      initialPayment: storedInitialPayment,
-      status: income.status,
-      bankId: incomeBankId,
-      bank: incomeBank,
-      mediator: formattedMediator,
-      mediatorAmount: formattedMediatorAmount,
-      isBankReceived: Boolean(income.isBankReceived),
-      isMediatorReceived: Boolean(income.isMediatorReceived),
-      createdAt: income.createdAt,
-      updatedAt: income.updatedAt,
-    };
-
-    // Set cache-control headers to prevent browser caching (304 responses)
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-
-    return res.status(200).json({
-      status: 200,
-      message: "Income fetched successfully",
-      data: formattedIncome,
-    });
-  } catch (error) {
-    console.error("Error fetching income by ID:", error);
-    return res.status(500).json({
-      status: 500,
-      message: "Internal Server Error",
-      error: error.message,
-    });
-  }
-};
 
 export default {
   getIncomeExpance,
-  addIncomeEntry,
   addExpanseEntry,
-  editIncomeEntry,
   editExpanseEntry,
-  updateIncomePaymentStatus,
   addExtraExpense,
   editExtraExpense,
   getExpenseById,
-  addExtraIncome,
-  editExtraIncome,
-  getIncomeById
 };

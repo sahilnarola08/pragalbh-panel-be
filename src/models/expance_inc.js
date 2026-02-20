@@ -44,6 +44,16 @@ const expanseIncomeSchema = new mongoose.Schema(
       enum: Object.values(PAYMENT_STATUS),
       index: true, // Index for faster dashboard queries
     },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

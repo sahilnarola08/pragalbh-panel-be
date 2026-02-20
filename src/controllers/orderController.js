@@ -9,7 +9,11 @@ import Income from "../models/income.js";
 import ExpanseIncome from "../models/expance_inc.js";
 import { DEFAULT_PAYMENT_STATUS } from "../helper/enums.js";
 import Master from "../models/master.js";
+import Mediator from "../models/mediator.js";
+import Payment from "../models/payment.js";
+import { DEFAULT_PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 import { formatCurrency } from "../util/currencyFormat.js";
+import orderProfitService from "../services/orderProfitService.js";
 
 const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
   "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product";
@@ -193,10 +197,11 @@ export const createOrder = async (req, res, next) => {
     const productNames = products.map(p => p.productName.trim());
     const orderPlatformIds = products.map(p => p.orderPlatform).filter(Boolean);
     const mediatorIds = products.map(p => p.mediator).filter(Boolean);
+    const mediatorsArrayIds = (products.map(p => p.mediators).filter(Boolean).flat()).filter(id => mongoose.Types.ObjectId.isValid(id));
     const masterIds = [...new Set([...orderPlatformIds, ...mediatorIds].filter(Boolean))];
+    const uniqueMediatorIds = [...new Set(mediatorsArrayIds)];
 
-    // Batch fetch all products, masters in parallel
-    const [existingProducts, existingMasters] = await Promise.all([
+    const [existingProducts, existingMasters, existingMediatorsList] = await Promise.all([
       Product.find({
         productName: { $in: productNames },
         isDeleted: false
@@ -204,17 +209,16 @@ export const createOrder = async (req, res, next) => {
       masterIds.length > 0 ? Master.find({
         _id: { $in: masterIds },
         isDeleted: false
-      }).select("_id name").lean() : []
+      }).select("_id name").lean() : [],
+      uniqueMediatorIds.length > 0 ? Mediator.find({ _id: { $in: uniqueMediatorIds } }).select("_id name").lean() : []
     ]);
 
-    // Create lookup maps for O(1) access
     const productMap = new Map(existingProducts.map(p => [p.productName.toLowerCase(), p]));
     const masterMap = new Map(existingMasters.map(m => [String(m._id), m]));
+    const mediatorMap = new Map(existingMediatorsList.map(m => [String(m._id), m]));
 
-    // Process and validate each product
     const processedProducts = [];
     for (const product of products) {
-      // ✅ Validate product existence using map lookup
       const productKey = product.productName.trim().toLowerCase();
       const existingProduct = productMap.get(productKey);
 
@@ -226,11 +230,9 @@ export const createOrder = async (req, res, next) => {
         });
       }
 
-      // ✅ Validate and normalize orderPlatform using map lookup
-      const orderPlatformId = typeof product.orderPlatform === 'object' 
+      const orderPlatformId = typeof product.orderPlatform === 'object'
         ? product.orderPlatform._id || product.orderPlatform.id || String(product.orderPlatform)
         : String(product.orderPlatform);
-      
       const orderPlatformMaster = masterMap.get(orderPlatformId);
       if (!orderPlatformMaster) {
         return sendErrorResponse({
@@ -240,9 +242,22 @@ export const createOrder = async (req, res, next) => {
         });
       }
 
-      // ✅ Validate and normalize mediator if provided using map lookup
       let mediatorMaster = null;
-      if (product.mediator) {
+      let mediatorsList = [];
+      if (product.mediators && Array.isArray(product.mediators) && product.mediators.length > 0) {
+        for (const mid of product.mediators) {
+          const id = typeof mid === 'object' ? (mid._id || mid.id || String(mid)) : String(mid);
+          const med = mediatorMap.get(id);
+          if (!med) {
+            return sendErrorResponse({
+              res,
+              message: "Invalid mediator (from Mediators list). Please select from Mediators.",
+              status: 400,
+            });
+          }
+          mediatorsList.push(med._id);
+        }
+      } else if (product.mediator) {
         const mediatorId = typeof product.mediator === 'object'
           ? product.mediator._id || product.mediator.id || String(product.mediator)
           : String(product.mediator);
@@ -261,6 +276,8 @@ export const createOrder = async (req, res, next) => {
         { fallback: false }
       );
 
+      const paymentCurrency = product.paymentCurrency === 'USD' ? 'USD' : 'INR';
+
       processedProducts.push({
         productName: product.productName,
         orderDate: product.orderDate,
@@ -270,6 +287,8 @@ export const createOrder = async (req, res, next) => {
         initialPayment: Math.round((product.initialPayment || 0) * 100) / 100,
         orderPlatform: orderPlatformMaster._id,
         mediator: mediatorMaster ? mediatorMaster._id : undefined,
+        mediators: mediatorsList.length ? mediatorsList : undefined,
+        paymentCurrency,
         productImages: normalizedProductImages,
       });
     }
@@ -326,6 +345,38 @@ export const createOrder = async (req, res, next) => {
 
     await Promise.all([...incomePromises, ...expensePromises]);
 
+    // Create Payment (lifecycle) entries so they show in Payment Lifecycle list
+    let usdToInrRate = null;
+    try {
+      const rateRes = await fetch("https://api.frankfurter.app/latest?from=USD&to=INR");
+      const rateData = await rateRes.json();
+      if (rateData?.rates?.INR != null) usdToInrRate = Number(rateData.rates.INR);
+    } catch (e) {
+      // ignore; payments can be updated with rate later
+    }
+
+    const paymentPromises = [];
+    for (const product of processedProducts) {
+      const initialPayment = Math.round((product.initialPayment || 0) * 100) / 100;
+      if (initialPayment <= 0) continue;
+      // Payment.mediatorId refs Mediator collection; use only product.mediators (not legacy Master mediator)
+      const mediatorId = product.mediators?.[0];
+      if (!mediatorId) continue;
+
+      const isUSD = product.paymentCurrency === "USD";
+      const conversionRate = isUSD ? (usdToInrRate || 0) : 1;
+      paymentPromises.push(
+        Payment.create({
+          orderId: order._id,
+          grossAmountUSD: initialPayment,
+          mediatorId,
+          conversionRate,
+          paymentStatus: DEFAULT_PAYMENT_LIFECYCLE_STATUS,
+        })
+      );
+    }
+    if (paymentPromises.length) await Promise.all(paymentPromises);
+
     // ✅ Invalidate cache after order creation
     const { invalidateCache } = await import("../util/cacheHelper.js");
     invalidateCache('order');
@@ -341,6 +392,10 @@ export const createOrder = async (req, res, next) => {
         path: "products.mediator",
         select: "_id name",
         match: { isDeleted: false },
+      })
+      .populate({
+        path: "products.mediators",
+        select: "_id name",
       })
       .lean();
 
@@ -372,7 +427,8 @@ const getAllOrders = async (req, res) => {
       sortOrder = "desc",
       status = "",
       startDate = "",
-      endDate = ""
+      endDate = "",
+      includeDeleted = ""
     } = req.query;
 
     // Parse page and limit to integers with proper defaults and validation
@@ -390,13 +446,15 @@ const getAllOrders = async (req, res) => {
     let matchingPlatformIds = [];
 
     if (trimmedSearch) {
+      const escapedForRegex = trimmedSearch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       matchingPlatformIds = await Master.find({
-        name: new RegExp(trimmedSearch, "i"),
+        name: new RegExp(escapedForRegex, "i"),
         isDeleted: false,
       }).select("_id");
 
-      const searchRegex = new RegExp(trimmedSearch, "i");
+      const searchRegex = new RegExp(escapedForRegex, "i");
       const orConditions = [
+        { orderId: searchRegex },
         { clientName: searchRegex },
         { address: searchRegex },
         { "products.productName": searchRegex },
@@ -414,6 +472,12 @@ const getAllOrders = async (req, res) => {
       }
 
       filter.$or = orConditions;
+    }
+
+    // Exclude soft-deleted orders unless includeDeleted is true (for Order History)
+    const showDeleted = includeDeleted === "true" || includeDeleted === true;
+    if (!showDeleted) {
+      filter.isDeleted = false;
     }
 
     // Add status filter if provided in the query
@@ -510,65 +574,11 @@ const getAllOrders = async (req, res) => {
       })
       .lean();
 
-    // Calculate income, expense, and net profit per order
-    const incomeMap = new Map();
-    const expenseMap = new Map();
-
+    // Net profit and payment status per order (same calculation as Payment & Profit Summary)
+    let profitSummaryMap = new Map();
     if (orders.length > 0) {
-      const orderIds = orders
-        .map((order) => order?._id)
-        .filter((id) => !!id);
-
-      if (orderIds.length > 0) {
-        const [incomeTotals, expenseTotals] = await Promise.all([
-          Income.aggregate([
-            {
-              $match: {
-                orderId: { $in: orderIds },
-              },
-            },
-            {
-              $group: {
-                _id: "$orderId",
-                totalIncome: {
-                  $sum: { $ifNull: ["$receivedAmount", 0] },
-                },
-              },
-            },
-          ]),
-          ExpanseIncome.aggregate([
-            {
-              $match: {
-                orderId: { $in: orderIds },
-              },
-            },
-            {
-              $group: {
-                _id: "$orderId",
-                totalExpense: {
-                  $sum: { $ifNull: ["$paidAmount", 0] },
-                },
-              },
-            },
-          ]),
-        ]);
-
-        incomeTotals.forEach((item) => {
-          if (!item?._id) return;
-          incomeMap.set(
-            String(item._id),
-            Math.round((item.totalIncome || 0) * 100) / 100
-          );
-        });
-
-        expenseTotals.forEach((item) => {
-          if (!item?._id) return;
-          expenseMap.set(
-            String(item._id),
-            Math.round((item.totalExpense || 0) * 100) / 100
-          );
-        });
-      }
+      const orderIds = orders.map((o) => o?._id).filter(Boolean);
+      profitSummaryMap = await orderProfitService.getOrderProfitSummaryBulk(orderIds);
     }
 
     const totalOrders = await Order.countDocuments(filter);
@@ -594,17 +604,17 @@ const getAllOrders = async (req, res) => {
       });
 
       const orderIdStr = order?._id ? String(order._id) : "";
-      const totalIncome = incomeMap.get(orderIdStr) ?? 0;
-      const totalExpense = expenseMap.get(orderIdStr) ?? 0;
-      const netProfit =
-        Math.round((Number(totalIncome) - Number(totalExpense)) * 100) / 100;
+      const summary = profitSummaryMap.get(orderIdStr) || { netProfit: 0, totalActualINR: 0, totalExpenses: 0, totalExpectedINR: 0, estimatedProfit: 0, paymentStatus: "Unpaid" };
 
       return {
         ...order,
         products: formattedProducts,
-        totalIncome,
-        totalExpense,
-        netProfit,
+        netProfit: summary.netProfit,
+        paymentStatus: summary.paymentStatus,
+        totalActualINR: summary.totalActualINR,
+        totalExpenses: summary.totalExpenses,
+        totalExpectedINR: summary.totalExpectedINR,
+        estimatedProfit: summary.estimatedProfit,
       };
     });
 
@@ -635,20 +645,37 @@ const getAllOrders = async (req, res) => {
   }
 };
 
-// Update order by ID
+// Update order by ID (id may be MongoDB _id or orderId string e.g. PJ022615)
 const updateOrder = async (req, res, next) => {
   try {
 
     const { id } = req.params;
     const updateData = req.body;
 
-    // Check if order exists
-    const existingOrder = await Order.findById(id);
+    const resolved = await resolveOrderById(id);
+    if (!resolved) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "Order not found."
+      });
+    }
+    const orderMongoId = resolved._id;
+
+    // Check if order exists and is not deleted
+    const existingOrder = await Order.findById(orderMongoId);
     if (!existingOrder) {
       return sendErrorResponse({
         status: 404,
         res,
         message: "Order not found."
+      });
+    }
+    if (existingOrder.isDeleted) {
+      return sendErrorResponse({
+        status: 400,
+        res,
+        message: "Cannot update a deleted order. View it in Order History."
       });
     }
 
@@ -696,15 +723,15 @@ const updateOrder = async (req, res, next) => {
       }
     }
 
-    // ✅ Process products array if being updated - BATCH VALIDATION
     if (updateData.products && Array.isArray(updateData.products)) {
       const productNames = updateData.products.map(p => p.productName?.trim()).filter(Boolean);
       const orderPlatformIds = updateData.products.map(p => p.orderPlatform).filter(Boolean);
       const mediatorIds = updateData.products.map(p => p.mediator).filter(Boolean);
+      const mediatorsArrayIds = (updateData.products.map(p => p.mediators).filter(Boolean).flat()).filter(id => mongoose.Types.ObjectId.isValid(id));
       const masterIds = [...new Set([...orderPlatformIds, ...mediatorIds].filter(Boolean))];
+      const uniqueMediatorIds = [...new Set(mediatorsArrayIds)];
 
-      // Batch fetch all products, masters in parallel
-      const [existingProducts, existingMasters] = await Promise.all([
+      const [existingProducts, existingMasters, existingMediatorsList] = await Promise.all([
         Product.find({
           productName: { $in: productNames },
           isDeleted: false
@@ -712,17 +739,16 @@ const updateOrder = async (req, res, next) => {
         masterIds.length > 0 ? Master.find({
           _id: { $in: masterIds },
           isDeleted: false
-        }).select("_id name").lean() : []
+        }).select("_id name").lean() : [],
+        uniqueMediatorIds.length > 0 ? Mediator.find({ _id: { $in: uniqueMediatorIds } }).select("_id name").lean() : []
       ]);
 
-      // Create lookup maps for O(1) access
       const productMap = new Map(existingProducts.map(p => [p.productName.toLowerCase(), p]));
       const masterMap = new Map(existingMasters.map(m => [String(m._id), m]));
-
+      const mediatorMap = new Map(existingMediatorsList.map(m => [String(m._id), m]));
       const processedProducts = [];
-      
+
       for (const product of updateData.products) {
-        // ✅ Validate product existence using map lookup
         const productKey = product.productName?.trim().toLowerCase();
         const existingProduct = productMap.get(productKey);
 
@@ -734,11 +760,9 @@ const updateOrder = async (req, res, next) => {
           });
         }
 
-        // ✅ Validate and normalize orderPlatform using map lookup
-        const orderPlatformId = typeof product.orderPlatform === 'object' 
+        const orderPlatformId = typeof product.orderPlatform === 'object'
           ? product.orderPlatform._id || product.orderPlatform.id || String(product.orderPlatform)
           : String(product.orderPlatform);
-        
         const orderPlatformMaster = masterMap.get(orderPlatformId);
         if (!orderPlatformMaster) {
           return sendErrorResponse({
@@ -748,9 +772,22 @@ const updateOrder = async (req, res, next) => {
           });
         }
 
-        // ✅ Handle mediator update using map lookup
         let mediatorMaster = null;
-        if (product.mediator !== undefined && product.mediator !== null && product.mediator !== "") {
+        let mediatorsList = [];
+        if (product.mediators && Array.isArray(product.mediators) && product.mediators.length > 0) {
+          for (const mid of product.mediators) {
+            const id = typeof mid === 'object' ? (mid._id || mid.id || String(mid)) : String(mid);
+            const med = mediatorMap.get(id);
+            if (!med) {
+              return sendErrorResponse({
+                res,
+                message: "Invalid mediator (from Mediators list).",
+                status: 400,
+              });
+            }
+            mediatorsList.push(med._id);
+          }
+        } else if (product.mediator !== undefined && product.mediator !== null && product.mediator !== "") {
           const mediatorId = typeof product.mediator === 'object'
             ? product.mediator._id || product.mediator.id || String(product.mediator)
             : String(product.mediator);
@@ -768,6 +805,7 @@ const updateOrder = async (req, res, next) => {
           product.productImages,
           { fallback: false }
         );
+        const paymentCurrency = product.paymentCurrency === 'USD' ? 'USD' : 'INR';
 
         processedProducts.push({
           productName: product.productName,
@@ -778,6 +816,8 @@ const updateOrder = async (req, res, next) => {
           initialPayment: Math.round((product.initialPayment || 0) * 100) / 100,
           orderPlatform: orderPlatformMaster._id,
           mediator: mediatorMaster ? mediatorMaster._id : undefined,
+          mediators: mediatorsList.length ? mediatorsList : undefined,
+          paymentCurrency,
           productImages: normalizedProductImages,
         });
       }
@@ -792,10 +832,19 @@ const updateOrder = async (req, res, next) => {
     if (updateData.shippingCost !== undefined && updateData.shippingCost !== null) {
       updateData.shippingCost = Math.round(updateData.shippingCost * 100) / 100;
     }
+    if (updateData.supplierCost !== undefined && updateData.supplierCost !== null) {
+      updateData.supplierCost = Math.round(updateData.supplierCost * 100) / 100;
+    }
+    if (updateData.packagingCost !== undefined && updateData.packagingCost !== null) {
+      updateData.packagingCost = Math.round(updateData.packagingCost * 100) / 100;
+    }
+    if (updateData.otherExpenses !== undefined && updateData.otherExpenses !== null) {
+      updateData.otherExpenses = Math.round(updateData.otherExpenses * 100) / 100;
+    }
 
     // Update order
     const updatedOrder = await Order.findByIdAndUpdate(
-      id,
+      orderMongoId,
       updateData,
       { new: true, runValidators: true }
     )
@@ -851,8 +900,8 @@ const updateOrder = async (req, res, next) => {
       }
 
       const [orderIncomes, orderExpenses] = await Promise.all([
-        Income.find({ orderId: id }).sort({ createdAt: 1, _id: 1 }),
-        ExpanseIncome.find({ orderId: id }).sort({ createdAt: 1, _id: 1 }),
+        Income.find({ orderId: id, isDeleted: { $ne: true } }).sort({ createdAt: 1, _id: 1 }),
+        ExpanseIncome.find({ orderId: id, isDeleted: { $ne: true } }).sort({ createdAt: 1, _id: 1 }),
       ]);
 
       // Update client reference in Income if client changed
@@ -966,13 +1015,22 @@ const updateOrder = async (req, res, next) => {
   }
 };
 
-// Delete order by ID (and all related income/expense entries)
+// Resolve order by id (MongoDB _id or orderId string)
+const resolveOrderById = async (id) => {
+  if (!id) return null;
+  if (mongoose.Types.ObjectId.isValid(id) && String(new mongoose.Types.ObjectId(id)) === String(id)) {
+    const byMongo = await Order.findById(id).lean();
+    if (byMongo) return byMongo;
+  }
+  return Order.findOne({ orderId: String(id).trim() }).lean();
+};
+
+// Soft-delete order and all related entries (Payment, ExpanseIncome, Income)
 const deleteOrder = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const removeFromSupplier = req.body?.removeFromSupplier === true || req.query?.removeFromSupplier === "true";
 
-    const existingOrder = await Order.findById(id);
+    const existingOrder = await resolveOrderById(id);
     if (!existingOrder) {
       return sendErrorResponse({
         status: 404,
@@ -980,10 +1038,101 @@ const deleteOrder = async (req, res, next) => {
         message: "Order not found."
       });
     }
+    const orderMongoId = existingOrder._id;
+    if (existingOrder.isDeleted) {
+      return sendSuccessResponse({
+        res,
+        data: null,
+        message: "Order is already deleted.",
+        status: 200
+      });
+    }
 
-    if (removeFromSupplier) {
-      const PAYMENT_STATUS = (await import("../helper/enums.js")).PAYMENT_STATUS;
-      const orderExpenses = await ExpanseIncome.find({ orderId: id, status: PAYMENT_STATUS.PAID, paidAmount: { $gt: 0 }, supplierId: { $exists: true, $ne: null } }).lean();
+    // Always reverse supplier advance for this order's paid expenses so supplier list reflects deleted order
+    const PAYMENT_STATUS = (await import("../helper/enums.js")).PAYMENT_STATUS;
+    const orderExpenses = await ExpanseIncome.find({
+      orderId: orderMongoId,
+      isDeleted: { $ne: true },
+      status: PAYMENT_STATUS.PAID,
+      paidAmount: { $gt: 0 },
+      supplierId: { $exists: true, $ne: null }
+    }).lean();
+    for (const exp of orderExpenses) {
+      if (!exp.supplierId) continue;
+      const supplier = await Supplier.findById(exp.supplierId);
+      if (!supplier || !Array.isArray(supplier.advancePayment)) continue;
+      const amount = Math.round((exp.paidAmount || 0) * 100) / 100;
+      const bankId = exp.bankId || (supplier.advancePayment[0] && supplier.advancePayment[0].bankId);
+      if (!bankId) continue;
+      const idx = supplier.advancePayment.findIndex((p) => p.bankId && String(p.bankId) === String(bankId));
+      if (idx >= 0) {
+        supplier.advancePayment[idx].amount = Math.round((Number(supplier.advancePayment[idx].amount) + amount) * 100) / 100;
+      } else {
+        supplier.advancePayment.push({ bankId, amount });
+      }
+      await supplier.save();
+    }
+
+    const now = new Date();
+    await Promise.all([
+      Income.updateMany({ orderId: orderMongoId }, { $set: { isDeleted: true, deletedAt: now } }),
+      ExpanseIncome.updateMany({ orderId: orderMongoId }, { $set: { isDeleted: true, deletedAt: now } }),
+      Payment.updateMany({ orderId: orderMongoId }, { $set: { isDeleted: true, deletedAt: now } }),
+      Order.findByIdAndUpdate(orderMongoId, { $set: { isDeleted: true, deletedAt: now } })
+    ]);
+
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache('order', String(orderMongoId));
+    invalidateCache('dashboard');
+
+    sendSuccessResponse({
+      res,
+      data: null,
+      message: "Order and all related entries (payments, income, expenses, supplier payments) have been deleted.",
+      status: 200
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Bulk soft-delete orders and their related entries
+const bulkDeleteOrders = async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (ids.length === 0) {
+      return sendErrorResponse({
+        res,
+        status: 400,
+        message: "Request body must contain an array of order ids (ids).",
+      });
+    }
+
+    const deleted = [];
+    const skipped = [];
+    const PAYMENT_STATUS = (await import("../helper/enums.js")).PAYMENT_STATUS;
+    const now = new Date();
+
+    for (const id of ids) {
+      const existingOrder = await resolveOrderById(id);
+      if (!existingOrder) {
+        skipped.push({ id, reason: "not_found" });
+        continue;
+      }
+      if (existingOrder.isDeleted) {
+        skipped.push({ id: String(existingOrder._id), reason: "already_deleted" });
+        continue;
+      }
+      const orderMongoId = existingOrder._id;
+
+      // Reverse supplier advance for this order's paid expenses
+      const orderExpenses = await ExpanseIncome.find({
+        orderId: orderMongoId,
+        isDeleted: { $ne: true },
+        status: PAYMENT_STATUS.PAID,
+        paidAmount: { $gt: 0 },
+        supplierId: { $exists: true, $ne: null },
+      }).lean();
       for (const exp of orderExpenses) {
         if (!exp.supplierId) continue;
         const supplier = await Supplier.findById(exp.supplierId);
@@ -999,39 +1148,52 @@ const deleteOrder = async (req, res, next) => {
         }
         await supplier.save();
       }
+
+      await Promise.all([
+        Income.updateMany({ orderId: orderMongoId }, { $set: { isDeleted: true, deletedAt: now } }),
+        ExpanseIncome.updateMany({ orderId: orderMongoId }, { $set: { isDeleted: true, deletedAt: now } }),
+        Payment.updateMany({ orderId: orderMongoId }, { $set: { isDeleted: true, deletedAt: now } }),
+        Order.findByIdAndUpdate(orderMongoId, { $set: { isDeleted: true, deletedAt: now } }),
+      ]);
+      deleted.push(String(orderMongoId));
     }
 
-    await Promise.all([
-      Income.deleteMany({ orderId: id }),
-      ExpanseIncome.deleteMany({ orderId: id })
-    ]);
-
-    await Order.findByIdAndDelete(id);
-
     const { invalidateCache } = await import("../util/cacheHelper.js");
-    invalidateCache('order', id);
-    invalidateCache('dashboard');
+    deleted.forEach((orderId) => invalidateCache("order", orderId));
+    invalidateCache("dashboard");
 
     sendSuccessResponse({
       res,
-      data: null,
-      message: removeFromSupplier
-        ? "Order, related income/expense deleted, and supplier balance reversed."
-        : "Order and all related income/expense entries deleted successfully",
-      status: 200
+      data: {
+        deletedCount: deleted.length,
+        skippedCount: skipped.length,
+        deletedIds: deleted,
+        skipped,
+      },
+      message:
+        deleted.length === 0
+          ? "No orders were deleted."
+          : `${deleted.length} order(s) and their related entries have been deleted.${skipped.length > 0 ? ` ${skipped.length} skipped.` : ""}`,
+      status: 200,
     });
   } catch (error) {
     next(error);
   }
 };
 
-// Get order by ID
+// Get order by ID (supports MongoDB _id or orderId string; returns deleted orders for history view)
 const getOrderById = async (req, res, next) => {
   try {
-
     const { id } = req.params;
-
-    const order = await Order.findById(id)
+    const resolved = await resolveOrderById(id);
+    if (!resolved) {
+      return sendErrorResponse({
+        status: 404,
+        res,
+        message: "Order not found."
+      });
+    }
+    const order = await Order.findById(resolved._id)
       .select("-__v")
       .populate({
         path: "products.orderPlatform",
@@ -1053,14 +1215,15 @@ const getOrderById = async (req, res, next) => {
       });
     }
 
-    // Set cache-control headers to prevent browser caching (304 responses)
+    const profitSummary = await orderProfitService.getOrderProfitSummary(String(resolved._id));
+
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
 
     sendSuccessResponse({
       res,
-      data: order,
+      data: { ...order, profitSummary: profitSummary || undefined },
       message: "Order retrieved successfully",
       status: 200
     });
@@ -1525,6 +1688,7 @@ export default {
   getAllOrders,
   updateOrder,
   deleteOrder,
+  bulkDeleteOrders,
   getOrderById,
   updateOrderStatus,
   getKanbanData,
