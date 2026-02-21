@@ -1,4 +1,6 @@
-import "./loadEnv.js";
+import dotenv from "dotenv";
+dotenv.config();
+
 import app from "./app.js";
 import connectDB from "./config/db.js";
 import { runRbacSeed } from "./services/permissionSeedService.js";
@@ -6,14 +8,19 @@ import { runRbacSeed } from "./services/permissionSeedService.js";
 const PORT = process.env.PORT || 5000;
 
 async function start() {
-  await connectDB().catch((err) => {
-    console.error("MongoDB connection failed:", err.message);
-  });
-  await runRbacSeed().catch((err) => console.error("[RBAC] Seed error:", err.message));
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`API Documentation: http://localhost:${PORT}`);
-  });
+  try {
+    await connectDB();
+    await runRbacSeed();
+    
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`❤️ Health: http://localhost:${PORT}/health`);
+    });
+
+  } catch (err) {
+    console.error("Startup error:", err.message);
+    console.error("Startup error:", err);
+  }
 }
 
 start();
