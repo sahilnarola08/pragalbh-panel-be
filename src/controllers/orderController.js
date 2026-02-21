@@ -14,9 +14,103 @@ import Payment from "../models/payment.js";
 import { DEFAULT_PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 import { formatCurrency } from "../util/currencyFormat.js";
 import orderProfitService from "../services/orderProfitService.js";
+import nodemailer from "nodemailer";
+import { secret } from "../config/secret.js";
+import Auth from "../models/auth.js";
+import Role from "../models/role.js";
 
 const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
   "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product";
+
+const emailNotificationTransporter =
+  secret.emailService && secret.emailUser && secret.emailPass
+    ? nodemailer.createTransport({
+        service: secret.emailService,
+        auth: {
+          user: secret.emailUser,
+          pass: secret.emailPass,
+        },
+      })
+    : null;
+
+const getAdminNotificationRoleNames = () => {
+  if (secret.adminNotificationRoles && typeof secret.adminNotificationRoles === "string") {
+    return secret.adminNotificationRoles
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+  }
+  return ["SuperAdmin", "Admin"];
+};
+
+const sendOrderCreatedNotificationToAdmins = async (order, clientDoc) => {
+  try {
+    if (!emailNotificationTransporter) {
+      return;
+    }
+
+    const roleNames = getAdminNotificationRoleNames();
+    if (!roleNames.length) {
+      return;
+    }
+
+    const roles = await Role.find({
+      name: { $in: roleNames },
+      isActive: true,
+    })
+      .select("_id name")
+      .lean();
+
+    if (!roles.length) {
+      return;
+    }
+
+    const roleIds = roles.map((r) => r._id);
+
+    const admins = await Auth.find({
+      roleId: { $in: roleIds },
+      isActive: true,
+      isDeleted: false,
+    })
+      .select("email name")
+      .lean();
+
+    const to = admins.map((u) => u.email).filter(Boolean);
+    if (!to.length) {
+      return;
+    }
+
+    const subjectParts = ["New order created"];
+    if (order.orderId) {
+      subjectParts.push(order.orderId);
+    }
+    const subject = subjectParts.join(" - ");
+
+    const clientName = order.clientName || clientDoc?.firstName || "";
+    const productCount = Array.isArray(order.products) ? order.products.length : 0;
+
+    const lines = [
+      "A new order has been created in Pragalbh Panel.",
+      order.orderId ? `Order ID: ${order.orderId}` : `Order Mongo ID: ${order._id}`,
+      clientName ? `Client: ${clientName}` : "",
+      productCount ? `Total products: ${productCount}` : "",
+      order.createdAt ? `Created at: ${new Date(order.createdAt).toLocaleString()}` : "",
+    ].filter(Boolean);
+
+    const text = lines.join("\n");
+    const html = lines.map((line) => `<p>${line}</p>`).join("");
+
+    await emailNotificationTransporter.sendMail({
+      from: secret.emailUser,
+      to,
+      subject,
+      text,
+      html,
+    });
+  } catch (error) {
+    console.error("Failed to send order created notification to admins:", error);
+  }
+};
 
 // extract product images
 const extractProductImages = (input, { fallback } = { fallback: false }) => {
@@ -377,10 +471,11 @@ export const createOrder = async (req, res, next) => {
     }
     if (paymentPromises.length) await Promise.all(paymentPromises);
 
-    // ✅ Invalidate cache after order creation
     const { invalidateCache } = await import("../util/cacheHelper.js");
     invalidateCache('order');
     invalidateCache('dashboard');
+
+    await sendOrderCreatedNotificationToAdmins(order, existingClient);
 
     const populatedOrder = await Order.findById(order._id)
       .populate({

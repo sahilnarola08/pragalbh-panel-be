@@ -25,7 +25,8 @@ const authSchema = new mongoose.Schema({
   roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role", default: null },
   customPermissions: [{ type: String, trim: true }],
   isActive: { type: Boolean, default: true },
-  isDeleted: { type: Boolean, default: false }
+  isDeleted: { type: Boolean, default: false },
+  otpLockedUntil: { type: Date, default: null }
 }, {
   timestamps: true,
   toJSON: { 
