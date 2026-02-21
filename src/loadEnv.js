@@ -5,10 +5,16 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ALWAYS load root .env
-const envPath = path.resolve(__dirname, "../.env");
+const env = process.env.NODE_ENV || "production";
+
+let envFile = ".env.prod";
+
+if (env === "staging") {
+  envFile = ".env.staging";
+}
+
+const envPath = path.resolve(__dirname, `../${envFile}`);
 
 dotenv.config({ path: envPath });
 
-console.log("ENV Loaded from:", envPath);
-console.log("PORT =", process.env.PORT);
+console.log(`ENV loaded from: ${envFile}`);
