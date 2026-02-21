@@ -19,7 +19,7 @@ async function start() {
 
   } catch (err) {
     console.error("Startup error:", err.message);
-    process.exit(1);
+    console.error("Startup error:", err);
   }
 }
 //start
