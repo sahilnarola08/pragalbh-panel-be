@@ -16,5 +16,5 @@ if (env === "staging") {
 const envPath = path.resolve(__dirname, `../${envFile}`);
 
 dotenv.config({ path: envPath });
-
+//test
 console.log(`ENV loaded from: ${envFile}`);
