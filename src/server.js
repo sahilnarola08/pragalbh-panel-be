@@ -22,5 +22,5 @@ async function start() {
     console.error("Startup error:", err);
   }
 }
-//start
+
 start();
