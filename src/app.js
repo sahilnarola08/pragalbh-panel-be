@@ -46,8 +46,8 @@ app.use(
   })
 );
 
-// ✅ Handle preflight requests
-app.options("*", cors());
+// ✅ Handle preflight requests (Express 5 path syntax)
+app.options("/*splat", cors());
 
 /* ===========================
    MIDDLEWARE
