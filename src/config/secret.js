@@ -14,4 +14,5 @@ export const secret = {
   baseUrl: process.env.BASE_URL,
   razorpayIdKey: process.env.RAZORPAY_ID_KEY,
   razorpaySecretKey: process.env.RAZORPAY_SECRET_KEY,
+  adminNotificationRoles: process.env.ADMIN_NOTIFICATION_ROLES,
 };

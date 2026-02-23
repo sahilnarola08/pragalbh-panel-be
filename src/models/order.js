@@ -54,6 +54,15 @@ const orderSchema = new mongoose.Schema({
                          ref: "master",
                          required: false,
                     },
+                    mediators: {
+                         type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Mediator" }],
+                         default: undefined,
+                    },
+                    paymentCurrency: {
+                         type: String,
+                         enum: ["USD", "INR"],
+                         default: "INR",
+                    },
                     productImages: {
                          type: [
                               {
@@ -76,6 +85,18 @@ const orderSchema = new mongoose.Schema({
           },
      },
      shippingCost: {
+          type: Number,
+          default: 0,
+     },
+     supplierCost: {
+          type: Number,
+          default: 0,
+     },
+     packagingCost: {
+          type: Number,
+          default: 0,
+     },
+     otherExpenses: {
           type: Number,
           default: 0,
      },
@@ -126,6 +147,11 @@ const orderSchema = new mongoose.Schema({
      isDeleted: {
           type: Boolean,
           default: false,
+          index: true,
+     },
+     deletedAt: {
+          type: Date,
+          default: null,
           index: true,
      },
 }, {

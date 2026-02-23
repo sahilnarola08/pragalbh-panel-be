@@ -8,6 +8,7 @@ const checkOverDue = async (req, res, next) => {
         
         // Find overdue orders
         const overdueOrders = await Order.find({
+            isDeleted: false,
             dispatchDate: { $lt: currentDate }, 
             status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.FACTORY_PROCESS, ORDER_STATUS.VIDEO_CONFIRMATION] }
         });
@@ -16,6 +17,7 @@ const checkOverDue = async (req, res, next) => {
             // Update all overdue orders to status "over_due"
             const updateResult = await Order.updateMany(
                 {
+                    isDeleted: false,
                     dispatchDate: { $lt: currentDate }, 
                     status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.FACTORY_PROCESS, ORDER_STATUS.VIDEO_CONFIRMATION] }
                 },

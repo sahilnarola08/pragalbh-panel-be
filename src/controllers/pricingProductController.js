@@ -63,3 +63,16 @@ export const remove = async (req, res) => {
     return sendErrorResponse({ res, message: error.message, status: 500 });
   }
 };
+
+export const bulkDelete = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return sendErrorResponse({ res, message: "Body must contain non-empty array of ids", status: 400 });
+    }
+    const result = await PricingProduct.deleteMany({ _id: { $in: ids } });
+    return sendSuccessResponse({ res, data: { deletedCount: result.deletedCount }, message: "Products deleted" });
+  } catch (error) {
+    return sendErrorResponse({ res, message: error.message, status: 500 });
+  }
+};

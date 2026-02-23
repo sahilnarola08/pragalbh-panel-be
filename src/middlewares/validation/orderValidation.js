@@ -37,6 +37,8 @@ const productSchema = yup.object().shape({
     initialPayment: yup.number().min(0, "Initial payment must be greater than or equal to 0").optional(),
     orderPlatform: yup.string().required("Order platform is required").matches(/^[0-9a-fA-F]{24}$/, 'Order platform must be a valid ObjectId'),
     mediator: yup.string().matches(/^[0-9a-fA-F]{24}$/, 'Mediator must be a valid ObjectId').optional(),
+    mediators: yup.array().of(yup.string().matches(/^[0-9a-fA-F]{24}$/, 'Invalid mediator ObjectId')).optional(),
+    paymentCurrency: yup.string().oneOf(['USD', 'INR']).optional(),
     productImages: yup
         .array()
         .of(imageObjectSchema)
@@ -56,6 +58,9 @@ const orderSchema = yup.object().shape({
     supplier: yup.string().optional(),
     otherDetails: yup.string().optional(),
     shippingCost: yup.number().min(0, "Shipping cost must be greater than or equal to 0").optional(),
+    supplierCost: yup.number().min(0, "Supplier cost must be greater than or equal to 0").optional(),
+    packagingCost: yup.number().min(0, "Packaging cost must be greater than or equal to 0").optional(),
+    otherExpenses: yup.number().min(0, "Other expenses must be greater than or equal to 0").optional(),
     bankName: yup.string().optional(),
     paymentAmount: yup.number().min(0, "Payment amount must be greater than or equal to 0").optional(),
 });
@@ -72,16 +77,28 @@ const orderUpdateSchema = yup.object().shape({
     supplier: yup.string().optional(),
     otherDetails: yup.string().optional(),
     shippingCost: yup.number().min(0, "Shipping cost must be greater than or equal to 0").optional(),
+    supplierCost: yup.number().min(0, "Supplier cost must be greater than or equal to 0").optional(),
+    packagingCost: yup.number().min(0, "Packaging cost must be greater than or equal to 0").optional(),
+    otherExpenses: yup.number().min(0, "Other expenses must be greater than or equal to 0").optional(),
     bankName: yup.string().optional(),
     paymentAmount: yup.number().min(0, "Payment amount must be greater than or equal to 0").optional(),
 });
 
-// Order ID validation schema
+// Order ID validation schema (accept MongoDB ObjectId or orderId string e.g. PJ022615)
 const orderIdSchema = yup.object().shape({
     id: yup
         .string()
         .required('Order ID is required')
-        .matches(/^[0-9a-fA-F]{24}$/, 'Invalid order ID format')
+        .trim()
+        .min(1, 'Order ID is required')
+        .test('valid-order-id', 'Invalid order ID format', function(value) {
+            if (!value) return false;
+            // MongoDB ObjectId (24 hex chars)
+            if (/^[0-9a-fA-F]{24}$/.test(value)) return true;
+            // orderId string (e.g. PJ022615)
+            if (value.length >= 2 && value.length <= 50) return true;
+            return false;
+        })
 });
 
 // Update order status validation schema

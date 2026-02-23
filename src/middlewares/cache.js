@@ -79,8 +79,15 @@ export const cacheMiddleware = (req, res, next) => {
     return next();
   }
 
-  // Skip cache for authenticated routes that need fresh data
-  if (req.path.includes('/auth') || req.path.includes('/upload')) {
+  // Skip cache for auth, upload, partners, assets, master, and dashboard (must be fresh)
+  if (
+    req.path.includes('/auth') ||
+    req.path.includes('/upload') ||
+    req.originalUrl.startsWith('/partners') ||
+    req.originalUrl.startsWith('/assets') ||
+    req.originalUrl.startsWith('/master') ||
+    req.originalUrl.startsWith('/dashboard')
+  ) {
     return next();
   }
 

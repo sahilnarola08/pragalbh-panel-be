@@ -3,6 +3,7 @@ export const ORDER_STATUS = {
     // New status added to match your "Pending Order" column
     PENDING: "pending",
     OVER_DUE: "over_due",
+    WITH_DISPUTE: "with_dispute",
     STOCK: "stock",
     FACTORY_PROCESS: "factory_process",
     VIDEO_CONFIRMATION: "video_confirmation", 
@@ -25,6 +26,14 @@ export const ORDER_STATUS = {
   // Default values - Changed to PENDING
   export const DEFAULT_ORDER_STATUS = ORDER_STATUS.PENDING;
   export const DEFAULT_PAYMENT_STATUS = PAYMENT_STATUS.PENDING;
+
+  // Payment lifecycle (mediator → bank)
+  export const PAYMENT_LIFECYCLE_STATUS = {
+    PENDING_WITH_MEDIATOR: "pending_with_mediator",
+    PROCESSING: "processing",
+    CREDITED_TO_BANK: "credited_to_bank",
+  };
+  export const DEFAULT_PAYMENT_LIFECYCLE_STATUS = PAYMENT_LIFECYCLE_STATUS.PENDING_WITH_MEDIATOR;
   
   // User Role Enum
   export const USER_ROLE = {
