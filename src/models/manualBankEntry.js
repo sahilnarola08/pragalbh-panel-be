@@ -38,6 +38,24 @@ const manualBankEntrySchema = new mongoose.Schema(
       required: false,
       index: true,
     },
+    /** Optional: linked expense entry for withdrawal/transfer debit */
+    linkedExpenseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ExpanseIncome",
+      required: false,
+      index: true,
+      default: null,
+    },
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true }
 );
@@ -45,6 +63,7 @@ const manualBankEntrySchema = new mongoose.Schema(
 manualBankEntrySchema.index({ date: 1 });
 manualBankEntrySchema.index({ bankId: 1, date: 1 });
 manualBankEntrySchema.index({ toBankId: 1, date: 1 });
+manualBankEntrySchema.index({ linkedExpenseId: 1 });
 
 const ManualBankEntry = mongoose.model("ManualBankEntry", manualBankEntrySchema);
 export default ManualBankEntry;

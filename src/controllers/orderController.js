@@ -186,7 +186,6 @@ const normalizeMasterIdOrThrow = async (id, fieldName = "masterId") => {
 
   const master = await Master.findOne({
     _id: rawId,
-    isDeleted: false,
   }).select("_id name");
 
   if (!master) {
@@ -481,12 +480,10 @@ export const createOrder = async (req, res, next) => {
       .populate({
         path: "products.orderPlatform",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .populate({
         path: "products.mediator",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .populate({
         path: "products.mediators",
@@ -544,7 +541,6 @@ const getAllOrders = async (req, res) => {
       const escapedForRegex = trimmedSearch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       matchingPlatformIds = await Master.find({
         name: new RegExp(escapedForRegex, "i"),
-        isDeleted: false,
       }).select("_id");
 
       const searchRegex = new RegExp(escapedForRegex, "i");
@@ -660,12 +656,10 @@ const getAllOrders = async (req, res) => {
       .populate({
         path: "products.orderPlatform",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .populate({
         path: "products.mediator",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .lean();
 
@@ -699,7 +693,7 @@ const getAllOrders = async (req, res) => {
       });
 
       const orderIdStr = order?._id ? String(order._id) : "";
-      const summary = profitSummaryMap.get(orderIdStr) || { netProfit: 0, totalActualINR: 0, totalExpenses: 0, totalExpectedINR: 0, estimatedProfit: 0, paymentStatus: "Unpaid" };
+      const summary = profitSummaryMap.get(orderIdStr) || { netProfit: 0, totalActualINR: 0, totalExpenses: 0, totalExpectedINR: 0, estimatedProfit: 0, paymentStatus: "Unpaid", fullyCreditedToBank: false };
 
       return {
         ...order,
@@ -710,6 +704,7 @@ const getAllOrders = async (req, res) => {
         totalExpenses: summary.totalExpenses,
         totalExpectedINR: summary.totalExpectedINR,
         estimatedProfit: summary.estimatedProfit,
+        fullyCreditedToBank: summary.fullyCreditedToBank || false,
       };
     });
 
@@ -784,8 +779,7 @@ const updateOrder = async (req, res, next) => {
           { firstName: { $regex: updateData.clientName.trim(), $options: "i" } },
           { lastName: { $regex: updateData.clientName.trim(), $options: "i" } },
           { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.clientName.trim(), options: "i" } } }
-        ],
-        isDeleted: false
+        ]
       }).lean();
 
       if (!existingClient) {
@@ -805,8 +799,7 @@ const updateOrder = async (req, res, next) => {
           { lastName: { $regex: updateData.supplier.trim(), $options: "i" } },
           { company: { $regex: updateData.supplier.trim(), $options: "i" } },
           { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.supplier.trim(), options: "i" } } }
-        ],
-        isDeleted: false
+        ]
       }).lean();
 
       if (!existingSupplier) {
@@ -828,12 +821,10 @@ const updateOrder = async (req, res, next) => {
 
       const [existingProducts, existingMasters, existingMediatorsList] = await Promise.all([
         Product.find({
-          productName: { $in: productNames },
-          isDeleted: false
+          productName: { $in: productNames }
         }).select("productName").lean(),
         masterIds.length > 0 ? Master.find({
-          _id: { $in: masterIds },
-          isDeleted: false
+          _id: { $in: masterIds }
         }).select("_id name").lean() : [],
         uniqueMediatorIds.length > 0 ? Mediator.find({ _id: { $in: uniqueMediatorIds } }).select("_id name").lean() : []
       ]);
@@ -947,12 +938,10 @@ const updateOrder = async (req, res, next) => {
       .populate({
         path: "products.orderPlatform",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .populate({
         path: "products.mediator",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .lean();
 

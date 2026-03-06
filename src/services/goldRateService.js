@@ -1,6 +1,8 @@
+import { getUsdToInrRate } from "./currencyService.js";
+
 const TROY_OZ_TO_GRAM = 31.1034768;
 const FREE_GOLD_API = "https://freegoldapi.com/data/latest.json";
-const FRANKFURTER_API = "https://api.frankfurter.app/latest?from=USD&to=INR";
+// FRANKFURTER_API removed as we use currencyService
 const IBJA_API = "https://ibjarates.com/API/GoldRates/";
 const METALPRICEAPI_LATEST = "https://api.metalpriceapi.com/v1/latest";
 const GOLD_API_BASE = "https://api.gold-api.com";
@@ -83,16 +85,6 @@ async function fetchIbja24kInr() {
   };
 }
 
-/** Fetch USD to INR rate (free, no key). */
-async function fetchUsdToInr() {
-  const res = await fetch(FRANKFURTER_API);
-  if (!res.ok) throw new Error(`Forex API error: ${res.status}`);
-  const data = await res.json();
-  const usdToInr = Number(data?.rates?.INR);
-  if (!Number.isFinite(usdToInr)) throw new Error("Could not fetch USD to INR rate.");
-  return usdToInr;
-}
-
 /** Fetch metal price in USD per troy oz from Gold API (free, no key). Symbol: XAU, XAG, XPT. */
 async function fetchGoldApiPrice(symbol) {
   const res = await fetch(`${GOLD_API_BASE}/price/${symbol}`);
@@ -110,7 +102,7 @@ async function fetchGoldApiPrice(symbol) {
 async function fetchMetalInrFromGoldApi(symbol) {
   const [metal, usdToInr] = await Promise.all([
     fetchGoldApiPrice(symbol),
-    fetchUsdToInr(),
+    getUsdToInrRate(),
   ]);
   const inrPerTroyOz = metal.usdPerTroyOz * usdToInr;
   const metalName = symbol === "XAU" ? "gold" : symbol === "XAG" ? "silver" : "platinum";
@@ -123,9 +115,9 @@ async function fetchMetalInrFromGoldApi(symbol) {
 }
 
 async function fetchSpotInr() {
-  const [goldRes, forexRes] = await Promise.all([
+  const [goldRes, usdToInr] = await Promise.all([
     fetch(FREE_GOLD_API),
-    fetch(FRANKFURTER_API),
+    getUsdToInrRate(),
   ]);
 
   if (!goldRes.ok) throw new Error(`Gold API error: ${goldRes.status}`);
@@ -137,11 +129,6 @@ async function fetchSpotInr() {
   const dateStr = latest.date;
   if (!Number.isFinite(goldUsdPerTroyOz)) throw new Error("Invalid gold price");
 
-  let usdToInr = 0;
-  if (forexRes.ok) {
-    const forexData = await forexRes.json();
-    usdToInr = Number(forexData?.rates?.INR) || 0;
-  }
   if (!usdToInr || !Number.isFinite(usdToInr)) {
     throw new Error("Could not fetch USD to INR rate. Try again later.");
   }

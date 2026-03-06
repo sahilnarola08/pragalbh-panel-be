@@ -13,5 +13,6 @@ router.get("/order/:orderId", authorize("income.view"), paymentController.getPay
 router.get("/:id", authorize("income.view"), paymentController.getPaymentById);
 router.put("/:id", authorize("income.edit"), paymentController.updatePayment);
 router.delete("/:id", authorize("income.delete"), paymentController.deletePayment);
+router.put("/:id/restore", authorize("income.edit"), paymentController.restorePayment);
 
 export default router;

@@ -23,7 +23,6 @@ const normalizeBankIdOrThrow = async (bankId) => {
 
   const bank = await Master.findOne({
     _id: rawId,
-    isDeleted: false,
   }).select("_id name");
 
   if (!bank) {
@@ -60,28 +59,6 @@ const docToPlainWithBank = (doc) => {
 
 const roundAmount = (value) =>
   Math.round((Number(value) || 0) * 100) / 100;
-
-/** Cached USD→INR rate (5 min TTL) for income display */
-let usdToInrCache = { rate: null, ts: 0 };
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
-const getUsdToInrRate = async () => {
-  if (usdToInrCache.rate != null && Date.now() - usdToInrCache.ts < CACHE_TTL_MS) {
-    return usdToInrCache.rate;
-  }
-  try {
-    const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=INR");
-    const data = await res.json();
-    const rate = data?.rates?.INR != null ? Number(data.rates.INR) : null;
-    if (rate != null && !isNaN(rate)) {
-      usdToInrCache = { rate, ts: Date.now() };
-      return rate;
-    }
-  } catch (e) {
-    console.warn("Could not fetch USD→INR rate:", e?.message);
-  }
-  return usdToInrCache.rate ?? 0;
-};
 
 const toPlainObject = (doc) => (doc?.toObject ? doc.toObject() : doc);
 
@@ -244,37 +221,6 @@ const getOrderProductDetails = (order, hints = {}) => {
     products: Array.isArray(plainOrder.products) ? plainOrder.products : [],
     matchedProduct,
   };
-};
-
-// format mediator amount details with populated mediator info
-// usdToInrRate: when > 0 and amounts are in USD, convert to INR
-const formatMediatorAmountDetails = (mediatorAmountArray, mediatorDetails = [], usdToInrRate = 0) => {
-  if (!mediatorAmountArray || !Array.isArray(mediatorAmountArray)) {
-    return [];
-  }
-
-  return mediatorAmountArray.map((item) => {
-    const mediatorId = item.mediatorId?._id || item.mediatorId;
-    const matchedMediator = mediatorDetails.find(
-      (m) => m._id && m._id.toString() === String(mediatorId)
-    );
-
-    const result = {
-      mediatorId: mediatorId,
-      mediator: matchedMediator
-        ? { _id: matchedMediator._id, name: matchedMediator.name }
-        : null,
-    };
-
-    // Only include amount if it exists and is not null/undefined; convert USD→INR when rate provided
-    if (item.amount !== undefined && item.amount !== null) {
-      let amt = Math.round(item.amount * 100) / 100;
-      if (usdToInrRate > 0) amt = roundAmount(amt * usdToInrRate);
-      result.amount = amt;
-    }
-
-    return result;
-  });
 };
 
 // format order mediator info (only mediator, mediatorAmount is now in Income model)
@@ -487,12 +433,13 @@ export const getIncomeExpance = async (req, res) => {
 
     // ====================== CASE 1: CREDITS (Payment + ManualBankEntry) ======================
     if (incExpType == 1) {
+      const deletedOnly = req.query.deletedOnly === "true" || req.query.deletedOnly === true;
       const Order = (await import("../models/order.js")).default;
       const paymentQuery = {
         paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
         actualBankCreditINR: { $exists: true, $ne: null, $gt: 0 },
         bankId: { $exists: true, $ne: null },
-        isDeleted: { $ne: true },
+        ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
         ...orderFilter,
       };
       if (dateFilter) {
@@ -513,13 +460,21 @@ export const getIncomeExpance = async (req, res) => {
               .lean(),
         orderFilter.orderId
           ? []
-          : ManualBankEntry.find({ type: "deposit", ...(dateFilter ? { date: dateFilter } : {}) })
+          : ManualBankEntry.find({
+              type: "deposit",
+              ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
+              ...(dateFilter ? { date: dateFilter } : {}),
+            })
               .populate("bankId", "_id name")
               .sort(sortQuery)
               .lean(),
         orderFilter.orderId
           ? []
-          : ManualBankEntry.find({ type: "transfer", ...(dateFilter ? { date: dateFilter } : {}) })
+          : ManualBankEntry.find({
+              type: "transfer",
+              ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
+              ...(dateFilter ? { date: dateFilter } : {}),
+            })
               .populate("bankId", "_id name")
               .populate("toBankId", "_id name")
               .sort(sortQuery)
@@ -547,6 +502,8 @@ export const getIncomeExpance = async (req, res) => {
           orderId: formattedOrder,
           clientName: p.orderId?.clientName || "",
           status: "credited_to_bank",
+          isDeleted: p.isDeleted || false,
+          deletedAt: p.deletedAt || null,
         });
       });
       depositEntries.forEach((e) => {
@@ -555,6 +512,7 @@ export const getIncomeExpance = async (req, res) => {
           _id: e._id,
           incExpType: 1,
           source: "manual",
+          manualType: "deposit",
           date: e.date,
           receivedAmount: roundAmount(e.amount || 0),
           description: e.description || "Manual deposit",
@@ -563,6 +521,8 @@ export const getIncomeExpance = async (req, res) => {
           orderId: null,
           clientName: "",
           status: "reserved",
+          isDeleted: e.isDeleted || false,
+          deletedAt: e.deletedAt || null,
         });
       });
       transferEntries.forEach((e) => {
@@ -572,6 +532,7 @@ export const getIncomeExpance = async (req, res) => {
           _id: e._id,
           incExpType: 1,
           source: "manual",
+          manualType: "transfer",
           date: e.date,
           receivedAmount: roundAmount(e.amount || 0),
           description: e.description || "Transfer received",
@@ -580,6 +541,8 @@ export const getIncomeExpance = async (req, res) => {
           orderId: null,
           clientName: "",
           status: "reserved",
+          isDeleted: e.isDeleted || false,
+          deletedAt: e.deletedAt || null,
         });
       });
 
@@ -636,14 +599,12 @@ export const getIncomeExpance = async (req, res) => {
           populate: {
             path: "products.mediator",
             select: "_id name",
-            match: { isDeleted: false },
           },
         })
         .populate("supplierId", "firstName lastName company supplierId ")
         .populate({
           path: "bankId",
           select: "_id name",
-          match: { isDeleted: false },
         })
         .sort(sortQuery)
         .lean();
@@ -738,6 +699,9 @@ export const getIncomeExpance = async (req, res) => {
           status: item.status,
           bankId,
           bank,
+          source: item.manualBankEntryId ? "manual" : "expense",
+          manualBankEntryId: item.manualBankEntryId ? String(item.manualBankEntryId) : null,
+          manualType: item.manualType || null,
           isDeleted: item.isDeleted || false,
           deletedAt: item.deletedAt || null,
         };
@@ -748,7 +712,12 @@ export const getIncomeExpance = async (req, res) => {
 
     // ====================== CASE 3: BOTH (Credits + Expense) ======================
     else if (incExpType == 3) {
-      const expenseQuery = { ...searchQuery, ...orderFilter, isDeleted: { $ne: true } };
+      const deletedOnly = req.query.deletedOnly === "true" || req.query.deletedOnly === true;
+      const expenseQuery = {
+        ...searchQuery,
+        ...orderFilter,
+        ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
+      };
       if (dateFilter) {
         expenseQuery.$or = [
           { date: dateFilter },
@@ -760,7 +729,7 @@ export const getIncomeExpance = async (req, res) => {
         paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
         actualBankCreditINR: { $exists: true, $ne: null, $gt: 0 },
         bankId: { $exists: true, $ne: null },
-        isDeleted: { $ne: true },
+        ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
         ...orderFilter,
       };
       if (dateFilter) {
@@ -776,13 +745,21 @@ export const getIncomeExpance = async (req, res) => {
           .lean(),
         orderFilter.orderId
           ? []
-          : ManualBankEntry.find({ type: "deposit", ...(dateFilter ? { date: dateFilter } : {}) })
+          : ManualBankEntry.find({
+              type: "deposit",
+              ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
+              ...(dateFilter ? { date: dateFilter } : {}),
+            })
               .populate("bankId", "_id name")
               .sort(sortQuery)
               .lean(),
         orderFilter.orderId
           ? []
-          : ManualBankEntry.find({ type: "transfer", ...(dateFilter ? { date: dateFilter } : {}) })
+          : ManualBankEntry.find({
+              type: "transfer",
+              ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
+              ...(dateFilter ? { date: dateFilter } : {}),
+            })
               .populate("bankId", "_id name")
               .populate("toBankId", "_id name")
               .sort(sortQuery)
@@ -794,14 +771,12 @@ export const getIncomeExpance = async (req, res) => {
             populate: {
               path: "products.mediator",
               select: "_id name",
-              match: { isDeleted: false },
             },
           })
           .populate("supplierId", "firstName lastName company supplierId")
           .populate({
             path: "bankId",
             select: "_id name",
-            match: { isDeleted: false },
           })
           .sort(sortQuery)
           .lean(),
@@ -828,6 +803,8 @@ export const getIncomeExpance = async (req, res) => {
           orderId: formattedOrder,
           clientName: p.orderId?.clientName || "",
           status: "credited_to_bank",
+          isDeleted: p.isDeleted || false,
+          deletedAt: p.deletedAt || null,
         });
       });
       depositEntriesBoth.forEach((e) => {
@@ -836,6 +813,7 @@ export const getIncomeExpance = async (req, res) => {
           _id: e._id,
           incExpType: 1,
           source: "manual",
+          manualType: "deposit",
           date: e.date,
           receivedAmount: roundAmount(e.amount || 0),
           description: e.description || "Manual deposit",
@@ -844,6 +822,8 @@ export const getIncomeExpance = async (req, res) => {
           orderId: null,
           clientName: "",
           status: "reserved",
+          isDeleted: e.isDeleted || false,
+          deletedAt: e.deletedAt || null,
         });
       });
       transferEntriesBoth.forEach((e) => {
@@ -853,6 +833,7 @@ export const getIncomeExpance = async (req, res) => {
           _id: e._id,
           incExpType: 1,
           source: "manual",
+          manualType: "transfer",
           date: e.date,
           receivedAmount: roundAmount(e.amount || 0),
           description: e.description || "Transfer received",
@@ -861,6 +842,8 @@ export const getIncomeExpance = async (req, res) => {
           orderId: null,
           clientName: "",
           status: "reserved",
+          isDeleted: e.isDeleted || false,
+          deletedAt: e.deletedAt || null,
         });
       });
 
@@ -892,6 +875,11 @@ export const getIncomeExpance = async (req, res) => {
           status: item.status,
           bankId,
           bank,
+          source: item.manualBankEntryId ? "manual" : "expense",
+          manualBankEntryId: item.manualBankEntryId ? String(item.manualBankEntryId) : null,
+          manualType: item.manualType || null,
+          isDeleted: item.isDeleted || false,
+          deletedAt: item.deletedAt || null,
         };
       });
       // 🔍 Combined filtering
@@ -1161,14 +1149,12 @@ export const addExpanseEntry = async (req, res) => {
         populate: {
           path: "products.mediator",
           select: "_id name",
-          match: { isDeleted: false },
         },
       })
       .populate("supplierId", "firstName lastName company")
       .populate({
         path: "bankId",
         select: "_id name",
-        match: { isDeleted: false },
       });
 
     // ✅ Invalidate cache after expense creation
@@ -1373,14 +1359,12 @@ export const editExpanseEntry = async (req, res) => {
         populate: {
           path: "products.mediator",
           select: "_id name",
-          match: { isDeleted: false },
         },
       })
       .populate("supplierId", "firstName lastName company")
       .populate({
         path: "bankId",
         select: "_id name",
-        match: { isDeleted: false },
       });
 
     const expenseResponse = docToPlainWithBank(populatedExpense);
@@ -1464,7 +1448,6 @@ export const addExtraExpense = async (req, res) => {
       .populate({
         path: "bankId",
         select: "_id name",
-        match: { isDeleted: false },
       });
 
     // ✅ Invalidate cache after extra expense creation
@@ -1549,7 +1532,6 @@ export const editExtraExpense = async (req, res) => {
       .populate({
         path: "bankId",
         select: "_id name",
-        match: { isDeleted: false },
       });
 
     // ✅ Invalidate cache after extra expense update
@@ -1594,14 +1576,12 @@ export const getExpenseById = async (req, res) => {
         populate: {
           path: "products.mediator",
           select: "_id name",
-          match: { isDeleted: false },
         },
       })
       .populate("supplierId", "firstName lastName company")
       .populate({
         path: "bankId",
         select: "_id name",
-        match: { isDeleted: false },
       });
 
     if (!expense) {
@@ -1692,6 +1672,15 @@ export const softDeleteExpense = async (req, res) => {
     expense.deletedAt = new Date();
     await expense.save();
 
+    // If this expense was created from a manual bank entry (withdrawal/transfer),
+    // soft-delete the linked manual entry too so the ledger stays consistent.
+    if (expense.manualBankEntryId) {
+      await ManualBankEntry.updateOne(
+        { _id: expense.manualBankEntryId },
+        { $set: { isDeleted: true, deletedAt: new Date() } }
+      );
+    }
+
     const { invalidateCache } = await import("../util/cacheHelper.js");
     invalidateCache("income");
     invalidateCache("dashboard");
@@ -1711,6 +1700,63 @@ export const softDeleteExpense = async (req, res) => {
   }
 };
 
+// Restore expense (undo soft delete)
+export const restoreExpense = async (req, res) => {
+  try {
+    const { expenseId } = req.params;
+
+    if (!expenseId) {
+      return res.status(400).json({
+        status: 400,
+        message: "expenseId is required",
+      });
+    }
+
+    const expense = await ExpanceIncome.findById(expenseId);
+    if (!expense) {
+      return res.status(404).json({
+        status: 404,
+        message: "Expense entry not found",
+      });
+    }
+
+    if (!expense.isDeleted) {
+      return res.status(400).json({
+        status: 400,
+        message: "Expense is not deleted",
+      });
+    }
+
+    expense.isDeleted = false;
+    expense.deletedAt = null;
+    await expense.save();
+
+    if (expense.manualBankEntryId) {
+      await ManualBankEntry.updateOne(
+        { _id: expense.manualBankEntryId },
+        { $set: { isDeleted: false, deletedAt: null } }
+      );
+    }
+
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("income");
+    invalidateCache("dashboard");
+
+    return res.status(200).json({
+      status: 200,
+      message: "Expense restored successfully",
+      data: { _id: expense._id, isDeleted: false },
+    });
+  } catch (error) {
+    console.error("Error restoring expense:", error);
+    return res.status(500).json({
+      status: 500,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+};
+
 export default {
   getIncomeExpance,
   addExpanseEntry,
@@ -1719,4 +1765,5 @@ export default {
   editExtraExpense,
   getExpenseById,
   softDeleteExpense,
+  restoreExpense,
 };

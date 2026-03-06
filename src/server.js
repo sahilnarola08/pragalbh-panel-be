@@ -1,6 +1,4 @@
-import dotenv from "dotenv";
-dotenv.config();
-
+import "dotenv/config"; // Must be first to load env vars before other imports
 import app from "./app.js";
 import connectDB from "./config/db.js";
 import { runRbacSeed } from "./services/permissionSeedService.js";

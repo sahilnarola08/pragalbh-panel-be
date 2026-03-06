@@ -54,6 +54,21 @@ const expanseIncomeSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    /** Optional: link back to manual bank entry (withdrawal/transfer) */
+    manualBankEntryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ManualBankEntry",
+      required: false,
+      index: true,
+      default: null,
+    },
+    manualType: {
+      type: String,
+      required: false,
+      enum: ["withdrawal", "transfer"],
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

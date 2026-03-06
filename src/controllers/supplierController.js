@@ -86,8 +86,7 @@ const buildSupplierAggregationPipeline = ({
                                             "$_id",
                                             { $ifNull: ["$$bankIds", []] }
                                         ]
-                                    },
-                                    { $eq: ["$isDeleted", false] }
+                                    }
                                 ]
                             }
                         }

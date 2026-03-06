@@ -4,6 +4,7 @@ import Order from "../models/order.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import mongoose from "mongoose";
 import { PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
+import { getUsdToInrRate } from "../services/currencyService.js";
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -156,7 +157,19 @@ export const getPaymentsByOrderId = async (req, res) => {
     if (!orderId || !mongoose.Types.ObjectId.isValid(orderId)) {
       return sendErrorResponse({ res, status: 400, message: "Valid orderId is required" });
     }
-    const list = await Payment.find({ orderId, isDeleted: { $ne: true } })
+    
+    // Check if order is deleted
+    const order = await Order.findById(orderId).select("isDeleted").lean();
+    if (!order) {
+      return sendErrorResponse({ res, status: 404, message: "Order not found" });
+    }
+
+    const filter = { orderId };
+    if (!order.isDeleted) {
+      filter.isDeleted = { $ne: true };
+    }
+
+    const list = await Payment.find(filter)
       .sort({ createdAt: 1 })
       .populate("mediatorId", "name commissionType commissionValue settlementDelayDays")
       .populate("bankId", "name")
@@ -170,12 +183,19 @@ export const getPaymentsByOrderId = async (req, res) => {
 
 export const listPayments = async (req, res) => {
   try {
-    const { page = 1, limit = 20, orderId, paymentStatus } = req.query;
+    const { page = 1, limit = 20, orderId, paymentStatus, includeDeleted } = req.query;
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
-    const filter = { isDeleted: { $ne: true } };
+    
+    const filter = {};
+    const showDeleted = includeDeleted === "true" || includeDeleted === true;
+    if (!showDeleted) {
+      filter.isDeleted = { $ne: true };
+    }
+
     if (orderId && mongoose.Types.ObjectId.isValid(orderId)) filter.orderId = orderId;
     if (paymentStatus && Object.values(PAYMENT_LIFECYCLE_STATUS).includes(paymentStatus)) filter.paymentStatus = paymentStatus;
+    
     const [items, totalCount] = await Promise.all([
       Payment.find(filter)
         .sort({ createdAt: -1 })
@@ -205,23 +225,71 @@ export const deletePayment = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return sendErrorResponse({ res, status: 400, message: "Invalid payment ID" });
     }
-    const doc = await Payment.findByIdAndDelete(id);
+    const doc = await Payment.findById(id);
     if (!doc) {
       return sendErrorResponse({ res, status: 404, message: "Payment not found" });
     }
-    // Remove Income entries created from this credited payment
-    return sendSuccessResponse({ res, status: 200, data: { _id: id }, message: "Payment deleted successfully" });
+    if (doc.isDeleted) {
+      return sendErrorResponse({ res, status: 400, message: "Payment is already deleted" });
+    }
+
+    doc.isDeleted = true;
+    doc.deletedAt = new Date();
+    await doc.save();
+
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("income");
+    invalidateCache("dashboard");
+
+    return sendSuccessResponse({
+      res,
+      status: 200,
+      data: { _id: id, isDeleted: true, deletedAt: doc.deletedAt },
+      message: "Payment deleted successfully",
+    });
   } catch (err) {
     console.error("Delete payment error:", err);
     return sendErrorResponse({ res, status: 500, message: err.message || "Failed to delete payment" });
   }
 };
 
+export const restorePayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendErrorResponse({ res, status: 400, message: "Invalid payment ID" });
+    }
+    const doc = await Payment.findById(id);
+    if (!doc) {
+      return sendErrorResponse({ res, status: 404, message: "Payment not found" });
+    }
+    if (!doc.isDeleted) {
+      return sendErrorResponse({ res, status: 400, message: "Payment is not deleted" });
+    }
+
+    doc.isDeleted = false;
+    doc.deletedAt = null;
+    await doc.save();
+
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("income");
+    invalidateCache("dashboard");
+
+    return sendSuccessResponse({
+      res,
+      status: 200,
+      data: { _id: id, isDeleted: false },
+      message: "Payment restored successfully",
+    });
+  } catch (err) {
+    console.error("Restore payment error:", err);
+    return sendErrorResponse({ res, status: 500, message: err.message || "Failed to restore payment" });
+  }
+};
+
 export const getCurrencyRate = async (req, res) => {
   try {
-    const response = await fetch("https://api.frankfurter.app/latest?from=USD&to=INR");
-    const data = await response.json();
-    const rate = data?.rates?.INR != null ? Number(data.rates.INR) : null;
+    const rate = await getUsdToInrRate();
     if (rate == null || isNaN(rate)) {
       return sendErrorResponse({ res, status: 502, message: "Could not fetch USD to INR rate" });
     }
@@ -244,5 +312,6 @@ export default {
   getPaymentsByOrderId,
   listPayments,
   deletePayment,
+  restorePayment,
   getCurrencyRate,
 };
