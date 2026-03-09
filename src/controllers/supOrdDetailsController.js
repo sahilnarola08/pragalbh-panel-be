@@ -189,12 +189,10 @@ export const getSupplierOrderDetails = async (req, res) => {
         path: "orderId",
         select:
           "orderId products.productName products.orderDate products.dispatchDate products.purchasePrice products.sellingPrice isDeleted",
-        match: { isDeleted: { $ne: true } }, // Exclude deleted orders
       })
       .populate({
         path: "bankId",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .sort(sortObj)
       .skip(offset)
@@ -216,7 +214,6 @@ export const getSupplierOrderDetails = async (req, res) => {
       .populate({
         path: "advancePayment.bankId",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .lean();
 
@@ -237,12 +234,10 @@ export const getSupplierOrderDetails = async (req, res) => {
         path: "orderId",
         select:
           "orderId products.productName products.orderDate products.dispatchDate products.purchasePrice products.sellingPrice isDeleted",
-        match: { isDeleted: { $ne: true } }, // Exclude deleted orders
       })
       .populate({
         path: "bankId",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .lean();
     

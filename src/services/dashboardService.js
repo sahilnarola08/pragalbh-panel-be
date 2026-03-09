@@ -79,7 +79,7 @@ export async function getOverview() {
         { $project: { _id: 0, sum: { $round: ["$sum", 2] } } },
       ]).exec(),
       ManualBankEntry.aggregate([
-        { $match: { $or: [{ type: "deposit" }, { type: "transfer" }] } },
+        { $match: { isDeleted: { $ne: true }, $or: [{ type: "deposit" }, { type: "transfer" }] } },
         { $group: { _id: null, sum: { $sum: { $round: [{ $ifNull: ["$amount", 0] }, 2] } } } },
         { $project: { _id: 0, sum: { $round: ["$sum", 2] } } },
       ]).exec(),
@@ -96,7 +96,7 @@ export async function getOverview() {
         { $project: { _id: 0, sum: { $round: ["$sum", 2] } } },
       ]).exec(),
       ManualBankEntry.aggregate([
-        { $match: { type: "deposit" } },
+        { $match: { type: "deposit", isDeleted: { $ne: true } } },
         { $group: { _id: null, sum: { $sum: { $round: [{ $ifNull: ["$amount", 0] }, 2] } } } },
         { $project: { _id: 0, sum: { $round: ["$sum", 2] } } },
       ]).exec(),
@@ -199,7 +199,7 @@ export async function getFinance(filter = "monthly") {
         { $project: { _id: 0, in: { $round: ["$in", 2] } } },
       ]).exec(),
       ManualBankEntry.aggregate([
-        { $match: { date: { $gte: start, $lte: end } } },
+        { $match: { date: { $gte: start, $lte: end }, isDeleted: { $ne: true } } },
         { $group: { _id: "$type", sum: { $sum: "$amount" } } },
       ]).exec(),
       ExpanseIncome.aggregate([
@@ -229,11 +229,11 @@ export async function getFinance(filter = "monthly") {
       { $project: { _id: 0, totalCommissionUSD: { $round: ["$totalCommissionUSD", 2] }, count: 1 } },
     ]).exec(),
     ManualBankEntry.aggregate([
-      { $match: { type: "deposit" } },
+      { $match: { type: "deposit", isDeleted: { $ne: true } } },
       { $group: { _id: "$bankId", totalIn: { $sum: "$amount" } } },
     ]).exec().then(async (depositByBank) => {
       const withdrawalByBank = await ManualBankEntry.aggregate([
-        { $match: { type: "withdrawal" } },
+        { $match: { type: "withdrawal", isDeleted: { $ne: true } } },
         { $group: { _id: "$bankId", totalOut: { $sum: "$amount" } } },
       ]).exec();
       const creditByBank = await Payment.aggregate([

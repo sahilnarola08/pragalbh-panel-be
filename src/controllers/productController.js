@@ -104,7 +104,6 @@ const createProduct = async (req, res) => {
     await newProduct.populate({
       path: "category",
       select: "_id name",
-      match: { isDeleted: false },
     });
 
     // ✅ Invalidate cache after product creation
@@ -256,7 +255,6 @@ const getAllProducts = async (req, res) => {
         .populate({
           path: "category",
           select: "_id name",
-          match: { isDeleted: false },
         })
         .lean(),
       Product.countDocuments(filter)
@@ -382,7 +380,6 @@ const updateProduct = async (req, res, next) => {
       .populate({
         path: "category",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .lean();
 
@@ -453,7 +450,6 @@ const getProductById = async (req, res, next) => {
       .populate({
         path: "category",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .lean();
     

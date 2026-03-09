@@ -125,7 +125,8 @@ const getAllMasters = async (req, res, next) => {
             search = "",
             sortField = "name",
             sortOrder = "asc",
-            masterType = "" // Add master type filter
+            masterType = "", // Add master type filter
+            isDeleted // Optional: "true" to see deleted, otherwise active
         } = req.query;
 
         // Parse page and limit to integers with proper defaults and validation
@@ -133,8 +134,15 @@ const getAllMasters = async (req, res, next) => {
         const limitNum = Math.max(1, parseInt(limit, 10) || 10);
         const offset = (pageNum - 1) * limitNum;
 
-        // Build match stage for filtering - only not deleted masters
-        const matchStage = { isDeleted: false };
+        // Build match stage for filtering
+        const matchStage = {};
+
+        // Handle isDeleted filter
+        if (isDeleted === 'true') {
+            matchStage.isDeleted = true;
+        } else {
+            matchStage.isDeleted = false;
+        }
 
         // Filter by master type (master asset ID)
         if (masterType && masterType.trim().length > 0) {
@@ -204,8 +212,7 @@ const getMasterById = async (req, res, next) => {
         const { id } = req.params;
 
         const master = await Master.findOne({ 
-            _id: id, 
-            isDeleted: false 
+            _id: id
         })
         .select("-__v")
         .populate('master', 'name');

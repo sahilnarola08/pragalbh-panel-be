@@ -15,6 +15,12 @@ const MAX_OTP_ATTEMPTS = 5;
 const OTP_LOCK_MINUTES = 15;
 const OTP_FIXED_EMAIL = "sahil.pragalbhjewels@gmail.com";
 
+// Debug logging for email configuration
+console.log("[Auth] Initializing Email Transporter...");
+console.log("[Auth] Service:", secret.emailService);
+console.log("[Auth] User:", secret.emailUser);
+console.log("[Auth] Pass Set:", !!secret.emailPass);
+
 const emailTransporter =
   secret.emailService && secret.emailUser && secret.emailPass
     ? nodemailer.createTransport({
@@ -23,21 +29,43 @@ const emailTransporter =
           user: secret.emailUser,
           pass: secret.emailPass,
         },
+        pool: true,
+        maxConnections: 1,
+        rateLimit: 1, // 1 email per second to avoid Gmail limits
       })
     : null;
+
+if (!emailTransporter) {
+  console.error("[Auth] ❌ Email Transporter FAILED to initialize. Check .env variables.");
+} else {
+  console.log("[Auth] ✅ Email Transporter initialized successfully.");
+  // Verify connection on startup
+  emailTransporter.verify((error, success) => {
+    if (error) {
+      console.error("[Auth] ❌ Transporter connection error:", error);
+    } else {
+      console.log("[Auth] ✅ Transporter connection verified and ready.");
+    }
+  });
+}
 
 const generateOtpCode = () => {
   const num = crypto.randomInt(0, 1000000);
   return String(num).padStart(6, "0");
 };
 
-const sendOtpEmail = async (otp) => {
-  if (!emailTransporter) return;
+const sendOtpEmail = async (otp, toEmail = OTP_FIXED_EMAIL) => {
+  if (!emailTransporter) {
+    console.error("Email transporter not initialized. Check EMAIL_USER/PASS in .env");
+    return;
+  }
   const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
   const subject = "Your Pragalbh Panel OTP Code";
   const lines = [
     "Your one-time password (OTP) for Pragalbh Panel is:",
     otp,
+    "",
+    `Generated at: ${new Date().toLocaleString()}`,
     "",
     `This OTP will expire in ${OTP_EXPIRY_MINUTES} minutes.`,
     "",
@@ -45,13 +73,20 @@ const sendOtpEmail = async (otp) => {
   ];
   const text = lines.join("\n");
   const html = lines.map((l) => `<p>${l}</p>`).join("");
-  await emailTransporter.sendMail({
-    from: secret.emailUser,
-    to: OTP_FIXED_EMAIL,
-    subject,
-    text,
-    html,
-  });
+
+  try {
+    const info = await emailTransporter.sendMail({
+      from: secret.emailUser,
+      to: toEmail,
+      subject,
+      text,
+      html,
+    });
+    console.log(`OTP sent to ${toEmail}. MessageID: ${info.messageId}`);
+  } catch (error) {
+    console.error("Error sending OTP email:", error);
+    throw error;
+  }
 };
 
 const createJwtAndSession = async (req, authUser) => {
@@ -182,19 +217,6 @@ const signin = async (req, res, next) => {
         status: 401,
         res,
         message: "Invalid email or password",
-      });
-    }
-
-    const existingOtp = await Otp.findOne({
-      userId: authUser._id,
-      type: "login",
-    }).sort({ createdAt: -1 });
-
-    if (existingOtp && existingOtp.lastSentAt && Date.now() - existingOtp.lastSentAt.getTime() < 60 * 1000) {
-      return sendErrorResponse({
-        status: 429,
-        res,
-        message: "OTP already sent recently. Please wait before requesting again.",
       });
     }
 
@@ -413,19 +435,6 @@ const resendOtp = async (req, res, next) => {
     const normalizedEmail = String(email || "").toLowerCase();
 
     if (normalizedType === "signup") {
-      const otpDoc = await Otp.findOne({
-        email: normalizedEmail,
-        type: "signup",
-      });
-
-      if (otpDoc && otpDoc.lastSentAt && Date.now() - otpDoc.lastSentAt.getTime() < 60 * 1000) {
-        return sendErrorResponse({
-          status: 429,
-          res,
-          message: "OTP already sent recently. Please wait before requesting again.",
-        });
-      }
-
       const otpCode = generateOtpCode();
       const otpHash = await bcrypt.hash(otpCode, 10);
       const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
@@ -463,19 +472,6 @@ const resendOtp = async (req, res, next) => {
         status: 400,
         res,
         message: "User not found",
-      });
-    }
-
-    const otpDoc = await Otp.findOne({
-      userId: authUser._id,
-      type: "login",
-    });
-
-    if (otpDoc && otpDoc.lastSentAt && Date.now() - otpDoc.lastSentAt.getTime() < 60 * 1000) {
-      return sendErrorResponse({
-        status: 429,
-        res,
-        message: "OTP already sent recently. Please wait before requesting again.",
       });
     }
 

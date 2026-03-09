@@ -5,9 +5,18 @@ import { SYSTEM_PERMISSIONS } from "../data/permissionSeed.js";
 import { invalidatePermissionCache } from "./permissionResolver.js";
 
 const SUPER_ADMIN_ROLE = "SuperAdmin";
-const SUPER_ADMIN_EMAIL = "sahilnarola123@gmail.com";
-const SUPER_ADMIN_PASSWORD = "Narayan@2003";
-const SUPER_ADMIN_NAME = "Super Admin";
+const SUPER_ADMIN_USERS = [
+  {
+    name: "Super Admin",
+    email: "sahilnarola123@gmail.com",
+    password: "Narayan@2003",
+  },
+  {
+    name: "Admin Staging",
+    email: "adminstaging@yopmail.com",
+    password: "Admin@123",
+  },
+];
 
 export async function seedPermissions() {
   const existing = await Permission.countDocuments();
@@ -55,31 +64,32 @@ export async function ensureSuperAdminRole() {
   return role;
 }
 
-export async function ensureSuperAdminUser(superAdminRole) {
-  const email = SUPER_ADMIN_EMAIL.toLowerCase();
-  let user = await Auth.findOne({ email, isDeleted: false });
-  if (!user) {
-    user = await Auth.create({
-      name: SUPER_ADMIN_NAME,
-      email,
-      password: SUPER_ADMIN_PASSWORD,
-      roleId: superAdminRole._id,
-      isActive: true,
-    });
-    console.log("[RBAC] Super Admin user created:", email);
-  } else {
-    user.roleId = superAdminRole._id;
-    user.isActive = true;
-    user.name = user.name || SUPER_ADMIN_NAME;
-    user.password = SUPER_ADMIN_PASSWORD;
-    await user.save();
-    console.log("[RBAC] Super Admin user updated:", email);
+export async function ensureSuperAdminUsers(superAdminRole) {
+  for (const u of SUPER_ADMIN_USERS) {
+    const email = u.email.toLowerCase();
+    let user = await Auth.findOne({ email, isDeleted: false });
+    if (!user) {
+      user = await Auth.create({
+        name: u.name,
+        email,
+        password: u.password,
+        roleId: superAdminRole._id,
+        isActive: true,
+      });
+      console.log("[RBAC] Super Admin user created:", email);
+    } else {
+      user.roleId = superAdminRole._id;
+      user.isActive = true;
+      user.name = user.name || u.name;
+      user.password = u.password;
+      await user.save();
+      console.log("[RBAC] Super Admin user updated:", email);
+    }
   }
-  return user;
 }
 
 export async function runRbacSeed() {
   await seedPermissions();
   const superAdminRole = await ensureSuperAdminRole();
-  await ensureSuperAdminUser(superAdminRole);
+  await ensureSuperAdminUsers(superAdminRole);
 }

@@ -10,7 +10,13 @@ router.use(authenticateJWT);
 
 router.post("/create", authorize("orders.create"), orderValidationSchema, orderController.createOrder);
 router.get("/all", authorize("orders.view"), orderController.getAllOrders);
-router.get("/get-order-by-id/:id", authorize("orders.view"), validateOrderDelete, orderController.getOrderById);
+// Order Management (production role) needs to view order basics from Kanban cards.
+router.get(
+  "/get-order-by-id/:id",
+  authorizeAny(["orders.view", "order_management.view"]),
+  validateOrderDelete,
+  orderController.getOrderById
+);
 router.put("/update-order/:id", authorize("orders.edit"), validateOrderUpdate, orderController.updateOrder);
 router.delete("/delete-order/:id", authorize("orders.delete"), validateOrderDelete, orderController.deleteOrder);
 router.post("/bulk-delete-orders", authorize("orders.delete"), orderController.bulkDeleteOrders);

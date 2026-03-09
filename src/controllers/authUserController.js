@@ -1,6 +1,7 @@
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import * as authUserService from "../services/authUserService.js";
 import { logAudit } from "../services/auditService.js";
+import { clearCacheByRoute } from "../middlewares/cache.js";
 
 export async function getUsers(req, res, next) {
   try {
@@ -16,6 +17,8 @@ export async function createUser(req, res, next) {
     const user = await authUserService.createUser(req.body, req);
     await logAudit(req, "USER_CREATE", "users", { userId: user._id, email: user.email });
     const out = user.toJSON ? user.toJSON() : user;
+    // Invalidate cached GET /users responses so the new user appears immediately.
+    clearCacheByRoute("/users");
     sendSuccessResponse({ res, data: out, message: "User created", status: 201 });
   } catch (e) {
     if (e.status) return sendErrorResponse({ status: e.status, res, message: e.message });
@@ -29,6 +32,7 @@ export async function updateUser(req, res, next) {
     if (!user) return sendErrorResponse({ status: 404, res, message: "User not found" });
     await logAudit(req, "USER_UPDATE", "users", { userId: user._id });
     const out = user.toJSON ? user.toJSON() : user;
+    clearCacheByRoute("/users");
     sendSuccessResponse({ res, data: out, message: "User updated", status: 200 });
   } catch (e) {
     if (e.status) return sendErrorResponse({ status: e.status, res, message: e.message });
@@ -41,6 +45,7 @@ export async function setUserRole(req, res, next) {
     const user = await authUserService.setUserRole(req.params.id, req.body.roleId, req);
     if (!user) return sendErrorResponse({ status: 404, res, message: "User not found" });
     await logAudit(req, "USER_ROLE_UPDATE", "users", { userId: user._id, roleId: req.body.roleId });
+    clearCacheByRoute("/users");
     sendSuccessResponse({ res, data: user, message: "Role assigned", status: 200 });
   } catch (e) {
     next(e);
@@ -52,6 +57,7 @@ export async function setUserPermissions(req, res, next) {
     const user = await authUserService.setUserPermissions(req.params.id, req.body.customPermissions, req);
     if (!user) return sendErrorResponse({ status: 404, res, message: "User not found" });
     await logAudit(req, "USER_PERMISSIONS_UPDATE", "users", { userId: user._id });
+    clearCacheByRoute("/users");
     sendSuccessResponse({ res, data: user, message: "Permissions updated", status: 200 });
   } catch (e) {
     next(e);

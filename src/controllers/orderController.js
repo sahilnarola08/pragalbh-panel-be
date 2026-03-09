@@ -14,6 +14,7 @@ import Payment from "../models/payment.js";
 import { DEFAULT_PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 import { formatCurrency } from "../util/currencyFormat.js";
 import orderProfitService from "../services/orderProfitService.js";
+import * as columnPermissionService from "../services/columnPermissionService.js";
 import nodemailer from "nodemailer";
 import { secret } from "../config/secret.js";
 import Auth from "../models/auth.js";
@@ -186,7 +187,6 @@ const normalizeMasterIdOrThrow = async (id, fieldName = "masterId") => {
 
   const master = await Master.findOne({
     _id: rawId,
-    isDeleted: false,
   }).select("_id name");
 
   if (!master) {
@@ -481,12 +481,10 @@ export const createOrder = async (req, res, next) => {
       .populate({
         path: "products.orderPlatform",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .populate({
         path: "products.mediator",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .populate({
         path: "products.mediators",
@@ -544,7 +542,6 @@ const getAllOrders = async (req, res) => {
       const escapedForRegex = trimmedSearch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       matchingPlatformIds = await Master.find({
         name: new RegExp(escapedForRegex, "i"),
-        isDeleted: false,
       }).select("_id");
 
       const searchRegex = new RegExp(escapedForRegex, "i");
@@ -660,12 +657,10 @@ const getAllOrders = async (req, res) => {
       .populate({
         path: "products.orderPlatform",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .populate({
         path: "products.mediator",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .lean();
 
@@ -699,7 +694,7 @@ const getAllOrders = async (req, res) => {
       });
 
       const orderIdStr = order?._id ? String(order._id) : "";
-      const summary = profitSummaryMap.get(orderIdStr) || { netProfit: 0, totalActualINR: 0, totalExpenses: 0, totalExpectedINR: 0, estimatedProfit: 0, paymentStatus: "Unpaid" };
+      const summary = profitSummaryMap.get(orderIdStr) || { netProfit: 0, totalActualINR: 0, totalExpenses: 0, totalExpectedINR: 0, estimatedProfit: 0, paymentStatus: "Unpaid", fullyCreditedToBank: false };
 
       return {
         ...order,
@@ -710,8 +705,19 @@ const getAllOrders = async (req, res) => {
         totalExpenses: summary.totalExpenses,
         totalExpectedINR: summary.totalExpectedINR,
         estimatedProfit: summary.estimatedProfit,
+        fullyCreditedToBank: summary.fullyCreditedToBank || false,
       };
     });
+
+    // Backend column permission filter: never send restricted fields
+    const roleId = req.user?.roleId?._id || req.user?.roleId;
+    const visibleColumns = roleId
+      ? await columnPermissionService.getVisibleColumns(roleId, "orders", "order_list")
+      : null;
+    const finalOrders = columnPermissionService.filterOrdersForColumnPermissions(
+      formattedOrders,
+      visibleColumns
+    );
 
     // Set cache-control headers to prevent browser caching (304 responses)
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -722,7 +728,7 @@ const getAllOrders = async (req, res) => {
       status: 200,
       res,
       data: {
-        orders: formattedOrders,
+        orders: finalOrders,
         totalCount: totalOrders,
         page: pageNum,
         limit: limitNum,
@@ -784,8 +790,7 @@ const updateOrder = async (req, res, next) => {
           { firstName: { $regex: updateData.clientName.trim(), $options: "i" } },
           { lastName: { $regex: updateData.clientName.trim(), $options: "i" } },
           { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.clientName.trim(), options: "i" } } }
-        ],
-        isDeleted: false
+        ]
       }).lean();
 
       if (!existingClient) {
@@ -805,8 +810,7 @@ const updateOrder = async (req, res, next) => {
           { lastName: { $regex: updateData.supplier.trim(), $options: "i" } },
           { company: { $regex: updateData.supplier.trim(), $options: "i" } },
           { $expr: { $regexMatch: { input: { $concat: ["$firstName", " ", "$lastName"] }, regex: updateData.supplier.trim(), options: "i" } } }
-        ],
-        isDeleted: false
+        ]
       }).lean();
 
       if (!existingSupplier) {
@@ -828,12 +832,10 @@ const updateOrder = async (req, res, next) => {
 
       const [existingProducts, existingMasters, existingMediatorsList] = await Promise.all([
         Product.find({
-          productName: { $in: productNames },
-          isDeleted: false
+          productName: { $in: productNames }
         }).select("productName").lean(),
         masterIds.length > 0 ? Master.find({
-          _id: { $in: masterIds },
-          isDeleted: false
+          _id: { $in: masterIds }
         }).select("_id name").lean() : [],
         uniqueMediatorIds.length > 0 ? Mediator.find({ _id: { $in: uniqueMediatorIds } }).select("_id name").lean() : []
       ]);
@@ -947,12 +949,10 @@ const updateOrder = async (req, res, next) => {
       .populate({
         path: "products.orderPlatform",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .populate({
         path: "products.mediator",
         select: "_id name",
-        match: { isDeleted: false },
       })
       .lean();
 
@@ -1312,6 +1312,35 @@ const getOrderById = async (req, res, next) => {
       });
     }
 
+    // Attach client contact details when possible (used by Order Management card details modal).
+    // Orders store clientName/address as strings; clients live in User collection.
+    let clientDetails = null;
+    try {
+      const clientName = String(order.clientName || "").trim();
+      if (clientName) {
+        clientDetails = await User.findOne({
+          $or: [
+            { firstName: { $regex: clientName, $options: "i" } },
+            { lastName: { $regex: clientName, $options: "i" } },
+            {
+              $expr: {
+                $regexMatch: {
+                  input: { $concat: ["$firstName", " ", "$lastName"] },
+                  regex: clientName,
+                  options: "i",
+                },
+              },
+            },
+          ],
+          isDeleted: false,
+        })
+          .select("firstName lastName email contactNumber address")
+          .lean();
+      }
+    } catch {
+      clientDetails = null;
+    }
+
     const profitSummary = await orderProfitService.getOrderProfitSummary(String(resolved._id));
 
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -1320,7 +1349,7 @@ const getOrderById = async (req, res, next) => {
 
     sendSuccessResponse({
       res,
-      data: { ...order, profitSummary: profitSummary || undefined },
+      data: { ...order, clientDetails: clientDetails || undefined, profitSummary: profitSummary || undefined },
       message: "Order retrieved successfully",
       status: 200
     });
@@ -1413,9 +1442,9 @@ const getKanbanData = async (req, res) => {
       }
     }
 
-    // ✅ Optimized Kanban query with lean() and selective fields (exclude soft-deleted orders)
+    // ✅ Same as order list: only non-deleted orders (isDeleted: false). Exclude soft-deleted so Kanban matches Order table.
     const promises = statuses.map(async (status) => {
-      const queryFilter = { status, isDeleted: { $ne: true }, ...dateFilter };
+      const queryFilter = { status, isDeleted: false, ...dateFilter };
       const orders = await Order.find(queryFilter)
         .select("_id clientName address products status trackingId courierCompany createdAt checklist shippingCost")
         .populate({
