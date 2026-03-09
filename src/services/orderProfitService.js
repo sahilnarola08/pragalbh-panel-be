@@ -196,10 +196,12 @@ export const getOrderExpenseEntries = async (orderId) => {
 
 /**
  * Bulk: get net profit and payment status per order (for order list).
- * Returns Map<orderIdStr, { netProfit, totalActualINR, totalExpenses, paymentStatus }>.
- * paymentStatus: "Paid" when (1) all payments credited to bank, OR (2) customer has paid in full
- * (total gross USD / expected INR from all payment slots >= order selling) but payment is still
- * in mediator or processing. "Partial" when some payment exists; otherwise "Unpaid".
+ * Returns Map<orderIdStr, { netProfit, totalActualINR, totalExpenses, paymentStatus, fullyCreditedToBank }>.
+ * paymentStatus: "Paid" only when full order amount is covered (total gross USD and expected INR
+ * from payment slots >= order selling). If only partial amount is received (e.g. $300 of $675),
+ * status is "Partial". "Paid" can be (1) all payment slots credited and amount covers selling,
+ * or (2) customer has paid in full but payment is in mediator/processing.
+ * fullyCreditedToBank: true only when amount received covers order selling (so frontend shows exact net profit; otherwise shows "Est.").
  */
 export const getOrderProfitSummaryBulk = async (orderIds) => {
   if (!orderIds || orderIds.length === 0) return new Map();
@@ -356,21 +358,25 @@ export const getOrderProfitSummaryBulk = async (orderIds) => {
       orderSellingUSD = round2(orderSellingUSD);
       orderSellingINR = round2(orderSellingINR);
     }
-    // Paid when: (1) all payments credited to bank, OR (2) customer has paid in full but payment is in mediator/processing.
-    let paymentStatus = "Unpaid";
-    const fullyCreditedToBank =
-      totalExpectedINR <= 0 ? pay.totalActualINR > 0 : pay.totalActualINR >= totalExpectedINR - 0.01;
-
-    const allCredited = totalPaymentsCount > 0 && pay.creditedCount === totalPaymentsCount;
+    // Paid only when full order amount is covered (by credited payments or payments in transit).
+    // Partial payment (e.g. $300 of $675) must show as "Partial", not "Paid".
     const usdCovered = orderSellingUSD <= 0 || totalGrossUSD >= orderSellingUSD - 0.01;
     const inrCovered = orderSellingINR <= 0 || totalExpectedINR >= orderSellingINR - 0.01;
+    const allCredited = totalPaymentsCount > 0 && pay.creditedCount === totalPaymentsCount;
     const fullPaidInTransit = totalPaymentsCount > 0 && usdCovered && inrCovered;
+    const fullAmountCovered = usdCovered && inrCovered;
 
-    if (allCredited || fullPaidInTransit) {
+    let paymentStatus = "Unpaid";
+    if ((allCredited && fullAmountCovered) || fullPaidInTransit) {
       paymentStatus = "Paid";
     } else if (pay.creditedCount > 0 || totalGrossUSD > 0 || totalExpectedINR > 0) {
       paymentStatus = "Partial";
     }
+
+    // Exact net profit only when full amount received and credited; otherwise frontend shows estimated.
+    const receivedCoversExpected =
+      totalExpectedINR <= 0 ? pay.totalActualINR > 0 : pay.totalActualINR >= totalExpectedINR - 0.01;
+    const fullyCreditedToBank = receivedCoversExpected && fullAmountCovered;
     result.set(orderIdStr, {
       netProfit,
       totalActualINR: pay.totalActualINR,

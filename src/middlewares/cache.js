@@ -79,14 +79,15 @@ export const cacheMiddleware = (req, res, next) => {
     return next();
   }
 
-  // Skip cache for auth, upload, partners, assets, master, and dashboard (must be fresh)
+  // Skip cache for auth, upload, partners, assets, master, dashboard, and kanban (must be fresh)
   if (
     req.path.includes('/auth') ||
     req.path.includes('/upload') ||
     req.originalUrl.startsWith('/partners') ||
     req.originalUrl.startsWith('/assets') ||
     req.originalUrl.startsWith('/master') ||
-    req.originalUrl.startsWith('/dashboard')
+    req.originalUrl.startsWith('/dashboard') ||
+    req.originalUrl.includes('/order/kanban-board')
   ) {
     return next();
   }

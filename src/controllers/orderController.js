@@ -14,6 +14,7 @@ import Payment from "../models/payment.js";
 import { DEFAULT_PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 import { formatCurrency } from "../util/currencyFormat.js";
 import orderProfitService from "../services/orderProfitService.js";
+import * as columnPermissionService from "../services/columnPermissionService.js";
 import nodemailer from "nodemailer";
 import { secret } from "../config/secret.js";
 import Auth from "../models/auth.js";
@@ -708,6 +709,16 @@ const getAllOrders = async (req, res) => {
       };
     });
 
+    // Backend column permission filter: never send restricted fields
+    const roleId = req.user?.roleId?._id || req.user?.roleId;
+    const visibleColumns = roleId
+      ? await columnPermissionService.getVisibleColumns(roleId, "orders", "order_list")
+      : null;
+    const finalOrders = columnPermissionService.filterOrdersForColumnPermissions(
+      formattedOrders,
+      visibleColumns
+    );
+
     // Set cache-control headers to prevent browser caching (304 responses)
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -717,7 +728,7 @@ const getAllOrders = async (req, res) => {
       status: 200,
       res,
       data: {
-        orders: formattedOrders,
+        orders: finalOrders,
         totalCount: totalOrders,
         page: pageNum,
         limit: limitNum,
@@ -1301,6 +1312,35 @@ const getOrderById = async (req, res, next) => {
       });
     }
 
+    // Attach client contact details when possible (used by Order Management card details modal).
+    // Orders store clientName/address as strings; clients live in User collection.
+    let clientDetails = null;
+    try {
+      const clientName = String(order.clientName || "").trim();
+      if (clientName) {
+        clientDetails = await User.findOne({
+          $or: [
+            { firstName: { $regex: clientName, $options: "i" } },
+            { lastName: { $regex: clientName, $options: "i" } },
+            {
+              $expr: {
+                $regexMatch: {
+                  input: { $concat: ["$firstName", " ", "$lastName"] },
+                  regex: clientName,
+                  options: "i",
+                },
+              },
+            },
+          ],
+          isDeleted: false,
+        })
+          .select("firstName lastName email contactNumber address")
+          .lean();
+      }
+    } catch {
+      clientDetails = null;
+    }
+
     const profitSummary = await orderProfitService.getOrderProfitSummary(String(resolved._id));
 
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -1309,7 +1349,7 @@ const getOrderById = async (req, res, next) => {
 
     sendSuccessResponse({
       res,
-      data: { ...order, profitSummary: profitSummary || undefined },
+      data: { ...order, clientDetails: clientDetails || undefined, profitSummary: profitSummary || undefined },
       message: "Order retrieved successfully",
       status: 200
     });
@@ -1402,9 +1442,9 @@ const getKanbanData = async (req, res) => {
       }
     }
 
-    // ✅ Optimized Kanban query with lean() and selective fields (exclude soft-deleted orders)
+    // ✅ Same as order list: only non-deleted orders (isDeleted: false). Exclude soft-deleted so Kanban matches Order table.
     const promises = statuses.map(async (status) => {
-      const queryFilter = { status, isDeleted: { $ne: true }, ...dateFilter };
+      const queryFilter = { status, isDeleted: false, ...dateFilter };
       const orders = await Order.find(queryFilter)
         .select("_id clientName address products status trackingId courierCompany createdAt checklist shippingCost")
         .populate({
