@@ -2,10 +2,8 @@ name: MongoDB Backup
 
 on:
   schedule:
-    # 02:00 AM server time (GitHub runners use UTC by default)
-    # Adjust the cron if you want a different UTC time.
-    - cron: "30 20 * * *" # 20:30 UTC ≈ 02:00 IST
-  # Optional: allow manual run from GitHub UI
+    # 02:00 AM IST (20:30 UTC)
+    - cron: "30 20 * * *"
   workflow_dispatch:
     inputs:
       type:
@@ -21,20 +19,16 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # MongoDB connection (Atlas)
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
-      MONGO_URI: ${{ secrets.MONGODB_URI }}          # used by backupService.js
-      DATABASE_URL: ${{ secrets.MONGODB_URI }}       # used by connectDB.js
+      MONGO_URI: ${{ secrets.MONGODB_URI }}
+      DATABASE_URL: ${{ secrets.MONGODB_URI }}
 
-      # Encryption
       BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
 
-      # Google Drive service account
       GOOGLE_DRIVE_CLIENT_EMAIL: ${{ secrets.GOOGLE_DRIVE_CLIENT_EMAIL }}
       GOOGLE_DRIVE_PRIVATE_KEY: ${{ secrets.GOOGLE_DRIVE_PRIVATE_KEY }}
 
-      # Email (Nodemailer)
-      SERVICE: ${{ secrets.SERVICE }}                # e.g. "gmail"
+      SERVICE: ${{ secrets.SERVICE }}
       EMAIL_USER: ${{ secrets.EMAIL_USER }}
       EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
       BACKUP_NOTIFY_EMAIL: ${{ secrets.BACKUP_NOTIFY_EMAIL }}
@@ -46,7 +40,13 @@ jobs:
       - name: Install MongoDB Database Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y mongodb-database-tools
+          sudo apt-get install -y curl
+
+          curl -L https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.9.4.tgz -o mongo-tools.tgz
+          tar -xzf mongo-tools.tgz
+          sudo mv mongodb-database-tools-*/bin/* /usr/local/bin/
+
+          mongodump --version
 
       - name: Setup Node
         uses: actions/setup-node@v4
