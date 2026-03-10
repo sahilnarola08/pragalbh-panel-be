@@ -1,0 +1,67 @@
+name: MongoDB Backup
+
+on:
+  schedule:
+    # 02:00 AM server time (GitHub runners use UTC by default)
+    # Adjust the cron if you want a different UTC time.
+    - cron: "30 20 * * *" # 20:30 UTC ≈ 02:00 IST
+  # Optional: allow manual run from GitHub UI
+  workflow_dispatch:
+    inputs:
+      type:
+        description: "Backup type"
+        required: false
+        default: "MANUAL"
+      initiatedBy:
+        description: "User ID who triggered the backup"
+        required: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    env:
+      # MongoDB connection (Atlas)
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      MONGO_URI: ${{ secrets.MONGODB_URI }}          # used by backupService.js
+      DATABASE_URL: ${{ secrets.MONGODB_URI }}       # used by connectDB.js
+
+      # Encryption
+      BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+
+      # Google Drive service account
+      GOOGLE_DRIVE_CLIENT_EMAIL: ${{ secrets.GOOGLE_DRIVE_CLIENT_EMAIL }}
+      GOOGLE_DRIVE_PRIVATE_KEY: ${{ secrets.GOOGLE_DRIVE_PRIVATE_KEY }}
+
+      # Email (Nodemailer)
+      SERVICE: ${{ secrets.SERVICE }}                # e.g. "gmail"
+      EMAIL_USER: ${{ secrets.EMAIL_USER }}
+      EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+      BACKUP_NOTIFY_EMAIL: ${{ secrets.BACKUP_NOTIFY_EMAIL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MongoDB Database Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mongodb-database-tools
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install backend dependencies
+        run: |
+          cd pragalbh-panel-be
+          npm ci
+
+      - name: Run backup
+        run: |
+          cd pragalbh-panel-be
+          node src/backup/runBackup.mjs
+        env:
+          BACKUP_TYPE: ${{ github.event_name == 'schedule' && 'AUTO' || (github.event.inputs.type || 'MANUAL') }}
+          BACKUP_CREATED_BY: ${{ github.event.inputs.initiatedBy || '' }}
