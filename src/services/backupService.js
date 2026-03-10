@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import zlib from "zlib";
 import { pipeline } from "stream/promises";
 import nodemailer from "nodemailer";
 import DatabaseBackup from "../models/databaseBackup.js";
@@ -99,7 +100,7 @@ export async function runBackupJob({ backupType, createdBy, backupId }) {
 
   let stderr = "";
   try {
-    const dump = spawn("mongodump", ["--uri", mongoUri, "--archive", "--gzip"], {
+    const dump = spawn("mongodump", ["--uri", mongoUri, "--archive"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -109,8 +110,10 @@ export async function runBackupJob({ backupType, createdBy, backupId }) {
       fs.appendFileSync(logFile, s);
     });
 
+    // gzip level 1 = fastest compression (faster backup, slightly larger file)
+    const gzipFast = zlib.createGzip({ level: 1 });
     const encrypt = createEncryptStream();
-    await pipeline(dump.stdout, encrypt, fs.createWriteStream(tmpFile));
+    await pipeline(dump.stdout, gzipFast, encrypt, fs.createWriteStream(tmpFile));
 
     const exitCode = await new Promise((resolve, reject) => {
       dump.on("error", reject);
@@ -210,8 +213,9 @@ export async function runRestoreJob({ backupId, requestedBy }) {
 
   const encStream = await downloadDriveFileStream(backup.googleDriveFileId);
   const decrypt = createDecryptStream();
+  const gunzip = zlib.createGunzip();
 
-  const restore = spawn("mongorestore", ["--uri", mongoUri, "--archive", "--gzip", "--drop"], {
+  const restore = spawn("mongorestore", ["--uri", mongoUri, "--archive", "--drop"], {
     stdio: ["pipe", "ignore", "pipe"],
   });
 
@@ -220,7 +224,7 @@ export async function runRestoreJob({ backupId, requestedBy }) {
     stderr += d.toString();
   });
 
-  await pipeline(encStream, decrypt, restore.stdin);
+  await pipeline(encStream, decrypt, gunzip, restore.stdin);
   const exitCode = await new Promise((resolve, reject) => {
     restore.on("error", reject);
     restore.on("close", resolve);
