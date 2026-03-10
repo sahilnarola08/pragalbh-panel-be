@@ -23,6 +23,7 @@ import roleRouter from "./roleRoute.js";
 import permissionRouter from "./permissionRoute.js";
 import panelUserRouter from "./panelUserRoute.js";
 import loginSessionRouter from "./loginSessionRoute.js";
+import backupRouter from "./backupRoutes.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
@@ -50,6 +51,7 @@ const routes = (app) => {
   app.use("/targets", targetRouter);
 app.use("/mediators", mediatorRouter);
 app.use("/payments", paymentRouter);
+  app.use("/admin/backup", backupRouter);
 };
 
 export default routes;

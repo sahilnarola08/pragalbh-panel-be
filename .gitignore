@@ -55,6 +55,10 @@ dist/
 # AWS credentials (if mistakenly stored)
 .aws/
 
+# Google service account key (use env vars / GitHub Secrets instead)
+**/google-service-account.json
+**/config/google-service-account.json
+
 # Optional backups
 *.bak
 *.tmp

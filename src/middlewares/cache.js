@@ -87,7 +87,8 @@ export const cacheMiddleware = (req, res, next) => {
     req.originalUrl.startsWith('/assets') ||
     req.originalUrl.startsWith('/master') ||
     req.originalUrl.startsWith('/dashboard') ||
-    req.originalUrl.includes('/order/kanban-board')
+    req.originalUrl.includes('/order/kanban-board') ||
+    req.originalUrl.startsWith('/admin/backup')
   ) {
     return next();
   }
