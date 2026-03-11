@@ -180,9 +180,10 @@ export const getSupplierOrderDetails = async (req, res) => {
     // This avoids an extra query since we need allExpenseData anyway for totals
 
     // find all expense/income records for given supplier with pagination
-    // Filter out records where orderId is null or order is deleted
+    // Filter out records where orderId is null or order is soft-deleted (isDeleted: true)
     const supplierExpanseData = await ExpanceIncome.find({
       supplierId: supplierId,
+      isDeleted: { $ne: true },
     })
       .populate("supplierId", "firstName lastName email phone advancePayment")
       .populate({
@@ -199,8 +200,10 @@ export const getSupplierOrderDetails = async (req, res) => {
       .limit(limitNum)
       .lean();
     
-    // Filter out records where orderId is null (deleted orders)
-    const filteredExpanseData = supplierExpanseData.filter(item => item.orderId !== null && item.orderId !== undefined);
+    // Filter out records where orderId is null or the order itself is soft-deleted
+    const filteredExpanseData = supplierExpanseData.filter(
+      (item) => item.orderId && item.orderId.isDeleted !== true
+    );
 
     if (!filteredExpanseData || filteredExpanseData.length === 0) {
       return res.status(404).json({
@@ -226,9 +229,10 @@ export const getSupplierOrderDetails = async (req, res) => {
     }
 
     // Calculate totals from ALL records (not just paginated ones)
-    // Filter out records where orderId is null or order is deleted
+    // Filter out records where orderId is null or order is soft-deleted (isDeleted: true)
     const allExpenseDataRaw = await ExpanceIncome.find({
       supplierId: supplierId,
+      isDeleted: { $ne: true },
     })
       .populate({
         path: "orderId",
@@ -241,8 +245,10 @@ export const getSupplierOrderDetails = async (req, res) => {
       })
       .lean();
     
-    // Filter out records where orderId is null (deleted orders)
-    const allExpenseData = allExpenseDataRaw.filter(item => item.orderId !== null && item.orderId !== undefined);
+    // Filter out records where orderId is null or the order itself is soft-deleted
+    const allExpenseData = allExpenseDataRaw.filter(
+      (item) => item.orderId && item.orderId.isDeleted !== true
+    );
     
     // Calculate total count from filtered data
     const totalCount = allExpenseData.length;

@@ -393,10 +393,30 @@ export const createOrder = async (req, res, next) => {
       address: resolvedAddress,
       products: processedProducts,
       bankName: bankName || "",
-      paymentAmount: paymentAmount !== undefined && paymentAmount !== null ? Math.round(paymentAmount * 100) / 100 : paymentAmount,
+      paymentAmount:
+        paymentAmount !== undefined && paymentAmount !== null
+          ? Math.round(paymentAmount * 100) / 100
+          : paymentAmount,
       supplier: supplier || "",
       otherDetails: otherDetails || "",
-      shippingCost: shippingCost !== undefined && shippingCost !== null ? Math.round(shippingCost * 100) / 100 : 0,
+      // Supplier/shipping/packaging/other costs are stored at order level
+      // so that profit calculations can include them.
+      shippingCost:
+        shippingCost !== undefined && shippingCost !== null
+          ? Math.round(shippingCost * 100) / 100
+          : 0,
+      supplierCost:
+        supplierCost !== undefined && supplierCost !== null
+          ? Math.round(supplierCost * 100) / 100
+          : 0,
+      packagingCost:
+        packagingCost !== undefined && packagingCost !== null
+          ? Math.round(packagingCost * 100) / 100
+          : 0,
+      otherExpenses:
+        otherExpenses !== undefined && otherExpenses !== null
+          ? Math.round(otherExpenses * 100) / 100
+          : 0,
       trackingId: "",
       courierCompany: "",
       status: DEFAULT_ORDER_STATUS,
