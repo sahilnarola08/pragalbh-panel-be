@@ -24,10 +24,14 @@ import permissionRouter from "./permissionRoute.js";
 import panelUserRouter from "./panelUserRoute.js";
 import loginSessionRouter from "./loginSessionRoute.js";
 import backupRouter from "./backupRoutes.js";
+import googleDriveRouter from "./googleDriveRoutes.js";
+import apiBackupRouter from "./apiBackupRoutes.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
   app.use("/auth", authRouter);
+  app.use("/api/google", googleDriveRouter);
+  app.use("/api/backup", apiBackupRouter);
   app.use("/roles", roleRouter);
   app.use("/permissions", permissionRouter);
   app.use("/sessions", loginSessionRouter);

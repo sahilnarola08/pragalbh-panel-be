@@ -1,12 +1,15 @@
+/**
+ * MongoDB backup: mongodump -> zip (archiver) -> upload to Google Drive (OAuth) -> delete local zip and dump.
+ * Run from CLI: node src/backup/runBackup.mjs (uses first connected Drive integration).
+ */
+
 import "dotenv/config";
 import connectDB from "../config/db.js";
-import { runBackupJob } from "../services/backupService.js";
+import { runBackup } from "../services/runBackupService.js";
 
 async function main() {
   await connectDB();
-  const backupType = process.env.BACKUP_TYPE === "MANUAL" ? "MANUAL" : "AUTO";
-  const createdBy = process.env.BACKUP_CREATED_BY || null;
-  await runBackupJob({ backupType, createdBy });
+  await runBackup(null);
 }
 
 main()
@@ -18,4 +21,3 @@ main()
     console.error("[BackupRunner] Backup failed:", err);
     process.exit(1);
   });
-

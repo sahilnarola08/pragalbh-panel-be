@@ -1,0 +1,61 @@
+# MongoDB native backup via mongodump. Runs daily at 02:00 UTC and on manual trigger.
+# Checkout -> install MongoDB Database Tools -> run backup script -> upload artifact.
+# Target: finish in under 5 minutes.
+
+name: MongoDB Backup
+
+on:
+  # Daily automatic backup at 02:00 UTC
+  schedule:
+    - cron: "0 2 * * *"
+  # Allow manual run from Actions tab
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      MONGO_URI: ${{ secrets.MONGODB_URI }}
+      DATABASE_URL: ${{ secrets.MONGODB_URI }}
+      GOOGLE_DRIVE_CLIENT_EMAIL: ${{ secrets.GOOGLE_DRIVE_CLIENT_EMAIL }}
+      GOOGLE_DRIVE_PRIVATE_KEY: ${{ secrets.GOOGLE_DRIVE_PRIVATE_KEY }}
+
+    steps:
+      # Checkout repository so we can run the backup script
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Install MongoDB Database Tools (includes mongodump) on the runner
+      - name: Install MongoDB Database Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mongodb-database-tools
+          mongodump --version
+
+      # Install zip for creating the backup archive (optional; often pre-installed)
+      - name: Install zip
+        run: sudo apt-get install -y zip
+
+      # Install Node so we can run the backup script (script uses Node for Drive upload)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Run the backup script: mongodump -> zip -> upload to Google Drive (if secrets set)
+      - name: Run backup script
+        run: node src/backup/runBackup.mjs
+
+      # Upload the generated zip as a workflow artifact (for download from Actions tab)
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mongodb-backup
+          path: backups/*.zip

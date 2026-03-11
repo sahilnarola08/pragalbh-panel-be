@@ -60,6 +60,7 @@ dist/
 **/config/google-service-account.json
 
 # Optional backups
+backups/
 *.bak
 *.tmp
 
