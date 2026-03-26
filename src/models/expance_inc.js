@@ -69,6 +69,22 @@ const expanseIncomeSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    /** Optional: categorize expense as part of order-level components (shipping/packaging/other). */
+    componentType: {
+      type: String,
+      required: false,
+      enum: ["shipping", "packaging", "other"],
+      default: null,
+      index: true,
+    },
+    // Optional category label for standalone extra expenses (not linked to a specific order)
+    extraCategoryName: {
+      type: String,
+      required: false,
+      default: null,
+      trim: true,
+      index: true,
+    },
   },
   {
     timestamps: true,
