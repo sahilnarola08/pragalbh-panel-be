@@ -86,9 +86,58 @@ export const getOrderProfitSummary = async (orderId) => {
   // Fetch expense entries (Money paid/expense)
   const expenseEntries = await ExpanseIncome.find(expenseFilter).lean();
 
-  // Sum up all additional expenses from ExpanseIncome (we use paidAmount only for profit)
+  // Sum up all additional expenses from ExpanseIncome (we use paidAmount only for profit).
+  // Component-type expenses (shipping/packaging/other) are represented directly on the Order
+  // via shippingCost, packagingCost and otherExpenses, so we must not double-count them here.
   let totalExpanseIncome = 0;
   for (const exp of expenseEntries) {
+    const type = (exp.componentType || "").toString().toLowerCase();
+    const desc = (exp.description || "").toString().toLowerCase();
+
+    // 1) Explicit componentType flag
+    if (type === "shipping" || type === "packaging" || type === "other") {
+      continue;
+    }
+
+    // 2) Backwards compatibility: older rows without componentType that
+    //    clearly correspond to shipping/packaging/other order-level costs.
+    //    We treat them as components so they aren't double-counted in "extra expenses".
+    const hasShipping = (order.shippingCost ?? 0) > 0;
+    const hasPackaging = (order.packagingCost ?? 0) > 0;
+    const hasOther = (order.otherExpenses ?? 0) > 0;
+
+    if (
+      hasShipping &&
+      (desc === "shipping" ||
+        desc === "shipping cost" ||
+        desc === "shipping charges" ||
+        desc === "courier" ||
+        desc === "delivery")
+    ) {
+      continue;
+    }
+
+    if (
+      hasPackaging &&
+      (desc === "packaging" ||
+        desc === "packaging cost" ||
+        desc === "box / packaging cost" ||
+        desc === "box" ||
+        desc === "box cost")
+    ) {
+      continue;
+    }
+
+    if (
+      hasOther &&
+      (desc === "other expenses" ||
+        desc === "misc" ||
+        desc === "miscellaneous" ||
+        desc === "other")
+    ) {
+      continue;
+    }
+
     totalExpanseIncome += round2(exp.paidAmount || 0);
   }
 

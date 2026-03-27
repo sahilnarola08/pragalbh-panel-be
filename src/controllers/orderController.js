@@ -210,6 +210,9 @@ export const createOrder = async (req, res, next) => {
       supplier,
       otherDetails,
       shippingCost,
+      supplierCost,
+      packagingCost,
+      otherExpenses,
       newClient,
     } = req.body;
 

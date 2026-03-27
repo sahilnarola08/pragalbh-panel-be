@@ -324,7 +324,8 @@ export const getIncomeExpance = async (req, res) => {
       search = "",
       orderId = "",
       startDate = "",
-      endDate = ""
+      endDate = "",
+      category = ""
     } = req.query;
 
     // Parse page and limit to integers with proper defaults and validation
@@ -579,10 +580,12 @@ export const getIncomeExpance = async (req, res) => {
     // ====================== CASE 2: EXPENSE ======================
     else if (incExpType == 2) {
       const deletedOnly = req.query.deletedOnly === "true" || req.query.deletedOnly === true;
+      const categoryTrim = typeof category === "string" ? category.trim() : "";
       const expenseQuery = {
         ...searchQuery,
         ...orderFilter,
         ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
+        ...(categoryTrim ? { extraCategoryName: categoryTrim } : {}),
       };
       // For expense, check both date and createdAt fields
       if (dateFilter) {
@@ -646,6 +649,9 @@ export const getIncomeExpance = async (req, res) => {
         // Status
         const status = (item.status || "").toLowerCase();
 
+        // Category (extra expense category)
+        const categoryName = (item.extraCategoryName || "").toLowerCase();
+
         // Date - multiple formats
         let dateStr = "";
         const dateToUse = item.date || item.createdAt;
@@ -665,6 +671,7 @@ export const getIncomeExpance = async (req, res) => {
           bankName.includes(searchLower) ||
           orderId.includes(searchLower) ||
           status.includes(searchLower) ||
+          categoryName.includes(searchLower) ||
           dateStr.includes(searchLower)
         );
       });
@@ -704,6 +711,7 @@ export const getIncomeExpance = async (req, res) => {
           manualType: item.manualType || null,
           isDeleted: item.isDeleted || false,
           deletedAt: item.deletedAt || null,
+          extraCategoryName: item.extraCategoryName || null,
         };
       });
 
@@ -970,7 +978,7 @@ export const getIncomeExpance = async (req, res) => {
 // Add Expense Entry (linked to order & supplier)
 export const addExpanseEntry = async (req, res) => {
   try {
-    const { orderId, date, description, paidAmount, dueAmount, status, bankId } = req.body;
+    const { orderId, date, description, paidAmount, dueAmount, status, bankId, componentType } = req.body;
 
     // ✅ Validate required fields
     if (!orderId) {
@@ -1139,6 +1147,9 @@ export const addExpanseEntry = async (req, res) => {
       supplierId: supplier._id,
       status: expenseStatus,
       bankId: normalizedBankId,
+      componentType: ["shipping", "packaging", "other"].includes((componentType || "").toLowerCase())
+        ? (componentType || "").toLowerCase()
+        : null,
     });
 
     // ✅ Populate for response
@@ -1183,7 +1194,7 @@ export const addExpanseEntry = async (req, res) => {
 export const editExpanseEntry = async (req, res) => {
   try {
     const { ExpId } = req.params;
-    const { date, description, paidAmount, status, bankId } = req.body;
+    const { date, description, paidAmount, status, bankId, componentType } = req.body;
 
     // Find existing expense
     const existingExpense = await ExpanceIncome.findById(ExpId)
@@ -1260,6 +1271,13 @@ export const editExpanseEntry = async (req, res) => {
           status: error.status || 400,
           message: error.message || "Invalid bank ID",
         });
+      }
+    }
+
+    if (componentType !== undefined) {
+      const normalized = (componentType || "").toLowerCase();
+      if (["shipping", "packaging", "other", ""].includes(normalized)) {
+        existingExpense.componentType = normalized || null;
       }
     }
 
@@ -1399,7 +1417,7 @@ export const editExpanseEntry = async (req, res) => {
 // Add Extra Expense (without order/supplier)
 export const addExtraExpense = async (req, res) => {
   try {
-    const { date, description, paidAmount, bankId } = req.body;
+    const { date, description, paidAmount, bankId, category } = req.body;
 
     // Validate required fields
     if (!description) {
@@ -1442,6 +1460,7 @@ export const addExtraExpense = async (req, res) => {
       dueAmount: 0,
       bankId: normalizedBankId,
       status: "paid", // Direct paid status
+      extraCategoryName: category ? String(category).trim() || null : null,
     });
 
     const populatedExpense = await ExpanceIncome.findById(newExpense._id)
@@ -1476,7 +1495,7 @@ export const addExtraExpense = async (req, res) => {
 export const editExtraExpense = async (req, res) => {
   try {
     const { expenseId } = req.params;
-    const { date, description, paidAmount, bankId } = req.body;
+    const { date, description, paidAmount, bankId, category } = req.body;
 
     if (!expenseId) {
       return res.status(400).json({
@@ -1524,6 +1543,11 @@ export const editExtraExpense = async (req, res) => {
         });
       }
       expense.paidAmount = Math.round(paidAmount * 100) / 100;
+    }
+
+    if (category !== undefined) {
+      const name = String(category).trim();
+      expense.extraCategoryName = name.length > 0 ? name : null;
     }
 
     await expense.save();
@@ -1619,6 +1643,8 @@ export const getExpenseById = async (req, res) => {
       bank: expenseBank,
       createdAt: expense.createdAt,
       updatedAt: expense.updatedAt,
+      extraCategoryName: expense.extraCategoryName || null,
+      componentType: expense.componentType || null,
     };
 
     // Set cache-control headers to prevent browser caching (304 responses)
@@ -1633,6 +1659,108 @@ export const getExpenseById = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching expense by ID:", error);
+    return res.status(500).json({
+      status: 500,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+};
+
+// Get distinct categories for standalone extra expenses
+export const getExtraExpenseCategories = async (req, res) => {
+  try {
+    // For simplicity and robustness, return all distinct non-null category names
+    // from extra expenses (both standalone and order-linked). Frontend uses this
+    // list only for suggestions, so including more values is safe.
+    const raw = await ExpanceIncome.distinct("extraCategoryName", {
+      isDeleted: { $ne: true },
+      extraCategoryName: { $ne: null },
+    });
+    const categories = [...new Set((raw || []).map((s) => (typeof s === "string" ? s.trim() : "")).filter(Boolean))].sort();
+
+    return res.status(200).json({
+      status: 200,
+      message: "Extra expense categories fetched successfully",
+      data: { categories },
+    });
+  } catch (error) {
+    console.error("Error fetching extra expense categories:", error);
+    return res.status(500).json({
+      status: 500,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+};
+
+// Rename a category across all expenses that use it (standalone and order-linked)
+export const renameExtraExpenseCategory = async (req, res) => {
+  try {
+    const { oldName, newName } = req.body || {};
+    if (!oldName || !newName) {
+      return res.status(400).json({
+        status: 400,
+        message: "oldName and newName are required",
+      });
+    }
+    const oldTrim = String(oldName).trim();
+    const newTrim = String(newName).trim();
+    if (!newTrim) {
+      return res.status(400).json({
+        status: 400,
+        message: "newName must not be empty",
+      });
+    }
+    const result = await ExpanceIncome.updateMany(
+      { extraCategoryName: oldTrim },
+      { $set: { extraCategoryName: newTrim } }
+    );
+    // ✅ Invalidate cache so category lists refresh immediately
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("income");
+    invalidateCache("dashboard");
+    return res.status(200).json({
+      status: 200,
+      message: "Extra expense category renamed successfully",
+      data: { matched: result.matchedCount ?? result.n, modified: result.modifiedCount ?? result.nModified },
+    });
+  } catch (error) {
+    console.error("Error renaming extra expense category:", error);
+    return res.status(500).json({
+      status: 500,
+      message: "Internal Server Error",
+      error: error.message,
+    });
+  }
+};
+
+// Delete a category (clear category name) across all expenses that use it
+export const deleteExtraExpenseCategory = async (req, res) => {
+  try {
+    const { name } = req.body || {};
+    if (!name) {
+      return res.status(400).json({
+        status: 400,
+        message: "name is required",
+      });
+    }
+    const trim = String(name).trim();
+    const result = await ExpanceIncome.updateMany(
+      { extraCategoryName: trim },
+      { $set: { extraCategoryName: null } }
+    );
+    // ✅ Invalidate cache so category lists refresh immediately
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("income");
+    invalidateCache("dashboard");
+    return res.status(200).json({
+      status: 200,
+      message: "Extra expense category deleted successfully",
+      data: { matched: result.matchedCount ?? result.n, modified: result.modifiedCount ?? result.nModified },
+    });
+  } catch (error) {
+    console.error("Error deleting extra expense category:", error);
     return res.status(500).json({
       status: 500,
       message: "Internal Server Error",
@@ -1766,4 +1894,7 @@ export default {
   getExpenseById,
   softDeleteExpense,
   restoreExpense,
+   getExtraExpenseCategories,
+   renameExtraExpenseCategory,
+   deleteExtraExpenseCategory,
 };

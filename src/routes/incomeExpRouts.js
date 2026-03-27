@@ -19,6 +19,10 @@ router.put("/edit-extra-expense/:expenseId", authorize("expense.edit"), incomeEx
 router.get("/get-expense/:expenseId", authorize("expense.view"), incomeExpController.getExpenseById);
 router.put("/soft-delete-expense/:expenseId", authorize("expense.delete"), incomeExpController.softDeleteExpense);
 router.put("/restore-expense/:expenseId", authorize("expense.edit"), incomeExpController.restoreExpense);
+router.get("/extra-expense-categories", authorize("expense.view"), incomeExpController.getExtraExpenseCategories);
+router.put("/extra-expense-categories/rename", authorize("expense.edit"), incomeExpController.renameExtraExpenseCategory);
+router.put("/extra-expense-categories/delete", authorize("expense.edit"), incomeExpController.deleteExtraExpenseCategory);
+router.post("/extra-expense-categories/delete", authorize("expense.edit"), incomeExpController.deleteExtraExpenseCategory);
 router.post("/payment-status", authorize("expense.edit"), supOrdDetailsController.markPaymentDone);
 
 export default router;

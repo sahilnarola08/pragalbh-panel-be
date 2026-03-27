@@ -14,6 +14,7 @@ export const TABLE_COLUMN_DEFINITIONS = {
         { id: "orderPlatform", label: "Platform" },
         { id: "purchasePrice", label: "Purchase Price (₹)" },
         { id: "sellingPrice", label: "Selling Price (₹)" },
+        { id: "totalBankReceived", label: "Bank received (₹)" },
         { id: "netProfit", label: "Net Profit (₹)" },
         { id: "paymentStatus", label: "Payment Status" },
         { id: "supplier", label: "Supplier" },
