@@ -85,6 +85,25 @@ const expanseIncomeSchema = new mongoose.Schema(
       trim: true,
       index: true,
     },
+    /** When set, this expense row is tied to order.products[orderProductIndex] (supplier split). */
+    orderProductIndex: {
+      type: Number,
+      required: false,
+      default: null,
+      index: true,
+    },
+    supplierLineIndex: {
+      type: Number,
+      required: false,
+      default: null,
+    },
+    /** Product purchase expense auto-managed by order create/update (not shipping/packaging rows). */
+    isOrderProductPurchase: {
+      type: Boolean,
+      required: false,
+      default: false,
+      index: true,
+    },
   },
   {
     timestamps: true,

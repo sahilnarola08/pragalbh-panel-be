@@ -74,6 +74,17 @@ const orderSchema = new mongoose.Schema({
                          ],
                          default: [],
                     },
+                    /** Optional breakdown: multiple suppliers with INR amounts; purchasePrice should equal sum(price). */
+                    purchaseSupplierLines: {
+                         type: [
+                              {
+                                   supplierName: { type: String, required: true, trim: true },
+                                   price: { type: Number, required: true, min: 0 },
+                                   note: { type: String, trim: true, default: "" },
+                              },
+                         ],
+                         default: undefined,
+                    },
                },
           ],
           required: true,
@@ -99,6 +110,11 @@ const orderSchema = new mongoose.Schema({
      otherExpenses: {
           type: Number,
           default: 0,
+     },
+     otherExpenseNote: {
+          type: String,
+          default: "",
+          trim: true,
      },
      bankName: {
           type: String,
