@@ -83,6 +83,7 @@ export const cacheMiddleware = (req, res, next) => {
   if (
     req.path.includes('/auth') ||
     req.path.includes('/upload') ||
+    req.originalUrl.startsWith('/permissions') ||
     req.originalUrl.startsWith('/partners') ||
     req.originalUrl.startsWith('/assets') ||
     req.originalUrl.startsWith('/master') ||

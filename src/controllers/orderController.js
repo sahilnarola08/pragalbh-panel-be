@@ -23,6 +23,44 @@ import Role from "../models/role.js";
 const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
   "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product";
 
+const round2Amount = (n) => Math.round(Number(n || 0) * 100) / 100;
+
+/** Normalize optional multi-supplier rows from request body. */
+const normalizePurchaseSupplierLines = (raw) => {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const out = [];
+  for (const row of raw) {
+    const supplierName = (row?.supplierName ?? row?.supplier ?? "").toString().trim();
+    const price = round2Amount(row?.price ?? row?.amount ?? 0);
+    const note = typeof row?.note === "string" ? row.note.trim() : "";
+    if (!supplierName && price <= 0) continue;
+    out.push({ supplierName, price, note });
+  }
+  return out;
+};
+
+const supplierNameDbMatch = (name) => {
+  const term = String(name || "").trim();
+  if (!term) return null;
+  return {
+    $or: [
+      { firstName: { $regex: term, $options: "i" } },
+      { lastName: { $regex: term, $options: "i" } },
+      { company: { $regex: term, $options: "i" } },
+      {
+        $expr: {
+          $regexMatch: {
+            input: { $concat: ["$firstName", " ", "$lastName"] },
+            regex: term,
+            options: "i",
+          },
+        },
+      },
+    ],
+    isDeleted: false,
+  };
+};
+
 const emailNotificationTransporter =
   secret.emailService && secret.emailUser && secret.emailPass
     ? nodemailer.createTransport({
@@ -213,6 +251,7 @@ export const createOrder = async (req, res, next) => {
       supplierCost,
       packagingCost,
       otherExpenses,
+      otherExpenseNote,
       newClient,
     } = req.body;
 
@@ -226,7 +265,16 @@ export const createOrder = async (req, res, next) => {
     }).lean();
 
     if (!existingClient && newClient && typeof newClient === "object") {
-      const { firstName, lastName, address: newAddress, contactNumber, email } = newClient;
+      const {
+        firstName,
+        lastName,
+        address: newAddress,
+        contactNumber,
+        email,
+        company,
+        clientType,
+        platforms,
+      } = newClient;
       if (!firstName || !lastName) {
         return sendErrorResponse({
           res,
@@ -235,12 +283,46 @@ export const createOrder = async (req, res, next) => {
         });
       }
       const uniqueSuffix = String(new mongoose.Types.ObjectId()).slice(-8);
+
+      // Normalize/validate social platform entries (optional)
+      let normalizedPlatforms = undefined;
+      if (Array.isArray(platforms) && platforms.length > 0) {
+        normalizedPlatforms = [];
+        for (const platform of platforms) {
+          if (!platform || !platform.platformName) continue;
+          const rawPlatformId =
+            typeof platform.platformName === "object" && platform.platformName !== null
+              ? platform.platformName._id || platform.platformName.id
+              : platform.platformName;
+
+          const platformId = rawPlatformId ? String(rawPlatformId) : "";
+          if (!mongoose.Types.ObjectId.isValid(platformId)) continue;
+
+          const exists = await Master.findOne({ _id: platformId, isDeleted: false }).select("_id").lean();
+          if (!exists) continue;
+
+          normalizedPlatforms.push({
+            platformName: platformId,
+            platformUsername:
+              platform.platformUsername !== undefined && platform.platformUsername !== null
+                ? String(platform.platformUsername).trim()
+                : undefined,
+          });
+        }
+        if (!normalizedPlatforms.length) normalizedPlatforms = undefined;
+      }
+
+      const companyValue = company && String(company).trim() ? String(company).trim() : undefined;
+      const clientTypeValue = Array.isArray(clientType) && clientType.length ? clientType : undefined;
       const created = await User.create({
         firstName: String(firstName).trim(),
         lastName: String(lastName).trim(),
         address: (newAddress || address || "").trim(),
         contactNumber: (contactNumber && String(contactNumber).trim()) || `ord_${uniqueSuffix}`,
         email: (email && String(email).trim()) || `client_${uniqueSuffix}@order.local`,
+        company: companyValue,
+        clientType: clientTypeValue,
+        platforms: normalizedPlatforms,
       });
       existingClient = created.toObject();
     }
@@ -315,6 +397,8 @@ export const createOrder = async (req, res, next) => {
     const mediatorMap = new Map(existingMediatorsList.map(m => [String(m._id), m]));
 
     const processedProducts = [];
+    const expensePlan = [];
+
     for (const product of products) {
       const productKey = product.productName.trim().toLowerCase();
       const existingProduct = productMap.get(productKey);
@@ -375,11 +459,59 @@ export const createOrder = async (req, res, next) => {
 
       const paymentCurrency = product.paymentCurrency === 'USD' ? 'USD' : 'INR';
 
+      const supplierLines = normalizePurchaseSupplierLines(product.purchaseSupplierLines);
+      let purchasePrice = round2Amount(product.purchasePrice || 0);
+      const resolvedLines = [];
+
+      if (supplierLines.length > 0) {
+        for (const line of supplierLines) {
+          if (!line.supplierName) {
+            return sendErrorResponse({
+              res,
+              status: 400,
+              message: `Each purchase supplier line must have a supplier name for product "${product.productName}".`,
+            });
+          }
+          if (line.price <= 0) {
+            return sendErrorResponse({
+              res,
+              status: 400,
+              message: `Each purchase supplier line must have price greater than 0 for product "${product.productName}".`,
+            });
+          }
+          const supDoc = await Supplier.findOne(supplierNameDbMatch(line.supplierName)).select("_id").lean();
+          if (!supDoc) {
+            return sendErrorResponse({
+              res,
+              status: 400,
+              message: `Supplier "${line.supplierName}" does not exist. Please add supplier first (product: ${product.productName}).`,
+            });
+          }
+          resolvedLines.push({
+            supplierName: line.supplierName,
+            price: line.price,
+            note: line.note,
+            supplierId: supDoc._id,
+          });
+        }
+        purchasePrice = round2Amount(resolvedLines.reduce((s, l) => s + l.price, 0));
+      } else if (purchasePrice <= 0) {
+        return sendErrorResponse({
+          res,
+          status: 400,
+          message: `Purchase price must be greater than 0 for product "${product.productName}".`,
+        });
+      }
+
+      const linesForDb = resolvedLines.length
+        ? resolvedLines.map(({ supplierName, price, note }) => ({ supplierName, price, note }))
+        : undefined;
+
       processedProducts.push({
         productName: product.productName,
         orderDate: product.orderDate,
         dispatchDate: product.dispatchDate,
-        purchasePrice: Math.round((product.purchasePrice || 0) * 100) / 100,
+        purchasePrice,
         sellingPrice: Math.round((product.sellingPrice || 0) * 100) / 100,
         initialPayment: Math.round((product.initialPayment || 0) * 100) / 100,
         orderPlatform: orderPlatformMaster._id,
@@ -387,7 +519,32 @@ export const createOrder = async (req, res, next) => {
         mediators: mediatorsList.length ? mediatorsList : undefined,
         paymentCurrency,
         productImages: normalizedProductImages,
+        ...(linesForDb ? { purchaseSupplierLines: linesForDb } : {}),
       });
+
+      const pIdx = processedProducts.length - 1;
+      if (resolvedLines.length > 0) {
+        resolvedLines.forEach((line, li) => {
+          const desc = line.note
+            ? `${String(product.productName).trim()} — ${line.supplierName} (${line.note})`
+            : `${String(product.productName).trim()} — ${line.supplierName}`;
+          expensePlan.push({
+            description: desc,
+            dueAmount: round2Amount(line.price),
+            supplierId: line.supplierId,
+            orderProductIndex: pIdx,
+            supplierLineIndex: li,
+          });
+        });
+      } else if (existingSupplier) {
+        expensePlan.push({
+          description: String(product.productName).trim(),
+          dueAmount: purchasePrice,
+          supplierId: existingSupplier._id,
+          orderProductIndex: pIdx,
+          supplierLineIndex: 0,
+        });
+      }
     }
 
     // Create order with products array
@@ -420,6 +577,7 @@ export const createOrder = async (req, res, next) => {
         otherExpenses !== undefined && otherExpenses !== null
           ? Math.round(otherExpenses * 100) / 100
           : 0,
+      otherExpenseNote: typeof otherExpenseNote === "string" ? otherExpenseNote.trim() : "",
       trackingId: "",
       courierCompany: "",
       status: DEFAULT_ORDER_STATUS,
@@ -430,7 +588,6 @@ export const createOrder = async (req, res, next) => {
     const expensePromises = [];
 
     for (const product of processedProducts) {
-      // Create Income record for each product
       incomePromises.push(
         Income.create({
           date: new Date(),
@@ -443,21 +600,23 @@ export const createOrder = async (req, res, next) => {
           status: DEFAULT_PAYMENT_STATUS,
         })
       );
+    }
 
-      // Create ExpenseIncome record for each product if supplier exists
-      if (existingSupplier) {
-        expensePromises.push(
-          ExpanseIncome.create({
-            date: new Date(),
-            orderId: order._id,
-            description: product.productName,
-            paidAmount: 0,
-            dueAmount: product.purchasePrice,
-            supplierId: existingSupplier._id,
-            status: DEFAULT_PAYMENT_STATUS,
-          })
-        );
-      }
+    for (const row of expensePlan) {
+      expensePromises.push(
+        ExpanseIncome.create({
+          date: new Date(),
+          orderId: order._id,
+          description: row.description,
+          paidAmount: 0,
+          dueAmount: row.dueAmount,
+          supplierId: row.supplierId,
+          status: DEFAULT_PAYMENT_STATUS,
+          orderProductIndex: row.orderProductIndex,
+          supplierLineIndex: row.supplierLineIndex,
+          isOrderProductPurchase: true,
+        })
+      );
     }
 
     await Promise.all([...incomePromises, ...expensePromises]);
@@ -775,6 +934,8 @@ const updateOrder = async (req, res, next) => {
 
     const { id } = req.params;
     const updateData = req.body;
+    const productsPayloadUpdated =
+      !!(updateData.products && Array.isArray(updateData.products));
 
     const resolved = await resolveOrderById(id);
     if (!resolved) {
@@ -927,11 +1088,59 @@ const updateOrder = async (req, res, next) => {
         );
         const paymentCurrency = product.paymentCurrency === 'USD' ? 'USD' : 'INR';
 
+        const supplierLines = normalizePurchaseSupplierLines(product.purchaseSupplierLines);
+        let purchasePrice = round2Amount(product.purchasePrice || 0);
+        const resolvedLines = [];
+
+        if (supplierLines.length > 0) {
+          for (const line of supplierLines) {
+            if (!line.supplierName) {
+              return sendErrorResponse({
+                res,
+                status: 400,
+                message: `Each purchase supplier line must have a supplier name for product "${product.productName}".`,
+              });
+            }
+            if (line.price <= 0) {
+              return sendErrorResponse({
+                res,
+                status: 400,
+                message: `Each purchase supplier line must have price greater than 0 for product "${product.productName}".`,
+              });
+            }
+            const supDoc = await Supplier.findOne(supplierNameDbMatch(line.supplierName)).select("_id").lean();
+            if (!supDoc) {
+              return sendErrorResponse({
+                res,
+                status: 400,
+                message: `Supplier "${line.supplierName}" does not exist. Please add supplier first (product: ${product.productName}).`,
+              });
+            }
+            resolvedLines.push({
+              supplierName: line.supplierName,
+              price: line.price,
+              note: line.note,
+              supplierId: supDoc._id,
+            });
+          }
+          purchasePrice = round2Amount(resolvedLines.reduce((s, l) => s + l.price, 0));
+        } else if (purchasePrice <= 0) {
+          return sendErrorResponse({
+            res,
+            status: 400,
+            message: `Purchase price must be greater than 0 for product "${product.productName}".`,
+          });
+        }
+
+        const linesForDb = resolvedLines.length
+          ? resolvedLines.map(({ supplierName, price, note }) => ({ supplierName, price, note }))
+          : undefined;
+
         processedProducts.push({
           productName: product.productName,
           orderDate: product.orderDate,
           dispatchDate: product.dispatchDate,
-          purchasePrice: Math.round((product.purchasePrice || 0) * 100) / 100,
+          purchasePrice,
           sellingPrice: Math.round((product.sellingPrice || 0) * 100) / 100,
           initialPayment: Math.round((product.initialPayment || 0) * 100) / 100,
           orderPlatform: orderPlatformMaster._id,
@@ -939,6 +1148,7 @@ const updateOrder = async (req, res, next) => {
           mediators: mediatorsList.length ? mediatorsList : undefined,
           paymentCurrency,
           productImages: normalizedProductImages,
+          ...(linesForDb ? { purchaseSupplierLines: linesForDb } : {}),
         });
       }
 
@@ -960,6 +1170,9 @@ const updateOrder = async (req, res, next) => {
     }
     if (updateData.otherExpenses !== undefined && updateData.otherExpenses !== null) {
       updateData.otherExpenses = Math.round(updateData.otherExpenses * 100) / 100;
+    }
+    if (updateData.otherExpenseNote !== undefined && updateData.otherExpenseNote !== null) {
+      updateData.otherExpenseNote = String(updateData.otherExpenseNote).trim();
     }
 
     // Update order
@@ -986,11 +1199,9 @@ const updateOrder = async (req, res, next) => {
 
     // --- Sync related Income and Expense records for this order ---
     try {
-      // Get client and supplier IDs (use existing if not updated)
       let clientId = existingClient?._id;
       let supplierId = existingSupplier?._id;
 
-      // If client wasn't updated, get it from existing order
       if (!clientId && existingOrder.clientName) {
         const clientFromOrder = await User.findOne({
           $or: [
@@ -1003,7 +1214,6 @@ const updateOrder = async (req, res, next) => {
         clientId = clientFromOrder?._id;
       }
 
-      // If supplier wasn't updated, get it from existing order
       if (!supplierId && existingOrder.supplier) {
         const supplierFromOrder = await Supplier.findOne({
           $or: [
@@ -1018,21 +1228,13 @@ const updateOrder = async (req, res, next) => {
       }
 
       const [orderIncomes, orderExpenses] = await Promise.all([
-        Income.find({ orderId: id, isDeleted: { $ne: true } }).sort({ createdAt: 1, _id: 1 }),
-        ExpanseIncome.find({ orderId: id, isDeleted: { $ne: true } }).sort({ createdAt: 1, _id: 1 }),
+        Income.find({ orderId: orderMongoId, isDeleted: { $ne: true } }).sort({ createdAt: 1, _id: 1 }),
+        ExpanseIncome.find({ orderId: orderMongoId, isDeleted: { $ne: true } }).sort({ createdAt: 1, _id: 1 }),
       ]);
 
-      // Update client reference in Income if client changed
       if (existingClient && orderIncomes.length > 0) {
         orderIncomes.forEach((inc) => {
           inc.clientId = existingClient._id;
-        });
-      }
-
-      // Update supplier reference in Expense if supplier changed
-      if (existingSupplier && orderExpenses.length > 0) {
-        orderExpenses.forEach((exp) => {
-          exp.supplierId = existingSupplier._id;
         });
       }
 
@@ -1040,25 +1242,13 @@ const updateOrder = async (req, res, next) => {
         ? updatedOrder.products
         : [];
 
-      // ✅ Remove Income and ExpanseIncome records for removed products (do this first)
       if (products.length < orderIncomes.length) {
         const excessIncomes = orderIncomes.slice(products.length);
         const incomeIdsToDelete = excessIncomes.map((inc) => inc._id);
         await Income.deleteMany({ _id: { $in: incomeIdsToDelete } });
-        // Remove from array to avoid saving deleted records
         orderIncomes.splice(products.length);
       }
 
-      if (products.length < orderExpenses.length) {
-        const excessExpenses = orderExpenses.slice(products.length);
-        const expenseIdsToDelete = excessExpenses.map((exp) => exp._id);
-        await ExpanseIncome.deleteMany({ _id: { $in: expenseIdsToDelete } });
-        // Remove from array to avoid saving deleted records
-        orderExpenses.splice(products.length);
-      }
-
-      // Only try to sync per-product details when counts match to avoid corrupting extra manual entries
-      // (Sync after deletion so remaining records match product count)
       if (products.length > 0 && products.length === orderIncomes.length) {
         products.forEach((product, index) => {
           const income = orderIncomes[index];
@@ -1069,22 +1259,12 @@ const updateOrder = async (req, res, next) => {
         });
       }
 
-      if (products.length > 0 && products.length === orderExpenses.length) {
-        products.forEach((product, index) => {
-          const expense = orderExpenses[index];
-          if (!expense) return;
-          expense.description = product.productName;
-          expense.dueAmount = product.purchasePrice;
-        });
-      }
-
-      // ✅ Create Income and ExpanseIncome records for newly added products
       if (products.length > orderIncomes.length) {
         const newProducts = products.slice(orderIncomes.length);
         const newIncomePromises = newProducts.map((product) =>
           Income.create({
             date: new Date(),
-            orderId: id,
+            orderId: orderMongoId,
             Description: product.productName,
             sellingPrice: product.sellingPrice,
             initialPayment: product.initialPayment,
@@ -1096,26 +1276,135 @@ const updateOrder = async (req, res, next) => {
         await Promise.all(newIncomePromises);
       }
 
-      if (products.length > orderExpenses.length && (supplierId || existingSupplier?._id)) {
-        const newProducts = products.slice(orderExpenses.length);
-        const newExpensePromises = newProducts.map((product) =>
-          ExpanseIncome.create({
-            date: new Date(),
-            orderId: id,
-            description: product.productName,
-            paidAmount: 0,
-            dueAmount: product.purchasePrice,
-            supplierId: supplierId || existingSupplier._id,
-            status: DEFAULT_PAYMENT_STATUS,
-          })
-        );
-        await Promise.all(newExpensePromises);
-      }
+      await Promise.all(orderIncomes.map((doc) => doc.save()));
 
-      await Promise.all([
-        ...orderIncomes.map((doc) => doc.save()),
-        ...orderExpenses.map((doc) => doc.save()),
-      ]);
+      if (productsPayloadUpdated) {
+        const prevNames = (existingOrder.products || []).map((p) => p.productName).filter(Boolean);
+        const nameSet = [...new Set(prevNames)];
+
+        await ExpanseIncome.deleteMany({
+          orderId: orderMongoId,
+          isDeleted: { $ne: true },
+          $or: [
+            { isOrderProductPurchase: true },
+            {
+              description: { $in: nameSet },
+              isOrderProductPurchase: { $ne: true },
+              componentType: { $in: [null, undefined] },
+            },
+          ],
+        });
+
+        let supplierFallback = existingSupplier;
+        if (!supplierFallback?._id && supplierId) {
+          supplierFallback = await Supplier.findById(supplierId).select("_id").lean();
+        }
+        if (!supplierFallback?._id && existingOrder.supplier) {
+          supplierFallback = await Supplier.findOne(supplierNameDbMatch(existingOrder.supplier)).select("_id").lean();
+        }
+
+        const expensePlan = [];
+        for (let pi = 0; pi < products.length; pi++) {
+          const product = products[pi];
+          const supplierLines = normalizePurchaseSupplierLines(product.purchaseSupplierLines);
+
+          if (supplierLines.length > 0) {
+            for (let li = 0; li < supplierLines.length; li++) {
+              const line = supplierLines[li];
+              const supDoc = await Supplier.findOne(supplierNameDbMatch(line.supplierName)).select("_id").lean();
+              if (!supDoc) {
+                throw new Error(
+                  `Supplier "${line.supplierName}" missing while rebuilding expenses for order ${orderMongoId}`
+                );
+              }
+              const desc = line.note
+                ? `${String(product.productName).trim()} — ${line.supplierName} (${line.note})`
+                : `${String(product.productName).trim()} — ${line.supplierName}`;
+              expensePlan.push({
+                description: desc,
+                dueAmount: round2Amount(line.price),
+                supplierId: supDoc._id,
+                orderProductIndex: pi,
+                supplierLineIndex: li,
+              });
+            }
+          } else if (supplierFallback?._id) {
+            const pp = round2Amount(product.purchasePrice || 0);
+            if (pp > 0) {
+              expensePlan.push({
+                description: String(product.productName).trim(),
+                dueAmount: pp,
+                supplierId: supplierFallback._id,
+                orderProductIndex: pi,
+                supplierLineIndex: 0,
+              });
+            }
+          }
+        }
+
+        await Promise.all(
+          expensePlan.map((row) =>
+            ExpanseIncome.create({
+              date: new Date(),
+              orderId: orderMongoId,
+              description: row.description,
+              paidAmount: 0,
+              dueAmount: row.dueAmount,
+              supplierId: row.supplierId,
+              status: DEFAULT_PAYMENT_STATUS,
+              orderProductIndex: row.orderProductIndex,
+              supplierLineIndex: row.supplierLineIndex,
+              isOrderProductPurchase: true,
+            })
+          )
+        );
+      } else {
+        if (existingSupplier && orderExpenses.length > 0) {
+          orderExpenses.forEach((exp) => {
+            exp.supplierId = existingSupplier._id;
+          });
+        }
+
+        if (products.length < orderExpenses.length) {
+          const excessExpenses = orderExpenses.slice(products.length);
+          const expenseIdsToDelete = excessExpenses.map((exp) => exp._id);
+          await ExpanseIncome.deleteMany({ _id: { $in: expenseIdsToDelete } });
+          orderExpenses.splice(products.length);
+        }
+
+        if (products.length > 0 && products.length === orderExpenses.length) {
+          products.forEach((product, index) => {
+            const expense = orderExpenses[index];
+            if (!expense) return;
+            expense.description = product.productName;
+            expense.dueAmount = product.purchasePrice;
+          });
+        }
+
+        if (products.length > orderExpenses.length && (supplierId || existingSupplier?._id)) {
+          const newProducts = products.slice(orderExpenses.length);
+          let nextIdx = orderExpenses.length;
+          await Promise.all(
+            newProducts.map((product) => {
+              const pi = nextIdx++;
+              return ExpanseIncome.create({
+                date: new Date(),
+                orderId: orderMongoId,
+                description: product.productName,
+                paidAmount: 0,
+                dueAmount: product.purchasePrice,
+                supplierId: supplierId || existingSupplier._id,
+                status: DEFAULT_PAYMENT_STATUS,
+                orderProductIndex: pi,
+                supplierLineIndex: 0,
+                isOrderProductPurchase: true,
+              });
+            })
+          );
+        }
+
+        await Promise.all(orderExpenses.map((doc) => doc.save()));
+      }
     } catch (syncError) {
       // Log but don't break main order update flow
       console.error("Error syncing income/expense with updated order:", syncError);

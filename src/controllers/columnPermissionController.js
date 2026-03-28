@@ -1,5 +1,6 @@
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import * as columnPermissionService from "../services/columnPermissionService.js";
+import { clearCacheByRoute } from "../middlewares/cache.js";
 
 /**
  * GET /permissions/columns
@@ -106,6 +107,8 @@ export async function saveColumnPermissions(req, res, next) {
       tableName,
       columnVisibility
     );
+    // Ensure admin screens and role sessions receive fresh permissions immediately.
+    clearCacheByRoute("/permissions/columns");
     sendSuccessResponse({
       res,
       data: { visibleColumns },

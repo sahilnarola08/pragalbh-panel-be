@@ -27,12 +27,19 @@ const imageObjectSchema = yup.object().shape({
         }),
 });
 
+const purchaseSupplierLineSchema = yup.object().shape({
+    supplierName: yup.string().trim().max(200).optional(),
+    price: yup.number().min(0, "Supplier line price must be >= 0").optional(),
+    note: yup.string().trim().max(500, "Supplier note must not exceed 500 characters").optional(),
+});
+
 // Product schema for products array
 const productSchema = yup.object().shape({
     productName: yup.string().required("Product name is required").min(2, "Product name must be at least 2 characters").max(100, "Product name must not exceed 100 characters"),
     orderDate: yup.date().required("Order date is required"),
     dispatchDate: yup.date().required("Dispatch date is required"),
     purchasePrice: yup.number().required("Purchase price is required").min(0, "Purchase price must be greater than 0"),
+    purchaseSupplierLines: yup.array().of(purchaseSupplierLineSchema).max(50).optional(),
     sellingPrice: yup.number().required("Selling price is required").min(0, "Selling price must be greater than 0"),
     initialPayment: yup.number().min(0, "Initial payment must be greater than or equal to 0").optional(),
     orderPlatform: yup.string().required("Order platform is required").matches(/^[0-9a-fA-F]{24}$/, 'Order platform must be a valid ObjectId'),
@@ -61,6 +68,7 @@ const orderSchema = yup.object().shape({
     supplierCost: yup.number().min(0, "Supplier cost must be greater than or equal to 0").optional(),
     packagingCost: yup.number().min(0, "Packaging cost must be greater than or equal to 0").optional(),
     otherExpenses: yup.number().min(0, "Other expenses must be greater than or equal to 0").optional(),
+    otherExpenseNote: yup.string().max(500, "Other expense note must not exceed 500 characters").optional(),
     bankName: yup.string().optional(),
     paymentAmount: yup.number().min(0, "Payment amount must be greater than or equal to 0").optional(),
 });
@@ -80,6 +88,7 @@ const orderUpdateSchema = yup.object().shape({
     supplierCost: yup.number().min(0, "Supplier cost must be greater than or equal to 0").optional(),
     packagingCost: yup.number().min(0, "Packaging cost must be greater than or equal to 0").optional(),
     otherExpenses: yup.number().min(0, "Other expenses must be greater than or equal to 0").optional(),
+    otherExpenseNote: yup.string().max(500, "Other expense note must not exceed 500 characters").optional(),
     bankName: yup.string().optional(),
     paymentAmount: yup.number().min(0, "Payment amount must be greater than or equal to 0").optional(),
 });
