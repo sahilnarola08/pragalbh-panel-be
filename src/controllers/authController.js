@@ -13,7 +13,6 @@ import nodemailer from "nodemailer";
 const OTP_EXPIRY_MINUTES = 5;
 const MAX_OTP_ATTEMPTS = 5;
 const OTP_LOCK_MINUTES = 15;
-const OTP_FIXED_EMAIL = "sahil.pragalbhjewels@gmail.com";
 
 // Debug logging for email configuration
 console.log("[Auth] Initializing Email Transporter...");
@@ -54,12 +53,16 @@ const generateOtpCode = () => {
   return String(num).padStart(6, "0");
 };
 
-const sendOtpEmail = async (otp, toEmail = OTP_FIXED_EMAIL) => {
-  if (!emailTransporter) {
-    console.error("Email transporter not initialized. Check EMAIL_USER/PASS in .env");
-    return;
+const sendOtpEmail = async (otp, toEmail) => {
+  const to = String(toEmail || "").trim().toLowerCase();
+  if (!to || !to.includes("@")) {
+    throw new Error("Invalid recipient email for OTP");
   }
-  const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
+  if (!emailTransporter) {
+    throw new Error(
+      "Email is not configured on the server (set SERVICE, EMAIL_USER, EMAIL_PASS in environment)."
+    );
+  }
   const subject = "Your Pragalbh Panel OTP Code";
   const lines = [
     "Your one-time password (OTP) for Pragalbh Panel is:",
@@ -77,16 +80,39 @@ const sendOtpEmail = async (otp, toEmail = OTP_FIXED_EMAIL) => {
   try {
     const info = await emailTransporter.sendMail({
       from: secret.emailUser,
-      to: toEmail,
+      to,
       subject,
       text,
       html,
     });
-    console.log(`OTP sent to ${toEmail}. MessageID: ${info.messageId}`);
+    console.log(`OTP sent to ${to}. MessageID: ${info.messageId}`);
   } catch (error) {
     console.error("Error sending OTP email:", error);
     throw error;
   }
+};
+
+/** Returns true if the error was handled with a JSON response (caller should not call next). */
+const respondIfOtpEmailSetupError = (error, res) => {
+  const msg = String(error?.message || "");
+  if (msg.includes("Email is not configured")) {
+    sendErrorResponse({
+      status: 503,
+      res,
+      message:
+        "Cannot send OTP: email service is not configured on the server. Ask an admin to set SERVICE, EMAIL_USER, and EMAIL_PASS.",
+    });
+    return true;
+  }
+  if (msg.includes("Invalid recipient email")) {
+    sendErrorResponse({
+      status: 400,
+      res,
+      message: "Invalid email for OTP delivery.",
+    });
+    return true;
+  }
+  return false;
 };
 
 const createJwtAndSession = async (req, authUser) => {
@@ -163,15 +189,16 @@ const signup = async (req, res, next) => {
       { upsert: true, new: true }
     );
 
-    await sendOtpEmail(otpCode);
+    await sendOtpEmail(otpCode, normalizedEmail);
 
     return sendSuccessResponse({
       res,
       data: null,
-      message: "OTP sent to registered email",
+      message: "OTP sent to your email",
       status: 200,
     });
   } catch (error) {
+    if (respondIfOtpEmailSetupError(error, res)) return;
     next(error);
   }
 };
@@ -237,15 +264,16 @@ const signin = async (req, res, next) => {
       { upsert: true, new: true }
     );
 
-    await sendOtpEmail(otpCode);
+    await sendOtpEmail(otpCode, authUser.email);
 
     return sendSuccessResponse({
       res,
       data: null,
-      message: "OTP sent to registered email",
+      message: `OTP sent to ${authUser.email}`,
       status: 200,
     });
   } catch (error) {
+    if (respondIfOtpEmailSetupError(error, res)) return;
     next(error);
   }
 };
@@ -452,7 +480,7 @@ const resendOtp = async (req, res, next) => {
         { upsert: true, new: true }
       );
 
-      await sendOtpEmail(otpCode);
+      await sendOtpEmail(otpCode, normalizedEmail);
 
       return sendSuccessResponse({
         res,
@@ -492,7 +520,7 @@ const resendOtp = async (req, res, next) => {
       { upsert: true, new: true }
     );
 
-    await sendOtpEmail(otpCode);
+    await sendOtpEmail(otpCode, authUser.email);
 
     return sendSuccessResponse({
       res,
@@ -501,6 +529,7 @@ const resendOtp = async (req, res, next) => {
       status: 200,
     });
   } catch (error) {
+    if (respondIfOtpEmailSetupError(error, res)) return;
     next(error);
   }
 };
