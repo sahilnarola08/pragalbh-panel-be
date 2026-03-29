@@ -3,7 +3,43 @@ import Partner from "../models/partner.js";
 import PartnerTransaction, { TRANSACTION_TYPES } from "../models/partnerTransaction.js";
 import Income from "../models/income.js";
 import ExpanseIncome from "../models/expance_inc.js";
+import ManualBankEntry from "../models/manualBankEntry.js";
+import Master from "../models/master.js";
 import { PAYMENT_STATUS } from "../helper/enums.js";
+import { invalidateCache } from "../util/cacheHelper.js";
+
+const roundAmount = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+async function normalizeBankIdOrThrow(bankId) {
+  if (!bankId) return null;
+  const rawId =
+    typeof bankId === "object" && bankId !== null
+      ? bankId._id || bankId.id || bankId.toString()
+      : bankId;
+  if (!mongoose.Types.ObjectId.isValid(rawId)) {
+    const error = new Error("Invalid bank ID format");
+    error.status = 400;
+    throw error;
+  }
+  const bank = await Master.findOne({ _id: rawId, isDeleted: false }).select("_id name");
+  if (!bank) {
+    const error = new Error("Bank not found or is inactive");
+    error.status = 404;
+    throw error;
+  }
+  return bank._id;
+}
+
+function buildWithdrawExpenseDescription(partnerName, body) {
+  const parts = [`Partner Withdrawal - ${partnerName}`];
+  if (body.referenceNumber && String(body.referenceNumber).trim()) {
+    parts.push(`Ref: ${String(body.referenceNumber).trim()}`);
+  }
+  if (body.notes && String(body.notes).trim()) {
+    parts.push(String(body.notes).trim());
+  }
+  return parts.join(". ");
+}
 
 /**
  * List partners with optional search and pagination.
@@ -168,12 +204,18 @@ export async function invest(partnerId, body, createdBy = null) {
  * Withdraw: validate balance, atomic update + create transaction.
  */
 export async function withdraw(partnerId, body, createdBy = null) {
-  const amount = Number(body.amount);
+  const amount = roundAmount(body.amount);
   if (amount <= 0) {
     const err = new Error("Amount must be greater than 0");
     err.status = 400;
     throw err;
   }
+  const paymentMode = body.paymentMode || "cash";
+  let normalizedBankId = null;
+  if (paymentMode === "bank") {
+    normalizedBankId = await normalizeBankIdOrThrow(body.bankId);
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -183,15 +225,13 @@ export async function withdraw(partnerId, body, createdBy = null) {
       err.status = 404;
       throw err;
     }
-    const current = partner.currentBalance ?? 0;
-    if (current < amount) {
-      const err = new Error("Insufficient balance");
-      err.status = 400;
-      throw err;
-    }
-    const newBalance = current - amount;
-    const newTotalWithdrawn = (partner.totalWithdrawn || 0) + amount;
+    const current = roundAmount(partner.currentBalance ?? 0);
+    // Partner wallet may go negative when ops pays out from bank before ledger is topped up; UI warns only.
+    const newBalance = roundAmount(current - amount);
+    const newTotalWithdrawn = roundAmount((partner.totalWithdrawn || 0) + amount);
     const transactionDate = body.transactionDate ? new Date(body.transactionDate) : new Date();
+    const expenseDescription = buildWithdrawExpenseDescription(partner.name, body);
+
     await Partner.updateOne(
       { _id: partnerId },
       {
@@ -203,6 +243,71 @@ export async function withdraw(partnerId, body, createdBy = null) {
       },
       { session }
     );
+
+    let linkedFields = {
+      bankId: null,
+      manualBankEntryId: null,
+      linkedExpenseId: null,
+    };
+
+    if (paymentMode === "bank") {
+      const [manualEntry] = await ManualBankEntry.create(
+        [
+          {
+            type: "withdrawal",
+            date: transactionDate,
+            amount,
+            description: expenseDescription,
+            bankId: normalizedBankId,
+          },
+        ],
+        { session }
+      );
+      const [expense] = await ExpanseIncome.create(
+        [
+          {
+            date: transactionDate,
+            description: expenseDescription,
+            paidAmount: amount,
+            dueAmount: 0,
+            bankId: normalizedBankId,
+            status: PAYMENT_STATUS.PAID,
+            manualBankEntryId: manualEntry._id,
+            manualType: "withdrawal",
+          },
+        ],
+        { session }
+      );
+      await ManualBankEntry.updateOne(
+        { _id: manualEntry._id },
+        { $set: { linkedExpenseId: expense._id } },
+        { session }
+      );
+      linkedFields = {
+        bankId: normalizedBankId,
+        manualBankEntryId: manualEntry._id,
+        linkedExpenseId: expense._id,
+      };
+    } else {
+      const [expense] = await ExpanseIncome.create(
+        [
+          {
+            date: transactionDate,
+            description: expenseDescription,
+            paidAmount: amount,
+            dueAmount: 0,
+            status: PAYMENT_STATUS.PAID,
+          },
+        ],
+        { session }
+      );
+      linkedFields = {
+        bankId: null,
+        manualBankEntryId: null,
+        linkedExpenseId: expense._id,
+      };
+    }
+
     await PartnerTransaction.create(
       [
         {
@@ -210,29 +315,20 @@ export async function withdraw(partnerId, body, createdBy = null) {
           type: "withdrawal",
           amount,
           balanceAfterTransaction: newBalance,
-          paymentMode: body.paymentMode || "cash",
+          paymentMode,
           referenceNumber: body.referenceNumber || "",
           notes: body.notes || "",
           transactionDate,
           createdBy: createdBy || null,
+          ...linkedFields,
         },
       ],
       { session }
     );
-    // Deduct from company balance: record as Expense (same as company expense module)
-    await ExpanseIncome.create(
-      [
-        {
-          date: transactionDate,
-          description: `Partner Withdrawal - ${partner.name}`,
-          paidAmount: amount,
-          dueAmount: 0,
-          status: PAYMENT_STATUS.PAID,
-        },
-      ],
-      { session }
-    );
+
     await session.commitTransaction();
+    invalidateCache("income");
+    invalidateCache("dashboard");
     const updated = await Partner.findById(partnerId).lean();
     return updated;
   } catch (e) {
@@ -321,6 +417,7 @@ export async function getTransactions(partnerId, { page = 1, limit = 20, deleted
       .sort({ transactionDate: -1, createdAt: -1 })
       .skip(skip)
       .limit(Math.max(1, limit))
+      .populate("bankId", "name")
       .lean(),
     PartnerTransaction.countDocuments(query),
   ]);
@@ -392,13 +489,35 @@ export async function softDeleteTransaction(partnerId, transactionId) {
       err.status = 400;
       throw err;
     }
+    const manualBankEntryId = tx.manualBankEntryId || null;
+    const linkedExpenseId = tx.linkedExpenseId || null;
+
     tx.isDeleted = true;
     tx.deletedAt = new Date();
     await tx.save({ session });
 
     await recalculatePartnerBalances(partnerId, session);
 
+    if (manualBankEntryId) {
+      await ManualBankEntry.updateOne(
+        { _id: manualBankEntryId, isDeleted: { $ne: true } },
+        { $set: { isDeleted: true, deletedAt: new Date() } },
+        { session }
+      );
+    }
+    if (linkedExpenseId) {
+      await ExpanseIncome.updateOne(
+        { _id: linkedExpenseId, isDeleted: { $ne: true } },
+        { $set: { isDeleted: true, deletedAt: new Date() } },
+        { session }
+      );
+    }
+
     await session.commitTransaction();
+    if (manualBankEntryId || linkedExpenseId) {
+      invalidateCache("income");
+      invalidateCache("dashboard");
+    }
     const saved = await PartnerTransaction.findById(transactionId).lean();
     return saved;
   } catch (e) {
