@@ -46,6 +46,19 @@ const transactionBodySchema = yup.object().shape({
     .oneOf(PAYMENT_MODES, `Payment mode must be one of: ${PAYMENT_MODES.join(", ")}`)
     .optional()
     .default("cash"),
+  bankId: yup
+    .string()
+    .trim()
+    .nullable()
+    .transform((v) => (v === "" || v === undefined ? null : v))
+    .when("paymentMode", {
+      is: "bank",
+      then: (schema) =>
+        schema
+          .required("Company bank account is required when payment mode is bank")
+          .matches(objectIdRegex, "Invalid bank ID format"),
+      otherwise: (schema) => schema.optional(),
+    }),
   referenceNumber: yup.string().trim().max(100).optional().nullable(),
   notes: yup.string().trim().max(500).optional().nullable(),
   transactionDate: yup.date().optional().nullable(),

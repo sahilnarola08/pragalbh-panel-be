@@ -31,6 +31,27 @@ const partnerTransactionSchema = new mongoose.Schema(
       enum: PAYMENT_MODES,
       default: "cash",
     },
+    /** Company bank (Master) when payment was paid from a bank account */
+    bankId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "master",
+      default: null,
+      index: true,
+    },
+    /** When withdrawal was from bank: manual ledger row (same as Bank Accounts module) */
+    manualBankEntryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ManualBankEntry",
+      default: null,
+      index: true,
+    },
+    /** Linked expense row for this withdrawal (for soft-delete / audit) */
+    linkedExpenseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ExpanseIncome",
+      default: null,
+      index: true,
+    },
     referenceNumber: {
       type: String,
       trim: true,
