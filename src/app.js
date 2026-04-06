@@ -25,7 +25,8 @@ app.set("etag", false);
 const allowedOrigins = [
   "http://localhost:3000",
   "https://pragalbh-panel.vercel.app",
-  "https://pragalbh-panel-staging.vercel.app"
+  "https://pragalbh-panel-staging.vercel.app",
+  "https://panel.pragalbhjewels.com",
 ];
 
 app.use(

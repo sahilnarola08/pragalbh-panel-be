@@ -1,5 +1,6 @@
-# Node dependencies
+# Node dependencies — do not commit or push (large; reproducible via npm install)
 node_modules/
+**/node_modules/
 
 # Serverless build artifacts
 .serverless/
