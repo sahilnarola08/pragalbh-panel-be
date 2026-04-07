@@ -33,8 +33,6 @@ const userSchema = new mongoose.Schema({
      contactNumber: {
           type: String,
           trim: true,
-          unique: true,
-          index: true,
      },
      platforms: [platformSchema],
      company: {
@@ -45,8 +43,6 @@ const userSchema = new mongoose.Schema({
      email: {
           type: String,
           trim: true,
-          unique: true,
-          index: true,
      },
      // Allow multiple client types (multi-select)
      clientType: [
@@ -65,6 +61,22 @@ const userSchema = new mongoose.Schema({
      toJSON: { virtuals: true },
      toObject: { virtuals: true }
 });
+
+// Uniqueness only when value is present (allows many customers with no email / no phone on import)
+userSchema.index(
+  { email: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { email: { $type: "string", $gt: "" } },
+  }
+);
+userSchema.index(
+  { contactNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { contactNumber: { $type: "string", $gt: "" } },
+  }
+);
 
 // Performance indexes
 userSchema.index({ firstName: 1, lastName: 1, isDeleted: 1 }); // Compound index for name searches

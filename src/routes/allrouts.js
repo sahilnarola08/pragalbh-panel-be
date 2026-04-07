@@ -24,6 +24,7 @@ import permissionRouter from "./permissionRoute.js";
 import panelUserRouter from "./panelUserRoute.js";
 import loginSessionRouter from "./loginSessionRoute.js";
 import backupRouter from "./backupRoutes.js";
+import customerImportRoute from "./customerImportRoute.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
@@ -33,6 +34,7 @@ const routes = (app) => {
   app.use("/sessions", loginSessionRouter);
   app.use("/users", panelUserRouter);
   app.use("/user", userRouter);
+  app.use("/customers", customerImportRoute);
   app.use("/supplier", supplierRouter);
   app.use("/order", orderRouter);
   app.use("/product", productRouter);

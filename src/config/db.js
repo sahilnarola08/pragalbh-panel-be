@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import dns from "node:dns";
+import { repairUserEmailPhoneUniqueIndexes } from "../services/userIndexRepairService.js";
 
 /**
  * Optimized MongoDB Connection with Connection Pooling
@@ -39,7 +40,16 @@ const connectDB = async () => {
     };
 
     await mongoose.connect(url, options);
-    
+
+    try {
+      await repairUserEmailPhoneUniqueIndexes();
+    } catch (e) {
+      console.warn(
+        "[MongoDB] User index repair failed (imports may hit E11000 until indexes are fixed):",
+        e.message
+      );
+    }
+
     // Connection event handlers
     mongoose.connection.on('connected', () => {
       console.log(`MongoDB Connected successfully - Pool Size: ${mongoose.connection.readyState}`);

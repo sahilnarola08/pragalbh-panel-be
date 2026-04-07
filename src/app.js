@@ -108,7 +108,7 @@ app.use((error, req, res, next) => {
     if (error.code === "LIMIT_FILE_SIZE") {
       return res.status(400).json({
         success: false,
-        message: "File size too large. Maximum size is 5MB.",
+        message: "File size too large (e.g. customer import allows up to 10MB).",
         status: 400,
         data: null,
       });
