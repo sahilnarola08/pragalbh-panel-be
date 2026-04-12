@@ -89,6 +89,15 @@ export const cacheMiddleware = (req, res, next) => {
     req.originalUrl.startsWith('/master') ||
     req.originalUrl.startsWith('/dashboard') ||
     req.originalUrl.includes('/order/kanban-board') ||
+    // Order detail drives Payment & Income modal + edit form; must never serve stale costs (supplier/shipping/etc.)
+    req.originalUrl.includes('/order/get-order-by-id') ||
+    // Supplier "Order Details" modal is built from per-order expenses; must match latest edits immediately
+    req.originalUrl.includes('/supplier-orderdetails') ||
+    // Payment & Income list/detail must reflect order/supplier expense changes without waiting on TTL
+    req.originalUrl.includes('/income-expance') ||
+    req.originalUrl.includes('/employees') ||
+    req.originalUrl.includes('/salary') ||
+    req.originalUrl.startsWith('/stocks') ||
     req.originalUrl.startsWith('/admin/backup')
   ) {
     return next();

@@ -128,6 +128,8 @@ export async function updatePartner(id, body) {
 
 /**
  * Add investment: atomic update of partner balances + create transaction.
+ * When paymentMode is "bank", bankId is required and funds are credited via ManualBankEntry (deposit)
+ * so Bank Accounts / Payments ledger matches the inflow.
  */
 export async function invest(partnerId, body, createdBy = null) {
   const amount = Number(body.amount);
@@ -136,6 +138,17 @@ export async function invest(partnerId, body, createdBy = null) {
     err.status = 400;
     throw err;
   }
+  const paymentMode = body.paymentMode || "cash";
+  let normalizedBankId = null;
+  if (paymentMode === "bank") {
+    if (!body.bankId) {
+      const err = new Error("Company bank account is required for bank investments");
+      err.status = 400;
+      throw err;
+    }
+    normalizedBankId = await normalizeBankIdOrThrow(body.bankId);
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -148,6 +161,18 @@ export async function invest(partnerId, body, createdBy = null) {
     const newBalance = (partner.currentBalance || 0) + amount;
     const newTotalInvested = (partner.totalInvested || 0) + amount;
     const transactionDate = body.transactionDate ? new Date(body.transactionDate) : new Date();
+    const investmentDescription = `Partner Investment - ${partner.name}`;
+    const detailParts = [];
+    if (body.referenceNumber && String(body.referenceNumber).trim()) {
+      detailParts.push(`Ref: ${String(body.referenceNumber).trim()}`);
+    }
+    if (body.notes && String(body.notes).trim()) {
+      detailParts.push(String(body.notes).trim());
+    }
+    const depositDescription = detailParts.length
+      ? `${investmentDescription}. ${detailParts.join(". ")}`
+      : investmentDescription;
+
     await Partner.updateOne(
       { _id: partnerId },
       {
@@ -159,6 +184,41 @@ export async function invest(partnerId, body, createdBy = null) {
       },
       { session }
     );
+
+    const [incomeRow] = await Income.create(
+      [
+        {
+          date: transactionDate,
+          Description: investmentDescription,
+          receivedAmount: amount,
+          sellingPrice: amount,
+          initialPayment: 0,
+          status: PAYMENT_STATUS.RESERVED,
+          ...(normalizedBankId
+            ? { bankId: normalizedBankId, isBankReceived: true }
+            : {}),
+        },
+      ],
+      { session }
+    );
+
+    let manualBankEntryId = null;
+    if (normalizedBankId) {
+      const [me] = await ManualBankEntry.create(
+        [
+          {
+            type: "deposit",
+            date: transactionDate,
+            amount,
+            description: depositDescription,
+            bankId: normalizedBankId,
+          },
+        ],
+        { session }
+      );
+      manualBankEntryId = me._id;
+    }
+
     await PartnerTransaction.create(
       [
         {
@@ -166,7 +226,10 @@ export async function invest(partnerId, body, createdBy = null) {
           type: "investment",
           amount,
           balanceAfterTransaction: newBalance,
-          paymentMode: body.paymentMode || "cash",
+          paymentMode,
+          bankId: normalizedBankId || undefined,
+          manualBankEntryId: manualBankEntryId || undefined,
+          linkedIncomeId: incomeRow._id,
           referenceNumber: body.referenceNumber || "",
           notes: body.notes || "",
           transactionDate,
@@ -175,21 +238,12 @@ export async function invest(partnerId, body, createdBy = null) {
       ],
       { session }
     );
-    // Add to company balance: record as Income (same as company income module)
-    await Income.create(
-      [
-        {
-          date: transactionDate,
-          Description: `Partner Investment - ${partner.name}`,
-          receivedAmount: amount,
-          sellingPrice: amount,
-          initialPayment: 0,
-          status: PAYMENT_STATUS.RESERVED,
-        },
-      ],
-      { session }
-    );
+
     await session.commitTransaction();
+    if (normalizedBankId) {
+      invalidateCache("income");
+      invalidateCache("dashboard");
+    }
     const updated = await Partner.findById(partnerId).lean();
     return updated;
   } catch (e) {
@@ -491,6 +545,7 @@ export async function softDeleteTransaction(partnerId, transactionId) {
     }
     const manualBankEntryId = tx.manualBankEntryId || null;
     const linkedExpenseId = tx.linkedExpenseId || null;
+    const linkedIncomeId = tx.linkedIncomeId || null;
 
     tx.isDeleted = true;
     tx.deletedAt = new Date();
@@ -512,9 +567,16 @@ export async function softDeleteTransaction(partnerId, transactionId) {
         { session }
       );
     }
+    if (linkedIncomeId) {
+      await Income.updateOne(
+        { _id: linkedIncomeId, isDeleted: { $ne: true } },
+        { $set: { isDeleted: true, deletedAt: new Date() } },
+        { session }
+      );
+    }
 
     await session.commitTransaction();
-    if (manualBankEntryId || linkedExpenseId) {
+    if (manualBankEntryId || linkedExpenseId || linkedIncomeId) {
       invalidateCache("income");
       invalidateCache("dashboard");
     }

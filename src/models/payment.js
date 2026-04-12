@@ -4,6 +4,27 @@ import {
   DEFAULT_PAYMENT_LIFECYCLE_STATUS,
 } from "../helper/enums.js";
 
+const paymentEditChangeSchema = new mongoose.Schema(
+  {
+    field: { type: String, required: true, trim: true },
+    from: { type: mongoose.Schema.Types.Mixed, default: null },
+    to: { type: mongoose.Schema.Types.Mixed, default: null },
+  },
+  { _id: false }
+);
+
+const paymentEditHistorySchema = new mongoose.Schema(
+  {
+    at: { type: Date, default: Date.now },
+    editedBy: {
+      userId: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", default: null },
+      name: { type: String, default: "", trim: true },
+    },
+    changes: { type: [paymentEditChangeSchema], default: [] },
+  },
+  { _id: false }
+);
+
 const paymentSchema = new mongoose.Schema(
   {
     orderId: {
@@ -102,6 +123,11 @@ const paymentSchema = new mongoose.Schema(
       type: Date,
       default: null,
       index: true,
+    },
+    /** Append-only audit trail for PUT /payments/:id updates */
+    editHistory: {
+      type: [paymentEditHistorySchema],
+      default: [],
     },
   },
   { timestamps: true }

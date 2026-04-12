@@ -25,6 +25,9 @@ import panelUserRouter from "./panelUserRoute.js";
 import loginSessionRouter from "./loginSessionRoute.js";
 import backupRouter from "./backupRoutes.js";
 import customerImportRoute from "./customerImportRoute.js";
+import employeeRouter from "./employeeRoute.js";
+import salaryRouter from "./salaryRoute.js";
+import stockRouter from "./stockRouter.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
@@ -54,6 +57,9 @@ const routes = (app) => {
 app.use("/mediators", mediatorRouter);
 app.use("/payments", paymentRouter);
   app.use("/admin/backup", backupRouter);
+  app.use("/employees", employeeRouter);
+  app.use("/salary", salaryRouter);
+  app.use("/stocks", stockRouter);
 };
 
 export default routes;

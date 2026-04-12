@@ -52,6 +52,13 @@ const partnerTransactionSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    /** Linked income row for this investment (for soft-delete / audit) */
+    linkedIncomeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Income",
+      default: null,
+      index: true,
+    },
     referenceNumber: {
       type: String,
       trim: true,
