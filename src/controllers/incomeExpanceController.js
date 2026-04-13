@@ -3,7 +3,7 @@ import Master from "../models/master.js";
 import Payment from "../models/payment.js";
 import ManualBankEntry from "../models/manualBankEntry.js";
 import mongoose from "mongoose";
-import { PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
+import { PAYMENT_LIFECYCLE_STATUS, PAYMENT_STATUS } from "../helper/enums.js";
 
 const normalizeBankIdOrThrow = async (bankId) => {
   if (bankId === undefined || bankId === null || bankId === "") {
@@ -223,6 +223,41 @@ const getOrderProductDetails = (order, hints = {}) => {
   };
 };
 
+/** Shipping/packaging/other rows must not use product purchasePrice as fallback dueAmount. */
+const isOrderLevelComponentExpenseRow = (item) => {
+  if (String(item.expenseSourceType || "").toUpperCase() === "SALARY") return true;
+  if (String(item.extraCategoryName || "").toUpperCase() === "SALARY") return true;
+  const ct = String(item.componentType || "").toLowerCase();
+  if (ct === "shipping" || ct === "packaging" || ct === "other") return true;
+  const d = (item.description || "").trim().toLowerCase();
+  return (
+    d === "shipping cost" ||
+    d === "shipping" ||
+    d === "shipping charges" ||
+    d === "courier" ||
+    d === "delivery" ||
+    d === "box / packaging cost" ||
+    d === "packaging cost" ||
+    d === "packaging" ||
+    d === "box" ||
+    d === "box cost" ||
+    d === "other expenses" ||
+    d === "other" ||
+    d === "misc" ||
+    d === "miscellaneous"
+  );
+};
+
+const resolveExpenseDueAmountForApi = (item, productDetails) => {
+  if (item.dueAmount !== undefined && item.dueAmount !== null) {
+    return roundAmount(item.dueAmount);
+  }
+  if (isOrderLevelComponentExpenseRow(item)) {
+    return roundAmount(0);
+  }
+  return productDetails.purchasePrice;
+};
+
 // format order mediator info (only mediator, mediatorAmount is now in Income model)
 const formatOrderMediatorInfo = (order, hints = {}) => {
   if (!order) return null;
@@ -325,7 +360,16 @@ export const getIncomeExpance = async (req, res) => {
       orderId = "",
       startDate = "",
       endDate = "",
-      category = ""
+      category = "",
+      status = "",
+      supplierId = "",
+      bankId = "",
+      linkType = "",
+      minPaidAmount = "",
+      maxPaidAmount = "",
+      minDueAmount = "",
+      maxDueAmount = "",
+      hasOutstanding = "",
     } = req.query;
 
     // Parse page and limit to integers with proper defaults and validation
@@ -431,6 +475,8 @@ export const getIncomeExpance = async (req, res) => {
 
     let data = [];
     let total = 0;
+    /** Sum of paidAmount over all rows matching filters (before pagination); set for incExpType === 2 only */
+    let totalPaidAmount = null;
 
     // ====================== CASE 1: CREDITS (Payment + ManualBankEntry) ======================
     if (incExpType == 1) {
@@ -594,6 +640,69 @@ export const getIncomeExpance = async (req, res) => {
           { createdAt: dateFilter }
         ];
       }
+
+      // Optional smart filters (server-side, before in-memory search)
+      const statusTrim = typeof status === "string" ? status.trim() : "";
+      if (statusTrim) {
+        const parts = statusTrim
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean);
+        const allowed = new Set(Object.values(PAYMENT_STATUS));
+        const normalized = parts.filter((s) => allowed.has(s));
+        if (normalized.length === 1) {
+          expenseQuery.status = normalized[0];
+        } else if (normalized.length > 1) {
+          expenseQuery.status = { $in: normalized };
+        }
+      }
+
+      const supplierTrim =
+        typeof supplierId === "string" ? supplierId.trim() : String(supplierId || "").trim();
+      if (supplierTrim && mongoose.Types.ObjectId.isValid(supplierTrim)) {
+        expenseQuery.supplierId = new mongoose.Types.ObjectId(supplierTrim);
+      }
+
+      const bankTrim = typeof bankId === "string" ? bankId.trim() : String(bankId || "").trim();
+      if (bankTrim && mongoose.Types.ObjectId.isValid(bankTrim)) {
+        expenseQuery.bankId = new mongoose.Types.ObjectId(bankTrim);
+      }
+
+      const linkTrim = typeof linkType === "string" ? linkType.trim().toLowerCase() : "";
+      if (linkTrim === "order") {
+        expenseQuery.orderId = { $exists: true, $ne: null };
+      } else if (linkTrim === "extra") {
+        expenseQuery.$and = [
+          ...(Array.isArray(expenseQuery.$and) ? expenseQuery.$and : []),
+          {
+            $or: [{ orderId: null }, { orderId: { $exists: false } }],
+          },
+        ];
+      }
+
+      const parseBoundParam = (v) => {
+        if (v === undefined || v === null || String(v).trim() === "") return null;
+        const n = roundAmount(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      const paidCond = {};
+      const minP = parseBoundParam(minPaidAmount);
+      const maxP = parseBoundParam(maxPaidAmount);
+      if (minP != null && minP > 0) paidCond.$gte = minP;
+      if (maxP != null && maxP > 0) paidCond.$lte = maxP;
+      if (Object.keys(paidCond).length) expenseQuery.paidAmount = paidCond;
+
+      const dueCond = {};
+      const minD = parseBoundParam(minDueAmount);
+      const maxD = parseBoundParam(maxDueAmount);
+      if (minD != null && minD >= 0) dueCond.$gte = minD;
+      if (maxD != null && maxD >= 0) dueCond.$lte = maxD;
+      const outstanding =
+        hasOutstanding === "true" ||
+        hasOutstanding === true ||
+        String(hasOutstanding).toLowerCase() === "1";
+      if (outstanding) dueCond.$gt = 0;
+      if (Object.keys(dueCond).length) expenseQuery.dueAmount = dueCond;
       
       const expanceData = await ExpanceIncome.find(expenseQuery)
         .populate({
@@ -677,6 +786,10 @@ export const getIncomeExpance = async (req, res) => {
       });
 
       const count = filtered.length;
+      totalPaidAmount = filtered.reduce(
+        (sum, item) => sum + roundAmount(item.paidAmount || 0),
+        0
+      );
       const sliced = filtered.slice(skip, skip + limitNum);
 
       data = sliced.map((item) => {
@@ -692,10 +805,7 @@ export const getIncomeExpance = async (req, res) => {
           date: item.date || item.createdAt,
           orderId: item.orderId,
           description: item.description || productDetails.productName || "",
-          dueAmount:
-            item.dueAmount !== undefined && item.dueAmount !== null
-              ? roundAmount(item.dueAmount)
-              : productDetails.purchasePrice,
+          dueAmount: resolveExpenseDueAmountForApi(item, productDetails),
           clientName: item.orderId?.clientName || "",
           paidAmount: roundAmount(item.paidAmount || 0),
           supplierId: item.supplierId?._id || item.supplierId || null,
@@ -712,6 +822,10 @@ export const getIncomeExpance = async (req, res) => {
           isDeleted: item.isDeleted || false,
           deletedAt: item.deletedAt || null,
           extraCategoryName: item.extraCategoryName || null,
+          componentType: item.componentType || null,
+          isOrderProductPurchase: item.isOrderProductPurchase === true,
+          expenseSourceType: item.expenseSourceType || null,
+          referenceId: item.referenceId || null,
         };
       });
 
@@ -869,10 +983,7 @@ export const getIncomeExpance = async (req, res) => {
           orderId: item.orderId,
           description: item.description || productDetails.productName || "",
           product: productDetails.productName || "",
-          dueAmount:
-            item.dueAmount !== undefined && item.dueAmount !== null
-              ? roundAmount(item.dueAmount)
-              : productDetails.purchasePrice,
+          dueAmount: resolveExpenseDueAmountForApi(item, productDetails),
           clientName: item.orderId?.clientName || "",
           paidAmount: roundAmount(item.paidAmount || 0),
           supplierId: item.supplierId?._id || item.supplierId || null,
@@ -888,6 +999,10 @@ export const getIncomeExpance = async (req, res) => {
           manualType: item.manualType || null,
           isDeleted: item.isDeleted || false,
           deletedAt: item.deletedAt || null,
+          componentType: item.componentType || null,
+          isOrderProductPurchase: item.isOrderProductPurchase === true,
+          expenseSourceType: item.expenseSourceType || null,
+          referenceId: item.referenceId || null,
         };
       });
       // 🔍 Combined filtering
@@ -962,6 +1077,7 @@ export const getIncomeExpance = async (req, res) => {
         page: pageNum,
         limit: limitNum,
         items: data,
+        ...(typeof totalPaidAmount === "number" ? { totalPaidAmount } : {}),
       },
     });
     
@@ -1041,39 +1157,44 @@ export const addExpanseEntry = async (req, res) => {
       });
     }
 
-    // ✅ Find supplier from order
-    const Supplier = (await import("../models/supplier.js")).default;
-    const supplierName = (order.supplier || order.supplierName || "").trim();
+    const ctAdd = String(componentType || "").toLowerCase();
+    const isComponentExpenseRow = ["shipping", "packaging", "other"].includes(ctAdd);
 
-    if (!supplierName) {
-      return res.status(400).json({
-        status: 400,
-        message: "Supplier not associated with this order",
-      });
-    }
+    let supplier = null;
+    if (!isComponentExpenseRow) {
+      const Supplier = (await import("../models/supplier.js")).default;
+      const supplierName = (order.supplier || order.supplierName || "").trim();
 
-    const supplier = await Supplier.findOne({
-      $or: [
-        { firstName: new RegExp(supplierName, "i") },
-        { lastName: new RegExp(supplierName, "i") },
-        {
-          $expr: {
-            $regexMatch: {
-              input: { $concat: ["$firstName", " ", "$lastName"] },
-              regex: supplierName,
-              options: "i",
+      if (!supplierName) {
+        return res.status(400).json({
+          status: 400,
+          message: "Supplier not associated with this order",
+        });
+      }
+
+      supplier = await Supplier.findOne({
+        $or: [
+          { firstName: new RegExp(supplierName, "i") },
+          { lastName: new RegExp(supplierName, "i") },
+          {
+            $expr: {
+              $regexMatch: {
+                input: { $concat: ["$firstName", " ", "$lastName"] },
+                regex: supplierName,
+                options: "i",
+              },
             },
           },
-        },
-        { company: new RegExp(supplierName, "i") },
-      ],
-    });
-
-    if (!supplier) {
-      return res.status(404).json({
-        status: 404,
-        message: "Supplier not found for this order",
+          { company: new RegExp(supplierName, "i") },
+        ],
       });
+
+      if (!supplier) {
+        return res.status(404).json({
+          status: 404,
+          message: "Supplier not found for this order",
+        });
+      }
     }
 
     // ✅ bankId is optional - only normalize if provided
@@ -1111,27 +1232,27 @@ export const addExpanseEntry = async (req, res) => {
       expenseStatus = "pending";
     }
 
-    // Calculate dueAmount: use provided dueAmount, or try to get from order products
+    // Calculate dueAmount: use provided dueAmount, or try to get from order products / order-level costs
     let finalDueAmount = 0;
     if (dueAmountNum !== null) {
-      // Use provided dueAmount
       finalDueAmount = dueAmountNum;
+    } else if (isComponentExpenseRow) {
+      if (ctAdd === "shipping") finalDueAmount = roundAmount(order.shippingCost ?? 0);
+      else if (ctAdd === "packaging") finalDueAmount = roundAmount(order.packagingCost ?? 0);
+      else finalDueAmount = roundAmount(order.otherExpenses ?? 0);
     } else {
-      // Try to get from order product details
       finalDueAmount = orderProductDetails.purchasePrice || 0;
-      
-      // If still 0, try to find product by matching description with product names
+
       if (finalDueAmount === 0 && Array.isArray(order.products) && order.products.length > 0) {
         const descriptionLower = description.toLowerCase().trim();
         const matchedProduct = order.products.find(product => {
           const productName = (product.productName || "").toLowerCase().trim();
           return productName === descriptionLower || productName.includes(descriptionLower) || descriptionLower.includes(productName);
         });
-        
+
         if (matchedProduct && matchedProduct.purchasePrice) {
           finalDueAmount = roundAmount(matchedProduct.purchasePrice);
         } else if (order.products[0] && order.products[0].purchasePrice) {
-          // Fallback to first product's purchasePrice
           finalDueAmount = roundAmount(order.products[0].purchasePrice);
         }
       }
@@ -1144,12 +1265,10 @@ export const addExpanseEntry = async (req, res) => {
       description: description.trim(),
       dueAmount: roundAmount(finalDueAmount),
       paidAmount: roundAmount(paidAmountNum),
-      supplierId: supplier._id,
+      supplierId: supplier ? supplier._id : null,
       status: expenseStatus,
       bankId: normalizedBankId,
-      componentType: ["shipping", "packaging", "other"].includes((componentType || "").toLowerCase())
-        ? (componentType || "").toLowerCase()
-        : null,
+      componentType: isComponentExpenseRow ? ctAdd : null,
     });
 
     // ✅ Populate for response
@@ -1194,7 +1313,7 @@ export const addExpanseEntry = async (req, res) => {
 export const editExpanseEntry = async (req, res) => {
   try {
     const { ExpId } = req.params;
-    const { date, description, paidAmount, status, bankId, componentType } = req.body;
+    const { date, description, paidAmount, status, bankId, componentType, dueAmount } = req.body;
 
     // Find existing expense
     const existingExpense = await ExpanceIncome.findById(ExpId)
@@ -1205,8 +1324,18 @@ export const editExpanseEntry = async (req, res) => {
       return res.status(404).json({ message: "Expense entry not found" });
     }
 
-    // Optional: verify that linked order & supplier still exist
-    if (!existingExpense.orderId || !existingExpense.supplierId) {
+    const mergedComponentType = (() => {
+      if (componentType !== undefined && componentType !== null && String(componentType).trim() !== "") {
+        return String(componentType).toLowerCase();
+      }
+      return String(existingExpense.componentType || "").toLowerCase();
+    })();
+    const isOrderComponentExpense = ["shipping", "packaging", "other"].includes(mergedComponentType);
+
+    if (!existingExpense.orderId) {
+      return res.status(400).json({ message: "Invalid linked order" });
+    }
+    if (!isOrderComponentExpense && !existingExpense.supplierId) {
       return res.status(400).json({ message: "Invalid linked order or supplier" });
     }
 
@@ -1235,17 +1364,38 @@ export const editExpanseEntry = async (req, res) => {
       basePurchasePrice = currentDueAmount;
     }
 
+    // Order-level component rows: cap "total" from Order document when hinting fails
+    if (isOrderComponentExpense && existingExpense.orderId) {
+      const ord = existingExpense.orderId;
+      let cap = 0;
+      if (mergedComponentType === "shipping") cap = roundAmount(ord.shippingCost ?? 0);
+      else if (mergedComponentType === "packaging") cap = roundAmount(ord.packagingCost ?? 0);
+      else if (mergedComponentType === "other") cap = roundAmount(ord.otherExpenses ?? 0);
+      if (cap > 0 && basePurchasePrice === 0) {
+        basePurchasePrice = cap;
+      }
+    }
+
     // Update fields
     if (date) existingExpense.date = date;
     if (description) existingExpense.description = description;
     
+    // Optional explicit due (e.g. modal sends current line due); keeps component rows in sync
+    if (dueAmount !== undefined && dueAmount !== null && dueAmount !== "") {
+      const d = parseFloat(dueAmount);
+      if (!isNaN(d) && d >= 0) {
+        existingExpense.dueAmount = Math.round(d * 100) / 100;
+      }
+    }
+
     // Update paidAmount and recalculate dueAmount
     if (paidAmount !== undefined) {
       const newPaidAmount = Math.round(paidAmount * 100) / 100;
       existingExpense.paidAmount = newPaidAmount;
-      
-      // Recalculate dueAmount: basePurchasePrice - paidAmount
-      const newDueAmount = Math.max(0, basePurchasePrice - newPaidAmount);
+
+      const base = basePurchasePrice > 0 ? basePurchasePrice : (existingExpense.dueAmount || 0) + (currentPaidAmount || 0);
+      const effectiveBase = base > 0 ? base : existingExpense.dueAmount + newPaidAmount;
+      const newDueAmount = Math.max(0, effectiveBase - newPaidAmount);
       existingExpense.dueAmount = Math.round(newDueAmount * 100) / 100;
     }
     
@@ -1303,7 +1453,12 @@ export const editExpanseEntry = async (req, res) => {
     // 2. If status is already "paid" and paidAmount increases: deduct only the difference
     let amountToDeduct = 0;
     
-    if (finalStatus === "paid" && finalPaidAmountValue > 0 && existingExpense.supplierId) {
+    if (
+      finalStatus === "paid" &&
+      finalPaidAmountValue > 0 &&
+      !isOrderComponentExpense &&
+      existingExpense.supplierId
+    ) {
       if (originalStatus !== "paid") {
         // Status changed from non-"paid" to "paid": deduct the current paidAmount
         amountToDeduct = finalPaidAmountValue;
@@ -1316,8 +1471,8 @@ export const editExpanseEntry = async (req, res) => {
       }
     }
     
-    // Only deduct if there's an amount to deduct and status is "paid"
-    if (amountToDeduct > 0 && finalStatus === "paid") {
+    // Only deduct if there's an amount to deduct and status is "paid" (never for shipping/packaging/other rows)
+    if (amountToDeduct > 0 && finalStatus === "paid" && !isOrderComponentExpense && existingExpense.supplierId) {
       const Supplier = (await import("../models/supplier.js")).default;
       const supplierId = existingExpense.supplierId._id || existingExpense.supplierId;
       
@@ -1645,6 +1800,8 @@ export const getExpenseById = async (req, res) => {
       updatedAt: expense.updatedAt,
       extraCategoryName: expense.extraCategoryName || null,
       componentType: expense.componentType || null,
+      expenseSourceType: expense.expenseSourceType || null,
+      referenceId: expense.referenceId || null,
     };
 
     // Set cache-control headers to prevent browser caching (304 responses)

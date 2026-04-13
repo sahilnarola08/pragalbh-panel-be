@@ -25,6 +25,67 @@ const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
 
 const round2Amount = (n) => Math.round(Number(n || 0) * 100) / 100;
 
+/**
+ * When order-level shipping / packaging / other amounts change on the Order document,
+ * keep matching ExpanseIncome rows in sync so Payment & Income modal "due" matches edit order.
+ */
+const syncOrderLevelComponentExpenseDue = async (orderMongoId, orderDoc) => {
+  if (!orderMongoId || !orderDoc) return;
+  const base = { orderId: orderMongoId, isDeleted: { $ne: true } };
+
+  const apply = async (componentType, newDue, exactLabel, altDescRegexes = []) => {
+    const due = round2Amount(newDue);
+    const esc = String(exactLabel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const descRe = new RegExp(`^\\s*${esc}\\s*$`, "i");
+
+    let doc = await ExpanseIncome.findOne({ ...base, componentType }).sort({ createdAt: 1 });
+    if (!doc) {
+      const candidates = [descRe, ...altDescRegexes];
+      for (const re of candidates) {
+        doc = await ExpanseIncome.findOne({
+          ...base,
+          $or: [{ componentType: { $exists: false } }, { componentType: null }],
+          description: re,
+        }).sort({ createdAt: 1 });
+        if (doc) break;
+      }
+    }
+    if (!doc) {
+      if (due <= 0) return;
+      await ExpanseIncome.create({
+        date: new Date(),
+        orderId: orderMongoId,
+        description: exactLabel,
+        paidAmount: 0,
+        dueAmount: due,
+        status: DEFAULT_PAYMENT_STATUS,
+        componentType,
+      });
+      return;
+    }
+    doc.dueAmount = due;
+    if (!doc.componentType) doc.componentType = componentType;
+    await doc.save();
+  };
+
+  await apply("shipping", orderDoc.shippingCost ?? 0, "Shipping cost", [
+    /^\s*shipping\s*$/i,
+    /^\s*shipping\s+charges?\s*$/i,
+    /^\s*courier\s*$/i,
+    /^\s*delivery\s*$/i,
+  ]);
+  await apply("packaging", orderDoc.packagingCost ?? 0, "Box / Packaging cost", [
+    /^\s*packaging(\s+cost)?\s*$/i,
+    /^\s*box\s*(\/\s*)?packaging(\s+cost)?\s*$/i,
+    /^\s*box\s*$/i,
+    /^\s*box\s+cost\s*$/i,
+  ]);
+  await apply("other", orderDoc.otherExpenses ?? 0, "Other expenses", [
+    /^\s*other\s*$/i,
+    /^\s*misc(ellaneous)?\s*$/i,
+  ]);
+};
+
 /** Normalize optional multi-supplier rows from request body. */
 const normalizePurchaseSupplierLines = (raw) => {
   if (!Array.isArray(raw) || raw.length === 0) return [];
@@ -547,6 +608,41 @@ export const createOrder = async (req, res, next) => {
       }
     }
 
+    let stockDocForConversion = null;
+    const stockMongoIdRaw = req.body.stockMongoId;
+    if (stockMongoIdRaw && mongoose.Types.ObjectId.isValid(String(stockMongoIdRaw))) {
+      const StockModel = (await import("../models/stock.js")).default;
+      const sdoc = await StockModel.findOne({
+        _id: stockMongoIdRaw,
+        isDeleted: { $ne: true },
+        status: "in_stock",
+      });
+      if (!sdoc) {
+        return sendErrorResponse({
+          res,
+          message: "Stock not found, already converted, or removed.",
+          status: 400,
+        });
+      }
+      if (processedProducts.length !== 1) {
+        return sendErrorResponse({
+          res,
+          message: "When converting from stock, add exactly one product line (the catalog item from stock).",
+          status: 400,
+        });
+      }
+      const sn = String(sdoc.productName || "").trim().toLowerCase();
+      const pn = String(processedProducts[0].productName || "").trim().toLowerCase();
+      if (sn !== pn) {
+        return sendErrorResponse({
+          res,
+          message: `Product must match stock: "${sdoc.productName}".`,
+          status: 400,
+        });
+      }
+      stockDocForConversion = sdoc;
+    }
+
     // Create order with products array
     const order = await Order.create({
       clientName: resolvedClientName,
@@ -581,6 +677,7 @@ export const createOrder = async (req, res, next) => {
       trackingId: "",
       courierCompany: "",
       status: DEFAULT_ORDER_STATUS,
+      ...(stockDocForConversion ? { sourceStockId: stockDocForConversion._id } : {}),
     });
 
     // Create Income and ExpanseIncome records for each product
@@ -621,6 +718,12 @@ export const createOrder = async (req, res, next) => {
 
     await Promise.all([...incomePromises, ...expensePromises]);
 
+    try {
+      await syncOrderLevelComponentExpenseDue(order._id, order.toObject ? order.toObject() : order);
+    } catch (syncCompErr) {
+      console.error("Error syncing order-level shipping/packaging/other expenses on create:", syncCompErr);
+    }
+
     // Create Payment (lifecycle) entries so they show in Payment Lifecycle list
     let usdToInrRate = null;
     try {
@@ -653,9 +756,19 @@ export const createOrder = async (req, res, next) => {
     }
     if (paymentPromises.length) await Promise.all(paymentPromises);
 
+    if (stockDocForConversion) {
+      stockDocForConversion.status = "converted";
+      stockDocForConversion.convertedOrderId = order._id;
+      stockDocForConversion.convertedAt = new Date();
+      await stockDocForConversion.save();
+    }
+
     const { invalidateCache } = await import("../util/cacheHelper.js");
-    invalidateCache('order');
-    invalidateCache('dashboard');
+    invalidateCache("order");
+    invalidateCache("dashboard");
+    if (stockDocForConversion) {
+      invalidateCache("stock");
+    }
 
     await sendOrderCreatedNotificationToAdmins(order, existingClient);
 
@@ -1192,10 +1305,17 @@ const updateOrder = async (req, res, next) => {
       })
       .lean();
 
-    // ✅ Invalidate cache after order update
-    const { invalidateCache } = await import("../util/cacheHelper.js");
-    invalidateCache('order', id);
-    invalidateCache('dashboard');
+    const orderCostsTouched =
+      updateData.shippingCost !== undefined ||
+      updateData.packagingCost !== undefined ||
+      updateData.otherExpenses !== undefined;
+    if (orderCostsTouched && updatedOrder) {
+      try {
+        await syncOrderLevelComponentExpenseDue(orderMongoId, updatedOrder);
+      } catch (syncErr) {
+        console.error("Error syncing order-level expense due amounts:", syncErr);
+      }
+    }
 
     // --- Sync related Income and Expense records for this order ---
     try {
@@ -1409,6 +1529,10 @@ const updateOrder = async (req, res, next) => {
       // Log but don't break main order update flow
       console.error("Error syncing income/expense with updated order:", syncError);
     }
+
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("order", id);
+    invalidateCache("dashboard");
 
     sendSuccessResponse({
       res,
@@ -1985,6 +2109,12 @@ export const updateTrackingInfo = async (req, res) => {
       order.shippingCost = Math.round(shippingCost * 100) / 100;
     }
     await order.save();
+
+    try {
+      await syncOrderLevelComponentExpenseDue(order._id, order.toObject ? order.toObject() : order);
+    } catch (syncErr) {
+      console.error("Error syncing shipping expense after tracking update:", syncErr);
+    }
 
     // ✅ Invalidate cache after tracking update
     const { invalidateCache } = await import("../util/cacheHelper.js");

@@ -3,12 +3,17 @@ import incomeExpController from "../controllers/incomeExpanceController.js";
 import supOrdDetailsController from "../controllers/supOrdDetailsController.js";
 import manualBankEntryController from "../controllers/manualBankEntryController.js";
 import { authenticateJWT } from "../middlewares/authenticateJWT.js";
-import { authorize } from "../middlewares/authorize.js";
+import { authorize, authorizeAny } from "../middlewares/authorize.js";
 
 const router = express.Router();
 router.use(authenticateJWT);
 
-router.get("/get-income-expance", authorize("income.view"), incomeExpController.getIncomeExpance);
+// Expense list (incExpType=2) is used by Expense page with expense.view; income/credits need income.view
+router.get(
+  "/get-income-expance",
+  authorizeAny(["income.view", "expense.view"]),
+  incomeExpController.getIncomeExpance
+);
 router.post("/add-manual-bank-entry", authorize("income.create"), manualBankEntryController.addManualBankEntry);
 router.put("/soft-delete-manual-bank-entry/:entryId", authorize("income.delete"), manualBankEntryController.softDeleteManualBankEntry);
 router.put("/restore-manual-bank-entry/:entryId", authorize("income.edit"), manualBankEntryController.restoreManualBankEntry);

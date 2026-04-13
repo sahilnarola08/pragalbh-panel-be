@@ -8,6 +8,62 @@ import { getUsdToInrRate } from "../services/currencyService.js";
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+const PAYMENT_AUDITED_FIELDS = [
+  "grossAmountUSD",
+  "mediatorId",
+  "mediatorCommissionType",
+  "mediatorCommissionValue",
+  "mediatorCommissionAmount",
+  "conversionRate",
+  "actualBankCreditINR",
+  "paymentStatus",
+  "transactionReference",
+  "creditedDate",
+  "bankId",
+  "notes",
+  "productIndex",
+  "netAmountUSD",
+  "expectedAmountINR",
+  "exchangeDifference",
+];
+
+/** Normalize values for audit comparison / storage (JSON-safe). */
+function normalizePaymentAuditValue(value) {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "number" && !Number.isNaN(value)) return round2(value);
+  if (typeof value === "string") return value;
+  if (mongoose.Types.ObjectId.isValid(value)) {
+    const s = String(value);
+    if (/^[a-fA-F0-9]{24}$/.test(s)) return s;
+  }
+  return value;
+}
+
+function paymentAuditSnapshot(doc, field) {
+  return normalizePaymentAuditValue(doc[field]);
+}
+
+function buildPaymentEditChanges(existing, projected) {
+  const changes = [];
+  for (const field of PAYMENT_AUDITED_FIELDS) {
+    const fromVal = paymentAuditSnapshot(existing, field);
+    const toVal = paymentAuditSnapshot(projected, field);
+    const same =
+      fromVal === toVal ||
+      (fromVal != null &&
+        toVal != null &&
+        typeof fromVal === "object" &&
+        typeof toVal === "object" &&
+        JSON.stringify(fromVal) === JSON.stringify(toVal));
+    if (!same) {
+      changes.push({ field, from: fromVal, to: toVal });
+    }
+  }
+  return changes;
+}
+
 const applyMediatorDefaults = async (payload) => {
   if (!payload.mediatorId) return payload;
   const mediator = await Mediator.findById(payload.mediatorId).lean();
@@ -119,7 +175,34 @@ export const updatePayment = async (req, res) => {
     update.expectedAmountINR = expectedINR;
     if (actual != null) update.exchangeDifference = round2(actual - expectedINR);
 
-    const doc = await Payment.findByIdAndUpdate(id, { $set: update }, { new: true, runValidators: true })
+    const projected = { ...existing, ...update };
+    const editChanges = buildPaymentEditChanges(existing, projected);
+
+    const mongoUpdate = { $set: update };
+    if (editChanges.length > 0) {
+      const user = req.user;
+      const editedByName =
+        (user?.name && String(user.name).trim()) ||
+        (user?.email && String(user.email).trim()) ||
+        "";
+      mongoUpdate.$push = {
+        editHistory: {
+          $each: [
+            {
+              at: new Date(),
+              editedBy: {
+                userId: user?._id ?? null,
+                name: editedByName,
+              },
+              changes: editChanges,
+            },
+          ],
+          $slice: -100,
+        },
+      };
+    }
+
+    const doc = await Payment.findByIdAndUpdate(id, mongoUpdate, { new: true, runValidators: true })
       .populate("mediatorId", "name commissionType commissionValue settlementDelayDays")
       .populate("bankId", "name")
       .lean();

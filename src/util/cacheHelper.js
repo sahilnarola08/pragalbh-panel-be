@@ -17,6 +17,9 @@ export const invalidateCache = (entityType, entityId = null) => {
     user: '/user',
     master: '/master',
     income: '/income-expance',
+    employees: '/employees',
+    salary: '/salary',
+    stock: '/stocks',
   };
 
   const pattern = patterns[entityType] || entityType;
@@ -28,6 +31,13 @@ export const invalidateCache = (entityType, entityId = null) => {
   
   // Clear list cache for the entity type
   clearCacheByRoute(pattern);
+
+  // Orders drive supplier payable lines (ExpanseIncome) and payment lists; those routes
+  // use their own URL prefixes and were not covered by clearing `/order` alone.
+  if (entityType === "order") {
+    clearCacheByRoute("/supplier-orderdetails");
+    clearCacheByRoute("/income-expance");
+  }
   
   // Always clear dashboard cache when any entity changes
   if (entityType !== 'dashboard') {

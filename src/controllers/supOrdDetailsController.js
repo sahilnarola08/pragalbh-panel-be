@@ -515,6 +515,20 @@ export const markPaymentDone = async (req, res) => {
       });
     }
 
+    const currentPaidAmountBefore = parseFloat(expense.paidAmount) || 0;
+
+    // When client sends cumulative paidAmount + purchasePrice, do not allow reducing recorded paid (prevents mistakes / advance reversal here)
+    if (
+      purchasePriceNum !== null &&
+      paidAmountNum + 1e-6 < currentPaidAmountBefore
+    ) {
+      return res.status(400).json({
+        success: false,
+        status: 400,
+        message: `paidAmount cannot be less than already recorded total (${currentPaidAmountBefore}).`,
+      });
+    }
+
     // Find the supplier
     const supplier = await Supplier.findById(normalizedSupplierId);
     if (!supplier) {
@@ -540,11 +554,15 @@ export const markPaymentDone = async (req, res) => {
     let remainingToDeduct = 0;
     let newTotalAdvancePayment = totalAdvancePayment;
 
+    // Only deduct the *increment* when client sends cumulative paid + purchasePrice; otherwise paidAmount is incremental
+    const advanceDeductionAmount =
+      purchasePriceNum !== null
+        ? Math.max(0, paidAmountNum - currentPaidAmountBefore)
+        : Math.max(0, paidAmountNum);
+
     // Only proceed with deduction if advancePayment total is greater than 0
-    if (totalAdvancePayment > 0) {
-      // Deduct the paidAmount directly from advancePayment
-      // Example: paidAmount = 100, advancePayment = 28,400 → new balance = 28,300
-      amountToDeductFromAdvance = paidAmountNum;
+    if (totalAdvancePayment > 0 && advanceDeductionAmount > 0) {
+      amountToDeductFromAdvance = advanceDeductionAmount;
       remainingToDeduct = Math.max(0, amountToDeductFromAdvance);
 
       // Deduct from banks sequentially (first to last)
@@ -579,7 +597,7 @@ export const markPaymentDone = async (req, res) => {
     await supplier.save();
 
     // Update expense record
-    const currentPaidAmount = parseFloat(expense.paidAmount) || 0;
+    const currentPaidAmount = currentPaidAmountBefore;
     const currentDueAmount = parseFloat(expense.dueAmount) || 0;
     
     // Calculate new dueAmount based on purchasePrice and paidAmount

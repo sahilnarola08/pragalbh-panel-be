@@ -9,6 +9,14 @@ const expanseIncomeSchema = new mongoose.Schema(
       required: false,  // Changed to false to allow standalone expenses
       index: true,
     },
+    /** Optional link to inventory stock (e.g. supplier cost before order exists) */
+    stockId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Stock",
+      required: false,
+      default: null,
+      index: true,
+    },
     description: {
       type: String,
       required: true,
@@ -102,6 +110,26 @@ const expanseIncomeSchema = new mongoose.Schema(
       type: Boolean,
       required: false,
       default: false,
+      index: true,
+    },
+    /**
+     * Optional linkage for standalone expenses (e.g. salary) — does not affect order profit math.
+     * referenceId: related entity (e.g. Employee _id).
+     */
+    expenseSourceType: {
+      type: String,
+      required: false,
+      default: null,
+      index: true,
+      validate: {
+        validator: (v) => v == null || v === "" || v === "SALARY",
+        message: "expenseSourceType must be SALARY when set",
+      },
+    },
+    referenceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: false,
+      default: null,
       index: true,
     },
   },

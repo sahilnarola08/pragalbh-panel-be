@@ -160,6 +160,13 @@ const orderSchema = new mongoose.Schema({
           ]
      },
      trackingIdUpdatedAt: { type: Date },
+     /** When order was created by converting inventory stock */
+     sourceStockId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Stock",
+          default: null,
+          index: true,
+     },
      isDeleted: {
           type: Boolean,
           default: false,
