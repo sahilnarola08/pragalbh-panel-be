@@ -1,13 +1,13 @@
 import express from "express";
 import masterController from "../controllers/masterController.js";
 import { authenticateJWT } from "../middlewares/authenticateJWT.js";
-import { authorize } from "../middlewares/authorize.js";
+import { authorize, authorizeAny } from "../middlewares/authorize.js";
 
 const router = express.Router();
 router.use(authenticateJWT);
 
 router.post("/create", authorize("master.create"), masterController.createMaster);
-router.get("/get", authorize("master.view"), masterController.getAllMasters);
+router.get("/get", authorizeAny(["master.view", "expense.view", "income.view", "payment.view"]), masterController.getAllMasters);
 router.get("/get-by-id/:id", authorize("master.view"), masterController.getMasterById);
 router.put("/update/:id", authorize("master.edit"), masterController.updateMaster);
 router.delete("/delete/:id", authorize("master.delete"), masterController.deleteMaster);
