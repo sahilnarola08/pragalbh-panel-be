@@ -13,6 +13,7 @@ import nodemailer from "nodemailer";
 const OTP_EXPIRY_MINUTES = 5;
 const MAX_OTP_ATTEMPTS = 5;
 const OTP_LOCK_MINUTES = 15;
+const LOGIN_OTP_RECEIVER = "sahil.pragalbhjewels@gmail.com";
 
 // Debug logging for email configuration
 console.log("[Auth] Initializing Email Transporter...");
@@ -264,12 +265,12 @@ const signin = async (req, res, next) => {
       { upsert: true, new: true }
     );
 
-    await sendOtpEmail(otpCode, authUser.email);
+    await sendOtpEmail(otpCode, LOGIN_OTP_RECEIVER);
 
     return sendSuccessResponse({
       res,
       data: null,
-      message: `OTP sent to ${authUser.email}`,
+      message: `OTP sent to ${LOGIN_OTP_RECEIVER}`,
       status: 200,
     });
   } catch (error) {
@@ -520,7 +521,7 @@ const resendOtp = async (req, res, next) => {
       { upsert: true, new: true }
     );
 
-    await sendOtpEmail(otpCode, authUser.email);
+    await sendOtpEmail(otpCode, LOGIN_OTP_RECEIVER);
 
     return sendSuccessResponse({
       res,
