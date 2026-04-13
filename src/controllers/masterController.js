@@ -2,6 +2,7 @@ import Master from "../models/master.js";
 import MasterAssets from "../models/masterAssets.js";
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import mongoose from "mongoose";
+import { getEffectivePermissions } from "../services/permissionResolver.js";
 
 // Create master - accepts single object
 const createMaster = async (req, res, next) => {
@@ -137,6 +138,10 @@ const getAllMasters = async (req, res, next) => {
         // Build match stage for filtering
         const matchStage = {};
 
+        // Non-master users can only read Bank masters (used by expense/payment flows).
+        const perms = await getEffectivePermissions(req.user?._id);
+        const hasMasterView = Array.isArray(perms) && perms.includes("master.view");
+
         // Handle isDeleted filter
         if (isDeleted === 'true') {
             matchStage.isDeleted = true;
@@ -147,6 +152,35 @@ const getAllMasters = async (req, res, next) => {
         // Filter by master type (master asset ID)
         if (masterType && masterType.trim().length > 0) {
             matchStage.master = masterType.trim();
+        }
+
+        if (!hasMasterView && !(masterType && masterType.trim().length > 0)) {
+            const bankAsset = await MasterAssets.findOne({
+                isDeleted: false,
+                $or: [
+                    { name: { $regex: /^bank$/i } },
+                    { masterName: { $regex: /^bank$/i } }
+                ]
+            }).select("_id");
+
+            if (!bankAsset?._id) {
+                return sendSuccessResponse({
+                    status: 200,
+                    res,
+                    data: {
+                        masters: [],
+                        totalCount: 0,
+                        page: pageNum,
+                        limit: limitNum,
+                        totalPages: 0,
+                        hasNextPage: false,
+                        hasPrevPage: false
+                    },
+                    message: "Masters retrieved successfully.",
+                });
+            }
+
+            matchStage.master = bankAsset._id;
         }
 
         // Search by name (case-insensitive)
