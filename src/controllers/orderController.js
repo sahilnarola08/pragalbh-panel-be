@@ -1882,7 +1882,7 @@ const getKanbanData = async (req, res) => {
     const promises = statuses.map(async (status) => {
       const queryFilter = { status, isDeleted: false, ...dateFilter };
       const orders = await Order.find(queryFilter)
-        .select("_id clientName address products status trackingId courierCompany createdAt checklist shippingCost")
+        .select("_id clientName address products status trackingId courierCompany trackingEntries createdAt checklist shippingCost")
         .populate({
           path: "products.orderPlatform",
           select: "_id name",
@@ -2070,30 +2070,87 @@ export const updateOrderStatus = async (req, res) => {
   }
 };
 
+/** Normalize tracking entry objects from API (supports multiple packages per order). */
+const normalizeTrackingEntriesInput = (body) => {
+  const raw = body?.trackingEntries;
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw.map((row) => ({
+      trackingId: typeof row?.trackingId === "string" ? row.trackingId.trim() : "",
+      courierCompany: typeof row?.courierCompany === "string" ? row.courierCompany.trim() : "",
+      notes: typeof row?.notes === "string" ? row.notes.trim() : "",
+    }));
+  }
+  const tid = typeof body?.trackingId === "string" ? body.trackingId.trim() : "";
+  const cc = typeof body?.courierCompany === "string" ? body.courierCompany.trim() : "";
+  const notes = typeof body?.notes === "string" ? body.notes.trim() : "";
+  if (tid || cc || notes) {
+    return [{ trackingId: tid, courierCompany: cc, notes }];
+  }
+  return [];
+};
+
+/** Rows with any field set — each must have tracking ID + courier. */
+const validateTrackingEntriesShape = (entries) => {
+  const meaningful = entries.filter(
+    (e) => (e.trackingId && e.trackingId.length > 0) || (e.courierCompany && e.courierCompany.length > 0) || (e.notes && e.notes.length > 0)
+  );
+  if (meaningful.length === 0) {
+    return { ok: false, message: "Add at least one tracking entry with tracking ID and courier." };
+  }
+  for (let i = 0; i < meaningful.length; i++) {
+    const e = meaningful[i];
+    if (!e.trackingId || !e.courierCompany) {
+      return {
+        ok: false,
+        message: `Tracking entry ${i + 1}: tracking ID and courier company are required.`,
+      };
+    }
+  }
+  const ids = meaningful.map((e) => e.trackingId);
+  const dup = ids.find((id, idx) => ids.indexOf(id) !== idx);
+  if (dup) {
+    return { ok: false, message: `Duplicate tracking ID in this order: "${dup}".` };
+  }
+  return { ok: true, entries: meaningful };
+};
+
+const findOtherOrderWithTrackingId = async (trackingIdStr, excludeOrderId) => {
+  const tid = String(trackingIdStr || "").trim();
+  if (!tid) return null;
+  return Order.findOne({
+    _id: { $ne: excludeOrderId },
+    isDeleted: { $ne: true },
+    $or: [{ trackingId: tid }, { "trackingEntries.trackingId": tid }],
+  })
+    .select("_id orderId")
+    .lean();
+};
+
 // Update Tracking Info
 export const updateTrackingInfo = async (req, res) => {
   try {
-    const { orderId, trackingId, courierCompany, shippingCost } = req.body;
+    const { orderId, shippingCost } = req.body;
 
     if (!orderId) {
       return sendErrorResponse({ res, status: 400, message: "orderId is required" });
     }
-    if (!trackingId || !courierCompany) {
-      return sendErrorResponse({
-        res,
-        status: 400,
-        message: "Both trackingId and courierCompany are required",
-      });
-    }
 
-    // Check if trackingId already exists in another order
-    const existingOrder = await Order.findOne({ trackingId, _id: { $ne: orderId } });
-    if (existingOrder) {
-      return sendErrorResponse({
-        res,
-        status: 400,
-        message: `Tracking ID "${trackingId}" is already assigned to another order.`,
-      });
+    const normalized = normalizeTrackingEntriesInput(req.body);
+    const shape = validateTrackingEntriesShape(normalized);
+    if (!shape.ok) {
+      return sendErrorResponse({ res, status: 400, message: shape.message });
+    }
+    const entries = shape.entries;
+
+    for (const e of entries) {
+      const conflict = await findOtherOrderWithTrackingId(e.trackingId, orderId);
+      if (conflict) {
+        return sendErrorResponse({
+          res,
+          status: 400,
+          message: `Tracking ID "${e.trackingId}" is already assigned to another order.`,
+        });
+      }
     }
 
     const order = await Order.findById(orderId);
@@ -2101,8 +2158,9 @@ export const updateTrackingInfo = async (req, res) => {
       return sendErrorResponse({ res, status: 404, message: "Order not found" });
     }
 
-    order.trackingId = trackingId;
-    order.courierCompany = courierCompany;
+    order.trackingEntries = entries;
+    order.trackingId = entries[0]?.trackingId || "";
+    order.courierCompany = entries[0]?.courierCompany || "";
     order.status = ORDER_STATUS.UPDATED_TRACKING_ID;
     order.trackingIdUpdatedAt = new Date();
     if (shippingCost !== undefined && shippingCost !== null) {

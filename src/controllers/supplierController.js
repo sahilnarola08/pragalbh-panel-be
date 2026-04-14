@@ -329,7 +329,13 @@ const createSupplier = async (req, res, next) => {
             advancePayment: sanitizedAdvancePayments
         });
 
-        const supplierPayload = await fetchSupplierWithAggregates(supplier._id);
+        let supplierPayload;
+        try {
+            supplierPayload = await fetchSupplierWithAggregates(supplier._id);
+        } catch (aggErr) {
+            console.error("fetchSupplierWithAggregates failed after create:", aggErr);
+            supplierPayload = await Supplier.findById(supplier._id).select("-__v").lean();
+        }
 
         // ✅ Invalidate cache after supplier creation
         const { invalidateCache } = await import("../util/cacheHelper.js");
@@ -348,8 +354,34 @@ const createSupplier = async (req, res, next) => {
             status: 200
         });
     } catch (error) {
+        // Mongo duplicate key (e.g. unique contactNumber) — otherwise Mongoose passes to next() → 500
+        const dupCode = error?.code === 11000 || error?.code === 11001 || String(error?.code) === "11000";
+        if (dupCode) {
+            const field = error.keyPattern ? Object.keys(error.keyPattern)[0] : "";
+            const message =
+                field === "contactNumber"
+                    ? "Contact number already exists for another supplier."
+                    : field === "company"
+                      ? "Company already exists for another supplier."
+                      : "Duplicate supplier record.";
+            return sendErrorResponse({ res, status: 400, message });
+        }
+        if (error?.name === "ValidationError") {
+            const first = Object.values(error.errors || {})[0];
+            return sendErrorResponse({
+                res,
+                status: 400,
+                message: first?.message || "Validation failed",
+            });
+        }
+        if (error?.name === "CastError") {
+            return sendErrorResponse({
+                res,
+                status: 400,
+                message: error.message || "Invalid supplier data",
+            });
+        }
         next(error);
-
     }
 
 };
