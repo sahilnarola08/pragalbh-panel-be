@@ -1,6 +1,7 @@
 import Auth from "../models/auth.js";
 import Role from "../models/role.js";
 import { invalidatePermissionCache } from "./permissionResolver.js";
+import { createCrmInvite, setCrmAccess } from "./crmAccessService.js";
 
 export async function listUsers() {
   return Auth.find({ isDeleted: false })
@@ -63,4 +64,16 @@ export async function setUserPermissions(id, customPermissions, req) {
 
 export async function getUserById(id) {
   return Auth.findById(id).select("-password").populate("roleId", "name permissions").lean();
+}
+
+export async function updateUserCrmAccess(id, payload, req) {
+  const actorId = req?.user?._id || null;
+  const updated = await setCrmAccess(id, payload, actorId);
+  return updated;
+}
+
+export async function inviteUserToCrm(id, payload, req) {
+  const actorId = req?.user?._id || null;
+  const expiresInHours = payload?.expiresInHours;
+  return createCrmInvite(id, actorId, expiresInHours);
 }

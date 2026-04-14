@@ -73,3 +73,35 @@ export async function getUserById(req, res, next) {
     next(e);
   }
 }
+
+export async function setUserCrmAccess(req, res, next) {
+  try {
+    const user = await authUserService.updateUserCrmAccess(req.params.id, req.body, req);
+    if (!user) return sendErrorResponse({ status: 404, res, message: "User not found" });
+    await logAudit(req, "USER_CRM_ACCESS_UPDATE", "users", {
+      userId: user._id,
+      enabled: Boolean(req.body?.enabled),
+      accessMode: req.body?.accessMode || "selected",
+    });
+    clearCacheByRoute("/users");
+    sendSuccessResponse({ res, data: user, message: "CRM access updated", status: 200 });
+  } catch (e) {
+    if (e.status) return sendErrorResponse({ status: e.status, res, message: e.message });
+    next(e);
+  }
+}
+
+export async function inviteUserToCrm(req, res, next) {
+  try {
+    const invite = await authUserService.inviteUserToCrm(req.params.id, req.body, req);
+    if (!invite) return sendErrorResponse({ status: 404, res, message: "User not found" });
+    await logAudit(req, "USER_CRM_INVITE_SENT", "users", {
+      userId: req.params.id,
+      expiresAt: invite.expiresAt,
+    });
+    sendSuccessResponse({ res, data: invite, message: "CRM invite generated", status: 200 });
+  } catch (e) {
+    if (e.status) return sendErrorResponse({ status: e.status, res, message: e.message });
+    next(e);
+  }
+}

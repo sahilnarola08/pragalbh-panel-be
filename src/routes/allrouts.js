@@ -28,6 +28,10 @@ import customerImportRoute from "./customerImportRoute.js";
 import employeeRouter from "./employeeRoute.js";
 import salaryRouter from "./salaryRoute.js";
 import stockRouter from "./stockRouter.js";
+import crmRouter from "./crmRoute.js";
+import crmAuthLocalRouter from "./crmAuthLocalRoute.js";
+import crmGatewayRouter from "./crmGatewayRoute.js";
+import crmCustomersAliasRouter from "./crmCustomersAliasRoute.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
@@ -60,6 +64,10 @@ app.use("/payments", paymentRouter);
   app.use("/employees", employeeRouter);
   app.use("/salary", salaryRouter);
   app.use("/stocks", stockRouter);
+  app.use("/crm", crmRouter);
+  app.use("/crm", crmCustomersAliasRouter);
+  app.use("/crm-auth", crmAuthLocalRouter);
+  app.use("/crm-gateway", crmGatewayRouter);
 };
 
 export default routes;

@@ -6,6 +6,7 @@ import { secret } from "../config/secret.js";
 import { getEffectivePermissions } from "../services/permissionResolver.js";
 import { parseUserAgent } from "../util/parseUserAgent.js";
 import * as loginSessionService from "../services/loginSessionService.js";
+import { markCrmInviteAccepted } from "../services/crmAccessService.js";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
@@ -151,6 +152,17 @@ const createJwtAndSession = async (req, authUser) => {
         name: authUser.name,
         roleId: authUser.roleId,
       };
+
+  if (authUser?.crmAccess?.enabled) {
+    if (authUser?.crmAccess?.invitationStatus === "pending") {
+      await markCrmInviteAccepted(authUser._id);
+    } else {
+      await Auth.updateOne(
+        { _id: authUser._id },
+        { $set: { "crmAccess.lastLoginAt": new Date() } }
+      );
+    }
+  }
 
   return { token, user: { ...userObj, permissions } };
 };
