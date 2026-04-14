@@ -116,13 +116,33 @@ const updateOrderStatusSchema = yup.object().shape({
     status: yup.string().required("Status is required"),
 });
 
-// Update tracking info validation schema
-const updateTrackingInfoSchema = yup.object().shape({
-    orderId: yup.string().required("Order ID is required"),
-    trackingId: yup.string().required("Tracking ID is required"),
-    courierCompany: yup.string().required("Courier company is required"),
-    shippingCost: yup.number().min(0, "Shipping cost must be greater than or equal to 0").optional(),
+// Update tracking info validation schema (multiple entries or legacy single trackingId + courierCompany)
+const trackingEntryRowSchema = yup.object().shape({
+    trackingId: yup.string().trim().default(""),
+    courierCompany: yup.string().trim().default(""),
+    notes: yup.string().trim().optional(),
 });
+
+const updateTrackingInfoSchema = yup
+    .object()
+    .shape({
+        orderId: yup.string().required("Order ID is required"),
+        trackingId: yup.string().optional(),
+        courierCompany: yup.string().optional(),
+        notes: yup.string().optional(),
+        trackingEntries: yup.array().of(trackingEntryRowSchema).optional(),
+        shippingCost: yup.number().min(0, "Shipping cost must be greater than or equal to 0").optional(),
+    })
+    .test(
+        "tracking-payload",
+        "Provide trackingEntries or legacy trackingId with courierCompany",
+        (value) => {
+            if (!value) return false;
+            if (Array.isArray(value.trackingEntries) && value.trackingEntries.length > 0) return true;
+            if (value.trackingId && value.courierCompany) return true;
+            return false;
+        }
+    );
 
 // Update order checklist validation schema
 const updateOrderChecklistSchema = yup.object().shape({
