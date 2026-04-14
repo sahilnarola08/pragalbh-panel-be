@@ -11,7 +11,7 @@ import {
   validateUserDelete 
 } from "../middlewares/validation/userValidation.js";
 import { authenticateJWT } from "../middlewares/authenticateJWT.js";
-import { authorize } from "../middlewares/authorize.js";
+import { authorize, authorizeAny } from "../middlewares/authorize.js";
 
 const router = express.Router();
 router.use(authenticateJWT);
@@ -36,7 +36,12 @@ router.post(
 );
 
 router.post("/registration", authorize("user.create"), validateUserRegistration, userController.register);
-router.get("/users-data", authorize("user.view"), userController.getAllUsers);
+// Needed by Add Order client picker for production/order-management roles.
+router.get(
+  "/users-data",
+  authorizeAny(["user.view", "orders.create", "orders.edit", "order_management.view"]),
+  userController.getAllUsers
+);
 router.get("/user-data-by-id/:id", authorize("user.view"), validateUserDelete, userController.getUserById);
 router.put("/user-update/:id", authorize("user.edit"), validateUserUpdate, userController.updateUser);
 router.delete("/user-delete/:id", authorize("user.delete"), validateUserDelete, userController.deleteUser);

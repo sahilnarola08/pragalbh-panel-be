@@ -68,4 +68,11 @@ export const SYSTEM_PERMISSIONS = [
   { name: "employees.edit", module: "employees", action: "edit", description: "Edit employee" },
   { name: "employees.delete", module: "employees", action: "delete", description: "Delete employee" },
   { name: "employees.pay_salary", module: "employees", action: "pay_salary", description: "Pay employee salary" },
+  { name: "crm.auth.validate", module: "crm", action: "auth_validate", description: "Validate CRM access token/session contract" },
+  { name: "crm.clients.view", module: "crm", action: "clients_view", description: "View CRM clients" },
+  { name: "crm.clients.edit", module: "crm", action: "clients_edit", description: "Edit CRM clients" },
+  { name: "crm.followups.view", module: "crm", action: "followups_view", description: "View CRM followups" },
+  { name: "crm.followups.create", module: "crm", action: "followups_create", description: "Create CRM followups" },
+  { name: "crm.followups.edit", module: "crm", action: "followups_edit", description: "Edit CRM followups" },
+  { name: "crm.access.manage", module: "crm", action: "access_manage", description: "Provision CRM access for users" },
 ];
