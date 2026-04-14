@@ -135,17 +135,26 @@ const orderSchema = new mongoose.Schema({
           enum: Object.values(ORDER_STATUS),
           default: DEFAULT_ORDER_STATUS,
      },
+     /** Kept in sync with the first entry in `trackingEntries` for legacy queries and list views. */
      trackingId: {
           type: String,
           default: "",
-          index: {
-               unique: true,
-               partialFilterExpression: { trackingId: { $ne: "" } }
-          }
+          index: true,
      },
      courierCompany: {
           type: String,
           default: ""
+     },
+     /** Multiple shipments: each package has its own ID, courier, and optional notes. */
+     trackingEntries: {
+          type: [
+               {
+                    trackingId: { type: String, trim: true, default: "" },
+                    courierCompany: { type: String, trim: true, default: "" },
+                    notes: { type: String, trim: true, default: "" },
+               },
+          ],
+          default: [],
      },
      checklist: {
           type: [
