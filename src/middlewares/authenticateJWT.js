@@ -6,9 +6,26 @@ import * as loginSessionService from "../services/loginSessionService.js";
 
 const tokenSecret = secret?.tokenSecret || process.env.TOKEN_SECRET || "default-secret-key";
 
+function getTokenFromRequest(req) {
+  const authHeader = req.headers.authorization || "";
+  if (authHeader.startsWith("Bearer ")) return authHeader.slice(7).trim();
+  if (authHeader.startsWith("bearer ")) return authHeader.slice(7).trim();
+  if (req.headers["x-access-token"]) return String(req.headers["x-access-token"]).trim();
+
+  const cookieHeader = req.headers.cookie || "";
+  if (cookieHeader) {
+    const parts = cookieHeader.split(";").map((p) => p.trim());
+    const tokenPair = parts.find((p) => p.startsWith("token="));
+    if (tokenPair) {
+      const raw = tokenPair.slice("token=".length);
+      if (raw) return decodeURIComponent(raw);
+    }
+  }
+  return "";
+}
+
 export async function authenticateJWT(req, res, next) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(" ")[1];
+  const token = getTokenFromRequest(req);
 
   if (!token) {
     return sendErrorResponse({ status: 401, res, message: "Access token required" });
@@ -33,6 +50,7 @@ export async function authenticateJWT(req, res, next) {
       return sendErrorResponse({ status: 403, res, message: "Account deactivated or deleted" });
     }
     req.user = user;
+    req.authSessionId = decoded.sessionId || null;
     next();
   } catch {
     return sendErrorResponse({ status: 401, res, message: "Invalid or expired token" });

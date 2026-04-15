@@ -1,0 +1,18 @@
+import express from "express";
+import { authenticateCrmAccessToken } from "../middlewares/authenticateCrmAccessToken.js";
+import crmGatewayController from "../controllers/crmGatewayController.js";
+import crmObservabilityController from "../controllers/crmObservabilityController.js";
+
+const router = express.Router();
+
+router.use(authenticateCrmAccessToken);
+
+router.get("/customers", crmGatewayController.listCustomers);
+router.get("/customers/:id", crmGatewayController.getCustomerById);
+router.patch("/customers/:id", crmGatewayController.updateCustomer);
+router.get("/customers/:customerId/followups", crmGatewayController.listFollowups);
+router.post("/customers/:customerId/followups", crmGatewayController.createFollowup);
+router.patch("/followups/:id", crmGatewayController.updateFollowup);
+router.get("/_pilot/metrics", crmObservabilityController.getCrmPilotMetrics);
+
+export default router;

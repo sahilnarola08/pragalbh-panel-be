@@ -1,6 +1,26 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
+const crmAccessSchema = new mongoose.Schema(
+  {
+    enabled: { type: Boolean, default: false },
+    accessMode: { type: String, enum: ["all", "selected"], default: "selected" },
+    allowedCustomerIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    invitationStatus: {
+      type: String,
+      enum: ["none", "pending", "accepted", "expired"],
+      default: "none",
+    },
+    invitedAt: { type: Date, default: null },
+    invitedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", default: null },
+    inviteTokenHash: { type: String, default: null },
+    inviteExpiresAt: { type: Date, default: null },
+    lastInvitedEmail: { type: String, trim: true, default: "" },
+    lastLoginAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const authSchema = new mongoose.Schema({
   name: { type: String, trim: true, default: "" },
   email: {
@@ -26,7 +46,8 @@ const authSchema = new mongoose.Schema({
   customPermissions: [{ type: String, trim: true }],
   isActive: { type: Boolean, default: true },
   isDeleted: { type: Boolean, default: false },
-  otpLockedUntil: { type: Date, default: null }
+  otpLockedUntil: { type: Date, default: null },
+  crmAccess: { type: crmAccessSchema, default: () => ({}) },
 }, {
   timestamps: true,
   toJSON: { 
