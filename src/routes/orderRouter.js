@@ -13,7 +13,7 @@ router.get("/all", authorize("orders.view"), orderController.getAllOrders);
 // Order Management (production role) needs to view order basics from Kanban cards.
 router.get(
   "/get-order-by-id/:id",
-  authorizeAny(["orders.view", "order_management.view"]),
+  authorizeAny(["orders.view", "orders.edit", "order_management.view"]),
   validateOrderDelete,
   orderController.getOrderById
 );

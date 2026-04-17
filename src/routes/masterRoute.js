@@ -7,7 +7,20 @@ const router = express.Router();
 router.use(authenticateJWT);
 
 router.post("/create", authorize("master.create"), masterController.createMaster);
-router.get("/get", authorizeAny(["master.view", "expense.view", "income.view", "payment.view"]), masterController.getAllMasters);
+// Add/Edit Order depends on master lists (platform, client type, social platform).
+router.get(
+  "/get",
+  authorizeAny([
+    "master.view",
+    "expense.view",
+    "income.view",
+    "payment.view",
+    "orders.create",
+    "orders.edit",
+    "order_management.view",
+  ]),
+  masterController.getAllMasters
+);
 router.get("/get-by-id/:id", authorize("master.view"), masterController.getMasterById);
 router.put("/update/:id", authorize("master.edit"), masterController.updateMaster);
 router.delete("/delete/:id", authorize("master.delete"), masterController.deleteMaster);
