@@ -9,6 +9,10 @@ const CRM_ACCESS_PERMISSIONS = [
   "crm.followups.view",
   "crm.followups.create",
   "crm.followups.edit",
+  "crm.leads.view",
+  "crm.leads.create",
+  "crm.leads.edit",
+  "crm.leads.convert",
 ];
 
 export async function resolveCrmScope(req, res, next) {
@@ -43,6 +47,14 @@ export async function resolveCrmScope(req, res, next) {
       canViewFollowups: permissions.includes("crm.followups.view"),
       canCreateFollowups: permissions.includes("crm.followups.create"),
       canEditFollowups: permissions.includes("crm.followups.edit"),
+      canViewLeads:
+        permissions.includes("crm.leads.view") || permissions.includes("crm.clients.view"),
+      canCreateLeads:
+        permissions.includes("crm.leads.create") || permissions.includes("crm.followups.create"),
+      canEditLeads:
+        permissions.includes("crm.leads.edit") || permissions.includes("crm.followups.edit"),
+      canConvertLeads:
+        permissions.includes("crm.leads.convert") || permissions.includes("crm.clients.edit"),
     };
 
     next();

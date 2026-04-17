@@ -9,6 +9,19 @@ import {
   listCrmFollowups,
   createCrmFollowup,
   updateCrmFollowup,
+  listCrmLeads,
+  createCrmLead,
+  updateCrmLead,
+  bulkUpdateCrmLeads,
+  deleteCrmLead,
+  convertCrmLead,
+  createCrmLeadFollowup,
+  getCrmWorkQueue,
+  getCrmOverviewMetrics,
+  listCrmPipelines,
+  createCrmPipeline,
+  updateCrmPipeline,
+  deleteCrmPipeline,
 } from "../controllers/crmController.js";
 
 const router = express.Router();
@@ -25,6 +38,21 @@ router.patch("/clients/:id", updateCrmClient);
 router.get("/clients/:customerId/followups", listCrmFollowups);
 router.post("/clients/:customerId/followups", createCrmFollowup);
 router.patch("/followups/:id", updateCrmFollowup);
+
+router.get("/leads", listCrmLeads);
+router.post("/leads", createCrmLead);
+router.post("/leads/bulk-update", bulkUpdateCrmLeads);
+router.patch("/leads/:id", updateCrmLead);
+router.delete("/leads/:id", deleteCrmLead);
+router.post("/leads/:id/convert", convertCrmLead);
+router.post("/leads/:id/followups", createCrmLeadFollowup);
+router.get("/pipelines", listCrmPipelines);
+router.post("/pipelines", createCrmPipeline);
+router.patch("/pipelines/:id", updateCrmPipeline);
+router.delete("/pipelines/:id", deleteCrmPipeline);
+
+router.get("/work-queue", getCrmWorkQueue);
+router.get("/reports/overview", getCrmOverviewMetrics);
 
 export default router;
 

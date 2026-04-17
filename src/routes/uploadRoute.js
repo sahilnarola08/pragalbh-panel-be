@@ -8,12 +8,23 @@ import {
   processImages,
 } from "../middlewares/upload.js";
 import { authenticateJWT } from "../middlewares/authenticateJWT.js";
-import { authorize } from "../middlewares/authorize.js";
+import { authorize, authorizeAny } from "../middlewares/authorize.js";
 
 const router = express.Router();
 router.use(authenticateJWT);
 
-router.post("/images", authorize("upload.manage"), uploadImagesMiddleware, processImages, uploadProductImages);
-router.delete("/image", authorize("upload.manage"), deleteUploadedImage);
+// Add/Edit Order flow uploads product images via this endpoint.
+router.post(
+  "/images",
+  authorizeAny(["upload.manage", "orders.create", "orders.edit", "order_management.edit"]),
+  uploadImagesMiddleware,
+  processImages,
+  uploadProductImages
+);
+router.delete(
+  "/image",
+  authorizeAny(["upload.manage", "orders.create", "orders.edit", "order_management.edit"]),
+  deleteUploadedImage
+);
 
 export default router;
