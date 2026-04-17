@@ -74,5 +74,9 @@ export const SYSTEM_PERMISSIONS = [
   { name: "crm.followups.view", module: "crm", action: "followups_view", description: "View CRM followups" },
   { name: "crm.followups.create", module: "crm", action: "followups_create", description: "Create CRM followups" },
   { name: "crm.followups.edit", module: "crm", action: "followups_edit", description: "Edit CRM followups" },
+  { name: "crm.leads.view", module: "crm", action: "leads_view", description: "View CRM leads" },
+  { name: "crm.leads.create", module: "crm", action: "leads_create", description: "Create CRM leads" },
+  { name: "crm.leads.edit", module: "crm", action: "leads_edit", description: "Edit CRM leads" },
+  { name: "crm.leads.convert", module: "crm", action: "leads_convert", description: "Convert CRM leads to customers" },
   { name: "crm.access.manage", module: "crm", action: "access_manage", description: "Provision CRM access for users" },
 ];
