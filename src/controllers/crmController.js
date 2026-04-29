@@ -44,6 +44,7 @@ function leadSearchFilter(search) {
       { notes: regex },
       { "noteEntries.text": regex },
       { source: regex },
+      { labels: regex },
     ],
   };
 }
@@ -65,6 +66,13 @@ function normalizeLeadPlatforms(values) {
     .filter((item) => mongoose.Types.ObjectId.isValid(item.platformName));
 }
 
+function normalizeLeadLabels(values) {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
 function normalizeLeadNoteEntries(values, actorId) {
   if (!Array.isArray(values)) return [];
   return values
@@ -83,6 +91,38 @@ function parseDateParam(value, endOfDay = false) {
   if (endOfDay) date.setHours(23, 59, 59, 999);
   else date.setHours(0, 0, 0, 0);
   return date;
+}
+
+function hasLeadWideAccess(req) {
+  return Boolean(req?.crm?.canViewAllLeads);
+}
+
+function hasLeadAssignAccess(req) {
+  return Boolean(req?.crm?.canAssignLeads);
+}
+
+function isLeadOwner(req, ownerUserId) {
+  return String(ownerUserId || "") === String(req?.user?._id || "");
+}
+
+function assertLeadOwnership(req, lead) {
+  if (!lead) return false;
+  if (hasLeadWideAccess(req)) return true;
+  return isLeadOwner(req, lead.ownerUserId);
+}
+
+async function getAssignableLeadOwner(ownerUserId) {
+  const id = String(ownerUserId || "").trim();
+  if (!id) return null;
+  if (!mongoose.Types.ObjectId.isValid(id)) return null;
+  return Auth.findOne({
+    _id: id,
+    isDeleted: false,
+    isActive: true,
+    "crmAccess.enabled": true,
+  })
+    .select("_id")
+    .lean();
 }
 
 function appendLeadEvent(lead, event, actorId) {
@@ -475,7 +515,23 @@ export async function listCrmLeads(req, res, next) {
       ...leadSearchFilter(req.query.search),
     };
     if (req.query.status) filter.status = String(req.query.status);
-    if (req.query.owner === "me") filter.ownerUserId = req.user._id;
+    const currentUserId = String(req.user._id);
+    if (req.query.owner === "me") {
+      filter.ownerUserId = req.user._id;
+    } else if (req.query.ownerId !== undefined) {
+      const ownerId = String(req.query.ownerId || "").trim();
+      if (ownerId) {
+        if (!mongoose.Types.ObjectId.isValid(ownerId)) {
+          return sendErrorResponse({ status: 400, res, message: "Invalid owner id" });
+        }
+        if (!hasLeadWideAccess(req) && ownerId !== currentUserId) {
+          return sendErrorResponse({ status: 403, res, message: "Cannot view other users' leads" });
+        }
+        filter.ownerUserId = ownerId;
+      }
+    } else if (!hasLeadWideAccess(req)) {
+      filter.ownerUserId = req.user._id;
+    }
     if (req.query.pipelineId && mongoose.Types.ObjectId.isValid(String(req.query.pipelineId))) {
       filter.pipelineId = String(req.query.pipelineId);
     }
@@ -552,6 +608,14 @@ export async function createCrmLead(req, res, next) {
 
     const clientType = normalizeObjectIdArray(req.body.clientType);
     const platforms = normalizeLeadPlatforms(req.body.platforms);
+    const leadPlatform = mongoose.Types.ObjectId.isValid(String(req.body.leadPlatform || ""))
+      ? String(req.body.leadPlatform)
+      : null;
+    const accountName =
+      leadPlatform && mongoose.Types.ObjectId.isValid(String(req.body.accountName || ""))
+        ? String(req.body.accountName)
+        : null;
+    const labels = normalizeLeadLabels(req.body.labels);
     const noteEntries = normalizeLeadNoteEntries(req.body.noteEntries, req.user._id);
     const initialNote = String(req.body.notes || "").trim();
     if (initialNote) {
@@ -560,6 +624,23 @@ export async function createCrmLead(req, res, next) {
         createdAt: new Date(),
         createdByUserId: req.user._id,
       });
+    }
+    const requestedOwnerUserId = String(req.body.ownerUserId || "").trim();
+    let nextOwnerUserId = req.user._id;
+    if (requestedOwnerUserId) {
+      if (!mongoose.Types.ObjectId.isValid(requestedOwnerUserId)) {
+        return sendErrorResponse({ status: 400, res, message: "Invalid owner id" });
+      }
+      if (requestedOwnerUserId !== String(req.user._id)) {
+        if (!hasLeadAssignAccess(req)) {
+          return sendErrorResponse({ status: 403, res, message: "Missing permission to assign leads" });
+        }
+        const assignee = await getAssignableLeadOwner(requestedOwnerUserId);
+        if (!assignee) {
+          return sendErrorResponse({ status: 400, res, message: "Assignee not found or CRM is disabled" });
+        }
+        nextOwnerUserId = assignee._id;
+      }
     }
     const payload = {
       firstName: String(req.body.firstName || "").trim(),
@@ -570,6 +651,9 @@ export async function createCrmLead(req, res, next) {
       contactNumber: String(req.body.contactNumber || "").trim(),
       clientType,
       platforms,
+      leadPlatform,
+      accountName,
+      labels,
       source: String(req.body.source || "manual").trim(),
       productInterest: String(req.body.productInterest || "").trim(),
       notes: initialNote,
@@ -578,7 +662,7 @@ export async function createCrmLead(req, res, next) {
       priority: req.body.priority || "medium",
       pipelineId,
       nextFollowupAt: req.body.nextFollowupAt || null,
-      ownerUserId: req.body.ownerUserId || req.user._id,
+      ownerUserId: nextOwnerUserId,
       updatedByUserId: req.user._id,
     };
     payload.activityEvents = [
@@ -619,6 +703,9 @@ export async function updateCrmLead(req, res, next) {
     }
     const lead = await CrmLead.findById(id);
     if (!lead) return sendErrorResponse({ status: 404, res, message: "Lead not found" });
+    if (!assertLeadOwnership(req, lead)) {
+      return sendErrorResponse({ status: 403, res, message: "Lead is not assigned to you" });
+    }
     const prevStatus = String(lead.status || "");
     const prevPipelineId = String(lead.pipelineId || "");
     const prevOwner = String(lead.ownerUserId || "");
@@ -636,7 +723,8 @@ export async function updateCrmLead(req, res, next) {
       "status",
       "priority",
       "nextFollowupAt",
-      "ownerUserId",
+      "leadPlatform",
+      "accountName",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) lead[key] = req.body[key];
@@ -651,6 +739,26 @@ export async function updateCrmLead(req, res, next) {
       lead.noteEntries = normalizeLeadNoteEntries(req.body.noteEntries, req.user._id);
       lead.notes = lead.noteEntries.length > 0 ? String(lead.noteEntries[lead.noteEntries.length - 1].text || "") : "";
     }
+    if (req.body.labels !== undefined) {
+      lead.labels = normalizeLeadLabels(req.body.labels);
+    }
+    if (req.body.leadPlatform !== undefined) {
+      const requestedLeadPlatform = String(req.body.leadPlatform || "").trim();
+      if (requestedLeadPlatform && !mongoose.Types.ObjectId.isValid(requestedLeadPlatform)) {
+        return sendErrorResponse({ status: 400, res, message: "Invalid lead platform id" });
+      }
+      lead.leadPlatform = requestedLeadPlatform || null;
+      if (!lead.leadPlatform) {
+        lead.accountName = null;
+      }
+    }
+    if (req.body.accountName !== undefined) {
+      const requestedAccountName = String(req.body.accountName || "").trim();
+      if (requestedAccountName && !mongoose.Types.ObjectId.isValid(requestedAccountName)) {
+        return sendErrorResponse({ status: 400, res, message: "Invalid account name id" });
+      }
+      lead.accountName = lead.leadPlatform ? requestedAccountName || null : null;
+    }
     if (req.body.addNote !== undefined) {
       const noteText = String(req.body.addNote || "").trim();
       if (noteText) {
@@ -662,6 +770,25 @@ export async function updateCrmLead(req, res, next) {
         });
         lead.notes = noteText;
         appendLeadEvent(lead, { type: "note", message: `Note added: ${noteText}` }, req.user._id);
+      }
+    }
+    if (req.body.ownerUserId !== undefined) {
+      const requestedOwnerUserId = String(req.body.ownerUserId || "").trim();
+      if (!requestedOwnerUserId) {
+        return sendErrorResponse({ status: 400, res, message: "Lead owner is required" });
+      }
+      if (!mongoose.Types.ObjectId.isValid(requestedOwnerUserId)) {
+        return sendErrorResponse({ status: 400, res, message: "Invalid owner id" });
+      }
+      if (requestedOwnerUserId !== prevOwner) {
+        if (!hasLeadAssignAccess(req)) {
+          return sendErrorResponse({ status: 403, res, message: "Missing permission to assign leads" });
+        }
+        const assignee = await getAssignableLeadOwner(requestedOwnerUserId);
+        if (!assignee) {
+          return sendErrorResponse({ status: 400, res, message: "Assignee not found or CRM is disabled" });
+        }
+        lead.ownerUserId = assignee._id;
       }
     }
     if (req.body.pipelineId !== undefined) {
@@ -733,7 +860,11 @@ export async function deleteCrmLead(req, res, next) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return sendErrorResponse({ status: 400, res, message: "Invalid lead id" });
     }
-    const deleted = await CrmLead.findByIdAndDelete(id);
+    const filter = { _id: id };
+    if (!hasLeadWideAccess(req)) {
+      filter.ownerUserId = req.user._id;
+    }
+    const deleted = await CrmLead.findOneAndDelete(filter);
     if (!deleted) return sendErrorResponse({ status: 404, res, message: "Lead not found" });
     return sendSuccessResponse({
       res,
@@ -759,8 +890,19 @@ export async function bulkUpdateCrmLeads(req, res, next) {
     }
     const update = {};
     if (req.body.status !== undefined) update.status = String(req.body.status || "");
-    if (req.body.ownerUserId !== undefined && mongoose.Types.ObjectId.isValid(String(req.body.ownerUserId))) {
-      update.ownerUserId = req.body.ownerUserId;
+    if (req.body.ownerUserId !== undefined) {
+      if (!hasLeadAssignAccess(req)) {
+        return sendErrorResponse({ status: 403, res, message: "Missing permission to assign leads" });
+      }
+      const requestedOwnerUserId = String(req.body.ownerUserId || "").trim();
+      if (!mongoose.Types.ObjectId.isValid(requestedOwnerUserId)) {
+        return sendErrorResponse({ status: 400, res, message: "Invalid owner id" });
+      }
+      const assignee = await getAssignableLeadOwner(requestedOwnerUserId);
+      if (!assignee) {
+        return sendErrorResponse({ status: 400, res, message: "Assignee not found or CRM is disabled" });
+      }
+      update.ownerUserId = assignee._id;
     }
     if (req.body.pipelineId !== undefined) {
       const requested = String(req.body.pipelineId || "").trim();
@@ -778,11 +920,15 @@ export async function bulkUpdateCrmLeads(req, res, next) {
     update.updatedByUserId = req.user._id;
 
     const objectIds = ids.map((id) => new mongoose.Types.ObjectId(String(id)));
-    await CrmLead.updateMany({ _id: { $in: objectIds } }, { $set: update });
+    const leadFilter = { _id: { $in: objectIds } };
+    if (!hasLeadWideAccess(req)) {
+      leadFilter.ownerUserId = req.user._id;
+    }
+    await CrmLead.updateMany(leadFilter, { $set: update });
 
     const eventMessage = String(req.body.eventMessage || "Bulk update applied").trim();
     await CrmLead.updateMany(
-      { _id: { $in: objectIds } },
+      leadFilter,
       {
         $push: {
           activityEvents: {
@@ -796,7 +942,7 @@ export async function bulkUpdateCrmLeads(req, res, next) {
       }
     );
 
-    const refreshed = await CrmLead.find({ _id: { $in: objectIds } }).lean();
+    const refreshed = await CrmLead.find(leadFilter).lean();
     return sendSuccessResponse({
       res,
       status: 200,
@@ -819,6 +965,9 @@ export async function convertCrmLead(req, res, next) {
     }
     const lead = await CrmLead.findById(id);
     if (!lead) return sendErrorResponse({ status: 404, res, message: "Lead not found" });
+    if (!assertLeadOwnership(req, lead)) {
+      return sendErrorResponse({ status: 403, res, message: "Lead is not assigned to you" });
+    }
     if (lead.status === "converted" && lead.convertedCustomerId) {
       return sendSuccessResponse({
         res,
@@ -898,6 +1047,9 @@ export async function createCrmLeadFollowup(req, res, next) {
     }
     const lead = await CrmLead.findById(id);
     if (!lead) return sendErrorResponse({ status: 404, res, message: "Lead not found" });
+    if (!assertLeadOwnership(req, lead)) {
+      return sendErrorResponse({ status: 403, res, message: "Lead is not assigned to you" });
+    }
     if (!lead.convertedCustomerId) {
       return sendErrorResponse({ status: 400, res, message: "Lead must be converted before follow-up" });
     }
@@ -993,8 +1145,15 @@ export async function getCrmOverviewMetrics(req, res, next) {
     }
 
     const leadFilter = { ...dateFilter };
+    if (!hasLeadWideAccess(req)) {
+      leadFilter.ownerUserId = req.user._id;
+    }
     if (req.query.ownerId && mongoose.Types.ObjectId.isValid(String(req.query.ownerId))) {
-      leadFilter.ownerUserId = String(req.query.ownerId);
+      const requestedOwnerId = String(req.query.ownerId);
+      if (!hasLeadWideAccess(req) && requestedOwnerId !== String(req.user._id)) {
+        return sendErrorResponse({ status: 403, res, message: "Cannot view other users' leads" });
+      }
+      leadFilter.ownerUserId = requestedOwnerId;
     } else if (req.query.owner === "me") {
       leadFilter.ownerUserId = req.user._id;
     }
@@ -1117,6 +1276,31 @@ export async function getCrmOverviewMetrics(req, res, next) {
         },
         ownerLeaderboard,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listCrmAssignableUsers(req, res, next) {
+  try {
+    if (!req.crm?.canViewLeads) {
+      return sendErrorResponse({ status: 403, res, message: "Missing permission: crm.leads.view" });
+    }
+    const filter = {
+      isDeleted: false,
+      isActive: true,
+      "crmAccess.enabled": true,
+    };
+    if (!hasLeadWideAccess(req) && !hasLeadAssignAccess(req)) {
+      filter._id = req.user._id;
+    }
+    const items = await Auth.find(filter).select("_id name email").sort({ name: 1, email: 1 }).lean();
+    return sendSuccessResponse({
+      res,
+      status: 200,
+      message: "CRM assignable users",
+      data: { items },
     });
   } catch (error) {
     next(error);
