@@ -816,7 +816,10 @@ const getAllOrders = async (req, res) => {
       status = "",
       startDate = "",
       endDate = "",
-      includeDeleted = ""
+      includeDeleted = "",
+      bankCreditStatus = "",
+      paymentSummaryStatus = "",
+      smartPreset = "",
     } = req.query;
 
     // Parse page and limit to integers with proper defaults and validation
@@ -945,28 +948,135 @@ const getAllOrders = async (req, res) => {
       }
     }
 
-    const orders = await Order.find(filter)
-      .sort(sort)
-      .skip(offset)
-      .limit(limitNum)
-      .populate({
-        path: "products.orderPlatform",
-        select: "_id name",
-      })
-      .populate({
-        path: "products.mediator",
-        select: "_id name",
-      })
-      .lean();
+    const normalizedBankCreditStatus = String(bankCreditStatus || "").trim().toLowerCase();
+    const normalizedPaymentSummaryStatus = String(paymentSummaryStatus || "").trim().toLowerCase();
+    const normalizedSmartPreset = String(smartPreset || "").trim().toLowerCase();
+    const wantsBankCreditFilter =
+      normalizedBankCreditStatus === "credited" || normalizedBankCreditStatus === "not_credited";
+    const wantsPaymentSummaryFilter =
+      normalizedPaymentSummaryStatus === "paid" ||
+      normalizedPaymentSummaryStatus === "partial" ||
+      normalizedPaymentSummaryStatus === "unpaid";
+    const wantsSmartPresetFilter =
+      normalizedSmartPreset === "paid_not_credited" ||
+      normalizedSmartPreset === "partial_not_credited" ||
+      normalizedSmartPreset === "partial_overdue_dispatch";
+    const wantsDerivedFilter =
+      wantsBankCreditFilter || wantsPaymentSummaryFilter || wantsSmartPresetFilter;
 
-    // Net profit and payment status per order (same calculation as Payment & Profit Summary)
+    let orders = [];
+    let totalOrders = 0;
     let profitSummaryMap = new Map();
-    if (orders.length > 0) {
-      const orderIds = orders.map((o) => o?._id).filter(Boolean);
-      profitSummaryMap = await orderProfitService.getOrderProfitSummaryBulk(orderIds);
-    }
 
-    const totalOrders = await Order.countDocuments(filter);
+    const populateOrderQuery = (query) =>
+      query
+        .populate({
+          path: "products.orderPlatform",
+          select: "_id name",
+        })
+        .populate({
+          path: "products.mediator",
+          select: "_id name",
+        });
+
+    if (!wantsDerivedFilter) {
+      orders = await populateOrderQuery(
+        Order.find(filter).sort(sort).skip(offset).limit(limitNum)
+      ).lean();
+
+      if (orders.length > 0) {
+        const orderIds = orders.map((o) => o?._id).filter(Boolean);
+        profitSummaryMap = await orderProfitService.getOrderProfitSummaryBulk(orderIds);
+      }
+      totalOrders = await Order.countDocuments(filter);
+    } else {
+      // Smart filters based on derived payment summary fields (payment status / credited to bank).
+      const baseRows = await Order.find(filter)
+        .sort(sort)
+        .select("_id products.dispatchDate dispatchDate")
+        .lean();
+      const baseIds = baseRows.map((r) => r?._id).filter(Boolean);
+      const allSummaryMap = baseIds.length
+        ? await orderProfitService.getOrderProfitSummaryBulk(baseIds)
+        : new Map();
+
+      const isOverdueDispatch = (row) => {
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+
+        const dates = [];
+        if (Array.isArray(row?.products) && row.products.length) {
+          row.products.forEach((p) => {
+            if (p?.dispatchDate) dates.push(new Date(p.dispatchDate));
+          });
+        } else if (row?.dispatchDate) {
+          dates.push(new Date(row.dispatchDate));
+        }
+        if (!dates.length) return false;
+        return dates.some((d) => !isNaN(d.getTime()) && d < now);
+      };
+
+      const filteredIds = baseRows
+        .filter((row) => {
+          const summary = allSummaryMap.get(String(row._id)) || {
+            fullyCreditedToBank: false,
+            paymentStatus: "Unpaid",
+          };
+          const credited = !!summary.fullyCreditedToBank;
+          const paymentStatusLabel = String(summary.paymentStatus || "Unpaid").toLowerCase();
+          const paymentStatusKey =
+            paymentStatusLabel === "paid"
+              ? "paid"
+              : paymentStatusLabel === "partial"
+              ? "partial"
+              : "unpaid";
+
+          if (wantsBankCreditFilter) {
+            const ok = normalizedBankCreditStatus === "credited" ? credited : !credited;
+            if (!ok) return false;
+          }
+          if (wantsPaymentSummaryFilter) {
+            if (paymentStatusKey !== normalizedPaymentSummaryStatus) return false;
+          }
+
+          if (wantsSmartPresetFilter) {
+            if (normalizedSmartPreset === "paid_not_credited") {
+              if (!(paymentStatusKey === "paid" && !credited)) return false;
+            } else if (normalizedSmartPreset === "partial_not_credited") {
+              if (!(paymentStatusKey === "partial" && !credited)) return false;
+            } else if (normalizedSmartPreset === "partial_overdue_dispatch") {
+              if (!(paymentStatusKey === "partial" && isOverdueDispatch(row))) return false;
+            }
+          }
+          return true;
+        })
+        .map((row) => String(row._id));
+
+      totalOrders = filteredIds.length;
+      const pageIds = filteredIds.slice(offset, offset + limitNum);
+
+      if (pageIds.length > 0) {
+        const pageObjectIds = pageIds
+          .filter((id) => mongoose.Types.ObjectId.isValid(id))
+          .map((id) => new mongoose.Types.ObjectId(id));
+
+        const pageOrdersRaw = await populateOrderQuery(
+          Order.find({ _id: { $in: pageObjectIds } })
+        ).lean();
+
+        const orderById = new Map(pageOrdersRaw.map((o) => [String(o._id), o]));
+        orders = pageIds.map((id) => orderById.get(id)).filter(Boolean);
+
+        profitSummaryMap = new Map(
+          pageIds
+            .map((id) => [id, allSummaryMap.get(id)])
+            .filter(([, summary]) => !!summary)
+        );
+      } else {
+        orders = [];
+        profitSummaryMap = new Map();
+      }
+    }
 
     const formattedOrders = orders.map((order) => {
       // Format products with populated orderPlatform and mediator
