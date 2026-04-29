@@ -18,6 +18,7 @@ import {
   createCrmLeadFollowup,
   getCrmWorkQueue,
   getCrmOverviewMetrics,
+  listCrmAssignableUsers,
   listCrmPipelines,
   createCrmPipeline,
   updateCrmPipeline,
@@ -40,6 +41,7 @@ router.post("/clients/:customerId/followups", createCrmFollowup);
 router.patch("/followups/:id", updateCrmFollowup);
 
 router.get("/leads", listCrmLeads);
+router.get("/team-members", listCrmAssignableUsers);
 router.post("/leads", createCrmLead);
 router.post("/leads/bulk-update", bulkUpdateCrmLeads);
 router.patch("/leads/:id", updateCrmLead);

@@ -42,6 +42,8 @@ export async function resolveCrmScope(req, res, next) {
       permissions,
       accessMode,
       allowedCustomerIds,
+      canManageCrmAccess:
+        permissions.includes("crm.access.manage") || permissions.includes("users.manage"),
       canViewClients: permissions.includes("crm.clients.view"),
       canEditClients: permissions.includes("crm.clients.edit"),
       canViewFollowups: permissions.includes("crm.followups.view"),
@@ -55,6 +57,10 @@ export async function resolveCrmScope(req, res, next) {
         permissions.includes("crm.leads.edit") || permissions.includes("crm.followups.edit"),
       canConvertLeads:
         permissions.includes("crm.leads.convert") || permissions.includes("crm.clients.edit"),
+      canAssignLeads:
+        permissions.includes("crm.access.manage") || permissions.includes("users.manage"),
+      canViewAllLeads:
+        permissions.includes("crm.access.manage") || permissions.includes("users.manage"),
     };
 
     next();

@@ -9,6 +9,38 @@ const __dirname = path.dirname(__filename);
 const employeeUploadDir = path.join(__dirname, "../../uploads/employees");
 
 const round2 = (n) => Math.round(Number(n || 0) * 100) / 100;
+const DOC_TYPES = new Set(["ID_PROOF", "ADDRESS_PROOF", "CONTRACT", "BANK", "KYC", "CERTIFICATE", "OTHER"]);
+const VERIFICATION_STATUSES = new Set(["PENDING", "VERIFIED", "REJECTED"]);
+
+function inferDocTypeFromName(name) {
+  const n = String(name || "").toLowerCase();
+  if (/(aadhar|aadhaar|pan|passport|voter|license|licence|id)/.test(n)) return "ID_PROOF";
+  if (/(address|electricity|water|rent|bill|residence|residency)/.test(n)) return "ADDRESS_PROOF";
+  if (/(offer|appointment|contract|agreement|nda|joining|employment)/.test(n)) return "CONTRACT";
+  if (/(bank|cheque|cancelled-cheque|passbook|ifsc|account)/.test(n)) return "BANK";
+  if (/(kyc|verification|onboard)/.test(n)) return "KYC";
+  if (/(certificate|degree|diploma|training|course)/.test(n)) return "CERTIFICATE";
+  return "OTHER";
+}
+
+function parseValidDate(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+function sanitizeDocType(value, fallbackName = "") {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (DOC_TYPES.has(normalized)) return normalized;
+  return inferDocTypeFromName(fallbackName);
+}
+
+function sanitizeVerificationStatus(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (VERIFICATION_STATUSES.has(normalized)) return normalized;
+  return "PENDING";
+}
 
 function parseDocumentsJson(raw) {
   if (!raw || typeof raw !== "string") return [];
@@ -20,20 +52,84 @@ function parseDocumentsJson(raw) {
       .map((d) => ({
         name: String(d.name || "Document").trim().slice(0, 200),
         fileUrl: String(d.fileUrl).trim(),
-        uploadedAt: d.uploadedAt ? new Date(d.uploadedAt) : new Date(),
+        docType: sanitizeDocType(d.docType, d.name || "Document"),
+        verificationStatus: sanitizeVerificationStatus(d.verificationStatus),
+        verifiedAt: d.verifiedAt ? parseValidDate(d.verifiedAt) : null,
+        verifiedBy: String(d.verifiedBy || "").trim().slice(0, 120),
+        expiryDate: d.expiryDate ? parseValidDate(d.expiryDate) : null,
+        notes: String(d.notes || "").trim().slice(0, 600),
+        uploadedAt: d.uploadedAt ? parseValidDate(d.uploadedAt) || new Date() : new Date(),
       }));
   } catch {
     return [];
   }
 }
 
-function filesToDocuments(files) {
+function parseNewDocumentsMetaJson(raw) {
+  if (!raw || typeof raw !== "string") return [];
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.map((d) => ({
+      name: String(d?.name || "").trim().slice(0, 200),
+      docType: sanitizeDocType(d?.docType, d?.name || ""),
+      verificationStatus: sanitizeVerificationStatus(d?.verificationStatus),
+      expiryDate: d?.expiryDate ? parseValidDate(d.expiryDate) : null,
+      notes: String(d?.notes || "").trim().slice(0, 600),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function filesToDocuments(files, meta = []) {
   if (!Array.isArray(files) || !files.length) return [];
-  return files.map((f) => ({
-    name: (f.originalname || f.filename || "file").replace(/[<>]/g, "").slice(0, 200),
-    fileUrl: `/uploads/employees/${f.filename}`,
-    uploadedAt: new Date(),
-  }));
+  return files.map((f, i) => {
+    const fallbackName = (f.originalname || f.filename || "file").replace(/[<>]/g, "").slice(0, 200);
+    const metaDoc = meta[i] || {};
+    const verificationStatus = sanitizeVerificationStatus(metaDoc.verificationStatus);
+    return {
+      name: metaDoc.name || fallbackName,
+      fileUrl: `/uploads/employees/${f.filename}`,
+      docType: sanitizeDocType(metaDoc.docType, metaDoc.name || fallbackName),
+      verificationStatus,
+      verifiedAt: verificationStatus === "VERIFIED" ? new Date() : null,
+      verifiedBy: verificationStatus === "VERIFIED" ? "Manual" : "",
+      expiryDate: parseValidDate(metaDoc.expiryDate),
+      notes: String(metaDoc.notes || "").trim().slice(0, 600),
+      uploadedAt: new Date(),
+    };
+  });
+}
+
+function computeDocumentStats(documents = []) {
+  const now = new Date();
+  const in30Days = new Date(now);
+  in30Days.setDate(in30Days.getDate() + 30);
+
+  const stats = {
+    total: 0,
+    pending: 0,
+    verified: 0,
+    rejected: 0,
+    expired: 0,
+    expiringSoon: 0,
+  };
+
+  for (const d of documents) {
+    stats.total += 1;
+    const st = sanitizeVerificationStatus(d?.verificationStatus);
+    if (st === "VERIFIED") stats.verified += 1;
+    else if (st === "REJECTED") stats.rejected += 1;
+    else stats.pending += 1;
+
+    const expiry = parseValidDate(d?.expiryDate);
+    if (!expiry) continue;
+    if (expiry < now) stats.expired += 1;
+    else if (expiry <= in30Days) stats.expiringSoon += 1;
+  }
+
+  return stats;
 }
 
 function deleteFilesForRemovedDocs(prevDocs, nextDocs) {
@@ -81,11 +177,16 @@ export const listEmployees = async (req, res) => {
 
     const departments = await Employee.distinct("department", { isDeleted: { $ne: true }, department: { $ne: "" } });
 
+    const enrichedItems = (items || []).map((item) => ({
+      ...item,
+      documentStats: computeDocumentStats(item.documents || []),
+    }));
+
     return sendSuccessResponse({
       res,
       status: 200,
       message: "Employees fetched",
-      data: { items, total, page, limit, departments: departments.filter(Boolean).sort() },
+      data: { items: enrichedItems, total, page, limit, departments: departments.filter(Boolean).sort() },
     });
   } catch (e) {
     return sendErrorResponse({ res, status: 500, message: e.message });
@@ -99,7 +200,8 @@ export const getEmployeeById = async (req, res) => {
     if (!doc) {
       return sendErrorResponse({ res, status: 404, message: "Employee not found" });
     }
-    return sendSuccessResponse({ res, status: 200, message: "OK", data: doc });
+    const documentStats = computeDocumentStats(doc.documents || []);
+    return sendSuccessResponse({ res, status: 200, message: "OK", data: { ...doc, documentStats } });
   } catch (e) {
     return sendErrorResponse({ res, status: 500, message: e.message });
   }
@@ -117,6 +219,7 @@ export const createEmployee = async (req, res) => {
       salary,
       status,
       documentsJson,
+      newDocumentsMetaJson,
     } = req.body;
 
     if (!name || String(name).trim().length < 2) {
@@ -129,7 +232,8 @@ export const createEmployee = async (req, res) => {
     }
 
     const existingDocs = parseDocumentsJson(documentsJson);
-    const uploadedDocs = filesToDocuments(req.files);
+    const newDocsMeta = parseNewDocumentsMetaJson(newDocumentsMetaJson);
+    const uploadedDocs = filesToDocuments(req.files, newDocsMeta);
     const documents = [...existingDocs, ...uploadedDocs];
 
     const st = String(status || "ACTIVE").toUpperCase() === "INACTIVE" ? "INACTIVE" : "ACTIVE";
@@ -175,6 +279,7 @@ export const updateEmployee = async (req, res) => {
       salary,
       status,
       documentsJson,
+      newDocumentsMetaJson,
     } = req.body;
 
     if (name !== undefined) {
@@ -202,7 +307,8 @@ export const updateEmployee = async (req, res) => {
 
     const prevDocs = doc.documents || [];
     const fromJson = documentsJson !== undefined ? parseDocumentsJson(documentsJson) : null;
-    const uploaded = filesToDocuments(req.files);
+    const newDocsMeta = parseNewDocumentsMetaJson(newDocumentsMetaJson);
+    const uploaded = filesToDocuments(req.files, newDocsMeta);
     if (fromJson !== null) {
       deleteFilesForRemovedDocs(prevDocs, [...fromJson, ...uploaded]);
       doc.documents = [...fromJson, ...uploaded];

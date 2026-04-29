@@ -4,9 +4,25 @@ const documentSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     fileUrl: { type: String, required: true, trim: true },
+    docType: {
+      type: String,
+      enum: ["ID_PROOF", "ADDRESS_PROOF", "CONTRACT", "BANK", "KYC", "CERTIFICATE", "OTHER"],
+      default: "OTHER",
+      index: true,
+    },
+    verificationStatus: {
+      type: String,
+      enum: ["PENDING", "VERIFIED", "REJECTED"],
+      default: "PENDING",
+      index: true,
+    },
+    verifiedAt: { type: Date, default: null },
+    verifiedBy: { type: String, trim: true, default: "" },
+    expiryDate: { type: Date, default: null, index: true },
+    notes: { type: String, trim: true, default: "" },
     uploadedAt: { type: Date, default: Date.now },
   },
-  { _id: false }
+  { _id: true }
 );
 
 const employeeSchema = new mongoose.Schema(
