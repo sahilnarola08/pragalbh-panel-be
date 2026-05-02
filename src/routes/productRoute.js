@@ -22,5 +22,6 @@ router.get(
 );
 router.put("/update-product/:id", authorize("product.edit"), validateProductUpdate, productController.updateProduct);
 router.delete("/delete-product/:id", authorize("product.delete"), validateProductDelete, productController.deleteProduct);
+router.post("/bulk-delete-products", authorize("product.delete"), productController.bulkDeleteProducts);
 
 export default router;

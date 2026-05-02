@@ -4,10 +4,31 @@ import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.
 import mongoose from "mongoose";
 import { getEffectivePermissions } from "../services/permissionResolver.js";
 
+/** Identity fields for duplicate / soft-delete checks (no isDeleted) */
+const masterIdentityQuery = (trimmedName, masterObjectId, underPlatformObjectId) => {
+    if (underPlatformObjectId) {
+        return {
+            name: trimmedName,
+            master: masterObjectId,
+            underPlatform: underPlatformObjectId,
+        };
+    }
+    const q = {
+        name: trimmedName,
+        $or: [{ underPlatform: { $exists: false } }, { underPlatform: null }],
+    };
+    if (masterObjectId) {
+        q.master = masterObjectId;
+    } else {
+        q.master = null;
+    }
+    return q;
+};
+
 // Create master - accepts single object
 const createMaster = async (req, res, next) => {
     try {
-        const { name, master, isActive } = req.body;
+        const { name, master, isActive, underPlatform } = req.body;
 
         // Validate name
         if (!name || typeof name !== 'string' || name.trim().length === 0) {
@@ -16,17 +37,6 @@ const createMaster = async (req, res, next) => {
                 message: "Name is required",
                 status: 400
             });
-        }
-
-        // Validate master (ObjectId) if provided
-        if (master !== undefined && master !== null) {
-            if (!mongoose.Types.ObjectId.isValid(master)) {
-                return sendErrorResponse({
-                    res,
-                    message: "Invalid master ID format",
-                    status: 400
-                });
-            }
         }
 
         // Validate isActive (optional, default true)
@@ -40,48 +50,84 @@ const createMaster = async (req, res, next) => {
 
         const trimmedName = name.trim();
 
-        // Prepare master ObjectId for comparison
-        const masterObjectId = master && mongoose.Types.ObjectId.isValid(master) 
-            ? new mongoose.Types.ObjectId(master) 
-            : null;
-
-        // Build query to check for duplicate name + master combination
-        const duplicateQuery = {
-            name: trimmedName,
-            isDeleted: false
-        };
-
-        // Include master in the duplicate check
-        if (masterObjectId) {
-            duplicateQuery.master = masterObjectId;
-        } else {
-            duplicateQuery.master = null;
+        let masterObjectId = null;
+        if (master !== undefined && master !== null && String(master).trim() !== "") {
+            if (!mongoose.Types.ObjectId.isValid(master)) {
+                return sendErrorResponse({
+                    res,
+                    message: "Invalid master (category) ID format",
+                    status: 400
+                });
+            }
+            masterObjectId = new mongoose.Types.ObjectId(master);
+            const masterAsset = await MasterAssets.findOne({
+                _id: masterObjectId,
+                isDeleted: false,
+            });
+            if (!masterAsset) {
+                return sendErrorResponse({
+                    res,
+                    message: "Master category (asset) not found or is inactive",
+                    status: 400
+                });
+            }
         }
 
-        // Check if master with same name AND same master already exists and is not deleted
-        const existingMaster = await Master.findOne(duplicateQuery);
+        let underPlatformObjectId = null;
+        if (underPlatform !== undefined && underPlatform !== null && String(underPlatform).trim() !== "") {
+            if (!mongoose.Types.ObjectId.isValid(underPlatform)) {
+                return sendErrorResponse({
+                    res,
+                    message: "Invalid underPlatform ID format",
+                    status: 400
+                });
+            }
+            underPlatformObjectId = new mongoose.Types.ObjectId(underPlatform);
+            const platformRow = await Master.findOne({
+                _id: underPlatformObjectId,
+                isDeleted: false,
+            }).select("master");
+            if (!platformRow) {
+                return sendErrorResponse({
+                    res,
+                    message: "Order platform row not found",
+                    status: 400
+                });
+            }
+            const platformAssetId = platformRow.master;
+            if (!platformAssetId) {
+                return sendErrorResponse({
+                    res,
+                    message: "Selected platform has no parent category",
+                    status: 400
+                });
+            }
+            if (!masterObjectId) {
+                masterObjectId = new mongoose.Types.ObjectId(platformAssetId);
+            } else if (platformAssetId.toString() !== masterObjectId.toString()) {
+                return sendErrorResponse({
+                    res,
+                    message: "Parent category must match the platform’s master type",
+                    status: 400
+                });
+            }
+        }
+
+        const identity = masterIdentityQuery(trimmedName, masterObjectId, underPlatformObjectId);
+
+        const existingMaster = await Master.findOne({ ...identity, isDeleted: false });
 
         if (existingMaster) {
             return sendErrorResponse({
                 res,
-                message: `"${trimmedName}" already exists with the same MasterType`,
+                message: underPlatformObjectId
+                    ? `"${trimmedName}" already exists for this platform`
+                    : `"${trimmedName}" already exists with the same MasterType`,
                 status: 400
             });
         }
 
-        // Check if master exists but is deleted (inactive) - same name and master combination
-        const deletedQuery = {
-            name: trimmedName,
-            isDeleted: true
-        };
-
-        if (masterObjectId) {
-            deletedQuery.master = masterObjectId;
-        } else {
-            deletedQuery.master = null;
-        }
-
-        const deletedMaster = await Master.findOne(deletedQuery);
+        const deletedMaster = await Master.findOne({ ...identity, isDeleted: true });
 
         if (deletedMaster) {
             return sendErrorResponse({
@@ -91,10 +137,10 @@ const createMaster = async (req, res, next) => {
             });
         }
 
-        // Create master
         const newMaster = await Master.create({
             name: trimmedName,
             master: masterObjectId || undefined,
+            underPlatform: underPlatformObjectId || undefined,
             isActive: isActive !== undefined ? isActive : true
         });
 
@@ -105,11 +151,10 @@ const createMaster = async (req, res, next) => {
             status: 200
         });
     } catch (error) {
-        // Handle duplicate key error
         if (error.code === 11000) {
             return sendErrorResponse({
                 res,
-                message: "Duplicate entry detected. This master already exists.",
+                message: "Duplicate entry detected. This master already exists for this category/platform.",
                 status: 400
             });
         }
@@ -127,6 +172,8 @@ const getAllMasters = async (req, res, next) => {
             sortField = "name",
             sortOrder = "asc",
             masterType = "", // Add master type filter
+            rootOnly = "", // "true" with masterType: only rows without underPlatform (top-level platforms)
+            underPlatform = "", // Master _id: children tied to that platform (e.g. WhatsApp accounts)
             isDeleted // Optional: "true" to see deleted, otherwise active
         } = req.query;
 
@@ -152,6 +199,22 @@ const getAllMasters = async (req, res, next) => {
         // Filter by master type (master asset ID)
         if (masterType && masterType.trim().length > 0) {
             matchStage.master = masterType.trim();
+        }
+
+        const upRaw = underPlatform && String(underPlatform).trim();
+        const hasUnderPlatform = upRaw && mongoose.Types.ObjectId.isValid(upRaw);
+
+        if (hasUnderPlatform) {
+            matchStage.underPlatform = new mongoose.Types.ObjectId(upRaw);
+        } else if (
+            masterType &&
+            masterType.trim().length > 0 &&
+            (rootOnly === "true" || rootOnly === "1")
+        ) {
+            matchStage.$or = [
+                { underPlatform: { $exists: false } },
+                { underPlatform: null },
+            ];
         }
 
         if (!hasMasterView && !(masterType && masterType.trim().length > 0)) {
@@ -249,7 +312,12 @@ const getMasterById = async (req, res, next) => {
             _id: id
         })
         .select("-__v")
-        .populate('master', 'name');
+        .populate('master', 'name')
+        .populate({
+            path: "underPlatform",
+            select: "name master",
+            populate: { path: "master", select: "name" },
+        });
         
         if (!master) {
             return sendErrorResponse({
@@ -283,7 +351,7 @@ const getMasterById = async (req, res, next) => {
 const updateMaster = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { name, master, isActive } = req.body;
+        const { name, master, isActive, underPlatform } = req.body;
 
         // Check if master exists
         const existingMaster = await Master.findOne({ 
@@ -314,10 +382,10 @@ const updateMaster = async (req, res, next) => {
             updateData.name = name.trim();
         }
 
-        // Validate and update master (ObjectId) if provided
+        // Validate and update master (category / MasterAssets) if provided
         let masterObjectId = null;
         if (master !== undefined) {
-            if (master !== null && !mongoose.Types.ObjectId.isValid(master)) {
+            if (master !== null && master !== "" && !mongoose.Types.ObjectId.isValid(master)) {
                 return sendErrorResponse({
                     res,
                     message: "Invalid master ID format",
@@ -328,7 +396,6 @@ const updateMaster = async (req, res, next) => {
             if (master && mongoose.Types.ObjectId.isValid(master)) {
                 masterObjectId = new mongoose.Types.ObjectId(master);
                 
-                // Verify that the master asset exists in MasterAssets
                 const masterAsset = await MasterAssets.findOne({
                     _id: masterObjectId,
                     isDeleted: false
@@ -346,34 +413,77 @@ const updateMaster = async (req, res, next) => {
             updateData.master = masterObjectId || null;
         }
 
-        // Determine the final name and master values after update
-        const finalName = updateData.name || existingMaster.name;
-        const finalMaster = updateData.hasOwnProperty('master') 
-            ? (updateData.master || null)
-            : existingMaster.master;
-
-        // Check for duplicate name + master combination (excluding current master)
-        // Only check if name or master is being updated
-        if (name !== undefined || master !== undefined) {
-            const duplicateQuery = {
-                name: finalName,
-                _id: { $ne: id },
-                isDeleted: false
-            };
-            
-            // Include master in the duplicate check
-            if (finalMaster) {
-                duplicateQuery.master = finalMaster;
+        if (underPlatform !== undefined) {
+            if (underPlatform === null || underPlatform === "") {
+                updateData.underPlatform = null;
+            } else if (!mongoose.Types.ObjectId.isValid(underPlatform)) {
+                return sendErrorResponse({
+                    res,
+                    message: "Invalid underPlatform ID format",
+                    status: 400
+                });
             } else {
-                duplicateQuery.master = null;
+                const upOid = new mongoose.Types.ObjectId(underPlatform);
+                const platformRow = await Master.findOne({
+                    _id: upOid,
+                    isDeleted: false,
+                }).select("master");
+                if (!platformRow) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Order platform row not found",
+                        status: 400
+                    });
+                }
+                const expectedAsset = masterObjectId
+                    ? masterObjectId
+                    : existingMaster.master;
+                if (
+                    platformRow.master &&
+                    expectedAsset &&
+                    platformRow.master.toString() !== expectedAsset.toString()
+                ) {
+                    return sendErrorResponse({
+                        res,
+                        message: "Parent category must match the platform’s master type",
+                        status: 400
+                    });
+                }
+                updateData.underPlatform = upOid;
             }
-            
-            const duplicateMaster = await Master.findOne(duplicateQuery);
+        }
+
+        const finalName = updateData.name ?? existingMaster.name;
+        const finalMasterRaw = updateData.hasOwnProperty("master")
+            ? updateData.master
+            : existingMaster.master;
+        const finalUnderRaw = updateData.hasOwnProperty("underPlatform")
+            ? updateData.underPlatform
+            : existingMaster.underPlatform;
+
+        const finalMasterOid =
+            finalMasterRaw != null && mongoose.Types.ObjectId.isValid(finalMasterRaw)
+                ? new mongoose.Types.ObjectId(finalMasterRaw)
+                : null;
+        const finalUnderOid =
+            finalUnderRaw != null && mongoose.Types.ObjectId.isValid(finalUnderRaw)
+                ? new mongoose.Types.ObjectId(finalUnderRaw)
+                : null;
+
+        if (name !== undefined || master !== undefined || underPlatform !== undefined) {
+            const identity = masterIdentityQuery(finalName, finalMasterOid, finalUnderOid);
+            const duplicateMaster = await Master.findOne({
+                ...identity,
+                isDeleted: false,
+                _id: { $ne: id },
+            });
 
             if (duplicateMaster) {
                 return sendErrorResponse({
                     res,
-                    message: `"${finalName}" already exists with the same MasterType`,
+                    message: finalUnderOid
+                        ? `"${finalName}" already exists for this platform`
+                        : `"${finalName}" already exists with the same MasterType`,
                     status: 400
                 });
             }
@@ -398,7 +508,12 @@ const updateMaster = async (req, res, next) => {
             { new: true, runValidators: true }
         )
         .select("-__v")
-        .populate('master', 'name');
+        .populate('master', 'name')
+        .populate({
+            path: "underPlatform",
+            select: "name master",
+            populate: { path: "master", select: "name" },
+        });
 
         // Convert to plain object and add id field
         const masterObj = updatedMaster.toObject();

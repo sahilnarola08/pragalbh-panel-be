@@ -12,6 +12,12 @@ const masterSchema = new mongoose.Schema({
           ref: "masterassets",
           index: true,
      },
+     /** When this row is an account under a specific order platform (e.g. Whatsapp), scopes uniqueness under that platform */
+     underPlatform: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "master",
+          index: true,
+     },
      isActive: {
           type: Boolean,
           default: true,
@@ -28,11 +34,30 @@ const masterSchema = new mongoose.Schema({
      toObject: { virtuals: true }
 });
 
-// Compound index to ensure unique name and master combination (excluding deleted records)
-masterSchema.index({ name: 1, master: 1, isDeleted: 1 }, { 
-     unique: true,
-     partialFilterExpression: { isDeleted: false }
-});
+// Uniqueness: (name + master asset) for ordinary masters, OR (name + master asset + platform row) for platform accounts.
+// Without underPlatform, only one name per master asset. With underPlatform, same name can repeat per platform (e.g. Shopify vs Whatsapp).
+masterSchema.index(
+  { name: 1, master: 1, isDeleted: 1 },
+  {
+    unique: true,
+    name: "uniq_master_name_asset_root",
+    partialFilterExpression: {
+      isDeleted: false,
+      $or: [{ underPlatform: { $exists: false } }, { underPlatform: null }],
+    },
+  }
+);
+masterSchema.index(
+  { name: 1, master: 1, underPlatform: 1, isDeleted: 1 },
+  {
+    unique: true,
+    name: "uniq_master_name_asset_under_platform",
+    partialFilterExpression: {
+      isDeleted: false,
+      underPlatform: { $exists: true, $ne: null },
+    },
+  }
+);
 
 // Additional performance indexes
 masterSchema.index({ master: 1, isDeleted: 1, isActive: 1 }); // For master asset filtering
