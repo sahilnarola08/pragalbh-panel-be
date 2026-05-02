@@ -556,12 +556,6 @@ export const createOrder = async (req, res, next) => {
           });
         }
         purchasePrice = round2Amount(resolvedLines.reduce((s, l) => s + l.price, 0));
-      } else if (purchasePrice <= 0) {
-        return sendErrorResponse({
-          res,
-          status: 400,
-          message: `Purchase price must be greater than 0 for product "${product.productName}".`,
-        });
       }
 
       const linesForDb = resolvedLines.length
@@ -1347,12 +1341,6 @@ const updateOrder = async (req, res, next) => {
             });
           }
           purchasePrice = round2Amount(resolvedLines.reduce((s, l) => s + l.price, 0));
-        } else if (purchasePrice <= 0) {
-          return sendErrorResponse({
-            res,
-            status: 400,
-            message: `Purchase price must be greater than 0 for product "${product.productName}".`,
-          });
         }
 
         const linesForDb = resolvedLines.length

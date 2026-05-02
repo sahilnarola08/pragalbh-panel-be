@@ -10,8 +10,8 @@ const platformSchema = yup.object().shape({
 
   platformUsername: yup
     .string()
-    .min(3, "Platform username must be at least 3 characters")
-    .max(50, "Platform username must not exceed 50 characters")
+    .min(1, "Platform username is required")
+    .max(100, "Platform username must not exceed 100 characters")
 });
 
 // User registration validation schema (NO password here)

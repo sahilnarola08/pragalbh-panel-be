@@ -38,7 +38,7 @@ const productSchema = yup.object().shape({
     productName: yup.string().required("Product name is required").min(2, "Product name must be at least 2 characters").max(100, "Product name must not exceed 100 characters"),
     orderDate: yup.date().required("Order date is required"),
     dispatchDate: yup.date().required("Dispatch date is required"),
-    purchasePrice: yup.number().required("Purchase price is required").min(0, "Purchase price must be greater than 0"),
+    purchasePrice: yup.number().required("Purchase price is required").min(0, "Purchase price must be greater than or equal to 0"),
     purchaseSupplierLines: yup.array().of(purchaseSupplierLineSchema).max(50).optional(),
     sellingPrice: yup.number().required("Selling price is required").min(0, "Selling price must be greater than 0"),
     initialPayment: yup.number().min(0, "Initial payment must be greater than or equal to 0").optional(),

@@ -440,6 +440,65 @@ const deleteProduct = async (req, res, next) => {
   }
 };
 
+// Bulk soft-delete products by IDs (same semantics as deleteProduct)
+const bulkDeleteProducts = async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (ids.length === 0) {
+      return sendErrorResponse({
+        status: 400,
+        res,
+        message: "Request body must contain a non-empty array of product ids (ids).",
+      });
+    }
+
+    const deleted = [];
+    const skipped = [];
+
+    for (const raw of ids) {
+      const id = String(raw ?? "").trim();
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        skipped.push({ id: raw, reason: "invalid_id" });
+        continue;
+      }
+
+      const existingProduct = await Product.findById(id);
+      if (!existingProduct || existingProduct.isDeleted) {
+        skipped.push({
+          id,
+          reason: !existingProduct ? "not_found" : "already_deleted",
+        });
+        continue;
+      }
+
+      await Product.findByIdAndUpdate(id, { isDeleted: true }, { new: true });
+      deleted.push(id);
+    }
+
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    deleted.forEach((pid) => invalidateCache("product", pid));
+    invalidateCache("product");
+    invalidateCache("dashboard");
+
+    return sendSuccessResponse({
+      res,
+      data: {
+        deletedCount: deleted.length,
+        skippedCount: skipped.length,
+        deletedIds: deleted,
+        skipped,
+      },
+      message:
+        deleted.length > 0
+          ? `${deleted.length} product(s) deleted successfully.`
+          : "No products were deleted.",
+      status: 200,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Get product by ID
 const getProductById = async (req, res, next) => {
   try {
@@ -483,5 +542,6 @@ export default {
   getAllProducts,
   updateProduct,
   deleteProduct,
+  bulkDeleteProducts,
   getProductById,
 };

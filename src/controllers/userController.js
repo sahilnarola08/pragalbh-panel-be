@@ -96,7 +96,7 @@ const register = async (req, res, next) => {
       });
       await user.populate({
         path: 'platforms.platformName',
-        select: '_id name'
+        select: '_id name isDeleted',
       });
 
       // ✅ Invalidate cache after user creation
@@ -160,29 +160,50 @@ const register = async (req, res, next) => {
     // Build search conditions if search parameter exists and is not empty
     const normalizedSearch = search && typeof search === 'string' ? search.trim() : '';
     if (normalizedSearch) {
-      const searchRegex = new RegExp(normalizedSearch, "i");
+      const escapedForRegex = normalizedSearch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const searchRegex = new RegExp(escapedForRegex, "i");
       const orConditions = [
         { firstName: searchRegex },
         { lastName: searchRegex },
         { email: searchRegex },
         { contactNumber: searchRegex },
-        { company: searchRegex }
+        { company: searchRegex },
+        { "platforms.platformUsername": searchRegex },
+        {
+          $expr: {
+            $regexMatch: {
+              input: {
+                $concat: [
+                  { $ifNull: ["$firstName", ""] },
+                  " ",
+                  { $ifNull: ["$lastName", ""] },
+                ],
+              },
+              regex: escapedForRegex,
+              options: "i",
+            },
+          },
+        },
       ];
 
-      // If search is a valid ObjectId, include clientType match
+      // If search is a valid ObjectId, include clientType / platform master id match
       if (mongoose.Types.ObjectId.isValid(normalizedSearch)) {
         orConditions.push({ clientType: normalizedSearch });
+        orConditions.push({ "platforms.platformName": normalizedSearch });
       }
 
-      // Search clientType names in Master collection
-      const matchingClientTypes = await Master.find({
+      // Master rows whose name matches (client types + social platform labels share Master collection)
+      const matchingMastersByName = await Master.find({
         name: searchRegex,
         isDeleted: false,
-      }).select("_id").lean();
+      })
+        .select("_id")
+        .lean();
 
-      if (matchingClientTypes.length > 0) {
-        const clientTypeIds = matchingClientTypes.map((ct) => ct._id);
-        orConditions.push({ clientType: { $in: clientTypeIds } });
+      if (matchingMastersByName.length > 0) {
+        const masterIds = matchingMastersByName.map((ct) => ct._id);
+        orConditions.push({ clientType: { $in: masterIds } });
+        orConditions.push({ "platforms.platformName": { $in: masterIds } });
       }
 
       // Add $or condition to filter
@@ -273,8 +294,7 @@ const register = async (req, res, next) => {
       })
       .populate({
         path: 'platforms.platformName',
-        select: '_id name',
-        match: { isDeleted: false }
+        select: '_id name isDeleted',
       });
 
 
@@ -412,8 +432,7 @@ const updateUser = async (req, res, next) => {
     })
     .populate({
       path: 'platforms.platformName',
-      select: '_id name',
-      match: { isDeleted: false }
+      select: '_id name isDeleted',
     });
 
     // ✅ Invalidate cache after user update
@@ -498,8 +517,7 @@ const getUserById = async (req, res, next) => {
       })
       .populate({
         path: 'platforms.platformName',
-        select: '_id name',
-        match: { isDeleted: false }
+        select: '_id name isDeleted',
       });
     
     if (!user) {
