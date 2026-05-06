@@ -19,6 +19,7 @@ import nodemailer from "nodemailer";
 import { secret } from "../config/secret.js";
 import Auth from "../models/auth.js";
 import Role from "../models/role.js";
+import { normalizeMediaRefToServerPath, normalizeRichTextMediaHtml } from "../util/mediaStorage.js";
 
 const DEFAULT_ORDER_IMAGE_PLACEHOLDER =
   "https://placehold.co/100x100/A0B2C7/FFFFFF?text=Product";
@@ -513,10 +514,18 @@ export const createOrder = async (req, res, next) => {
         }
       }
 
-      const normalizedProductImages = extractProductImages(
+      const extractedProductImages = extractProductImages(
         product.productImages,
         { fallback: false }
       );
+      const normalizedProductImages = [];
+      for (let imgIdx = 0; imgIdx < extractedProductImages.length; imgIdx++) {
+        const image = extractedProductImages[imgIdx];
+        const normalizedPath = await normalizeMediaRefToServerPath(image?.img, {
+          baseName: `${String(product.productName || "product").slice(0, 30)}-${imgIdx + 1}`,
+        });
+        if (normalizedPath) normalizedProductImages.push({ img: normalizedPath });
+      }
 
       const paymentCurrency = product.paymentCurrency === 'USD' ? 'USD' : 'INR';
 
@@ -637,6 +646,10 @@ export const createOrder = async (req, res, next) => {
       stockDocForConversion = sdoc;
     }
 
+    const normalizedOtherDetails = await normalizeRichTextMediaHtml(otherDetails || "", {
+      baseName: "order-note",
+    });
+
     // Create order with products array
     const order = await Order.create({
       clientName: resolvedClientName,
@@ -648,7 +661,7 @@ export const createOrder = async (req, res, next) => {
           ? Math.round(paymentAmount * 100) / 100
           : paymentAmount,
       supplier: supplier || "",
-      otherDetails: otherDetails || "",
+      otherDetails: normalizedOtherDetails,
       // Supplier/shipping/packaging/other costs are stored at order level
       // so that profit calculations can include them.
       shippingCost:
@@ -1299,10 +1312,18 @@ const updateOrder = async (req, res, next) => {
           }
         }
 
-        const normalizedProductImages = extractProductImages(
+        const extractedProductImages = extractProductImages(
           product.productImages,
           { fallback: false }
         );
+        const normalizedProductImages = [];
+        for (let imgIdx = 0; imgIdx < extractedProductImages.length; imgIdx++) {
+          const image = extractedProductImages[imgIdx];
+          const normalizedPath = await normalizeMediaRefToServerPath(image?.img, {
+            baseName: `${String(product.productName || "product").slice(0, 30)}-${imgIdx + 1}`,
+          });
+          if (normalizedPath) normalizedProductImages.push({ img: normalizedPath });
+        }
         const paymentCurrency = product.paymentCurrency === 'USD' ? 'USD' : 'INR';
 
         const supplierLines = normalizePurchaseSupplierLines(product.purchaseSupplierLines);
@@ -1384,6 +1405,11 @@ const updateOrder = async (req, res, next) => {
     }
     if (updateData.otherExpenseNote !== undefined && updateData.otherExpenseNote !== null) {
       updateData.otherExpenseNote = String(updateData.otherExpenseNote).trim();
+    }
+    if (typeof updateData.otherDetails === "string") {
+      updateData.otherDetails = await normalizeRichTextMediaHtml(updateData.otherDetails, {
+        baseName: "order-note",
+      });
     }
 
     // Update order

@@ -7,7 +7,10 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "echo build done"
+    "build": "echo build done",
+    "migrate:order-media": "node scripts/migrate-order-local-media-to-server.js",
+    "rewrite:order-media-url": "node scripts/rewrite-order-media-base-url.js",
+    "migrate:localhost-media-to-prod": "node scripts/migrate-localhost-media-to-production-upload.js"
   },
   "keywords": [
     "inventory",
