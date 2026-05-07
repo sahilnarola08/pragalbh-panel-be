@@ -92,6 +92,18 @@ const userRegistrationSchema = yup.object().shape({
       // If value exists, validate maximum length
       return value.trim().length <= 100;
     }),
+
+  otherDetails: yup
+    .string()
+    .nullable()
+    .transform((value) => (value === '' || value === null || value === undefined ? undefined : value))
+    .optional()
+    .test('otherDetails', 'Other details must not exceed 1000 characters', function(value) {
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      return value.trim().length <= 1000;
+    }),
 });
 
 // User update validation schema (all fields optional)
@@ -173,6 +185,18 @@ const userUpdateSchema = yup.object().shape({
       // If value exists, validate maximum length
       return value.trim().length <= 100;
     }),
+
+  otherDetails: yup
+    .string()
+    .nullable()
+    .transform((value) => (value === '' || value === null || value === undefined ? undefined : value))
+    .optional()
+    .test('otherDetails', 'Other details must not exceed 1000 characters', function(value) {
+      if (!value || value.trim() === '') {
+        return true;
+      }
+      return value.trim().length <= 1000;
+    }),
 });
 
 // User ID validation schema
@@ -198,7 +222,8 @@ const formatFieldName = (fieldName) => {
     address: 'address',
     company: 'company',
     email: 'email',
-    platforms: 'platforms'
+    platforms: 'platforms',
+    otherDetails: 'other details',
   };
   return fieldMap[fieldName] || fieldName;
 };
