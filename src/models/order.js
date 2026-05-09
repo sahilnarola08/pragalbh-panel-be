@@ -49,6 +49,11 @@ const orderSchema = new mongoose.Schema({
                          ref: "master",
                          required: true,
                     },
+                    orderPlatformAccount: {
+                         type: mongoose.Schema.Types.ObjectId,
+                         ref: "master",
+                         required: false,
+                    },
                     mediator: {
                          type: mongoose.Schema.Types.ObjectId,
                          ref: "master",

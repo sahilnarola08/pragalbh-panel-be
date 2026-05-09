@@ -8,10 +8,10 @@ node_modules/
 
 # Local environment variables
 .env
-.env.local
-.env.development
-.env.staging
-.env.production
+# .env.local
+# .env.development
+# .env.staging
+# .env.production
 
 # Logs
 npm-debug.log*
@@ -80,3 +80,4 @@ uploads/
 !uploads/.gitkeep
 !uploads/images/.gitkeep
 !uploads/videos/.gitkeep
+

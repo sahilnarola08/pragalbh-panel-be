@@ -15,7 +15,8 @@ const register = async (req, res, next) => {
         platforms,
         email, 
         clientType,
-        company
+        company,
+        otherDetails
       } = req.body;
   
       // Validate platforms if provided
@@ -76,6 +77,8 @@ const register = async (req, res, next) => {
       
       // Convert empty company to undefined
       const companyValue = company && company.trim() !== '' ? company.trim() : undefined;
+      const otherDetailsValue =
+        otherDetails && otherDetails.trim() !== "" ? otherDetails.trim() : undefined;
 
       // Create new user (no password)
       const user = await User.create({
@@ -86,7 +89,8 @@ const register = async (req, res, next) => {
         platforms,
         email,
         clientType,
-        company: companyValue
+        company: companyValue,
+        otherDetails: otherDetailsValue
       });
 
       // Populate clientType and platforms in response
@@ -168,6 +172,7 @@ const register = async (req, res, next) => {
         { email: searchRegex },
         { contactNumber: searchRegex },
         { company: searchRegex },
+        { otherDetails: searchRegex },
         { "platforms.platformUsername": searchRegex },
         {
           $expr: {
@@ -387,6 +392,14 @@ const updateUser = async (req, res, next) => {
       } else {
         // Convert empty string to undefined
         updateData.company = undefined;
+      }
+    }
+
+    if (updateData.otherDetails !== undefined) {
+      if (updateData.otherDetails && updateData.otherDetails.trim() !== "") {
+        updateData.otherDetails = updateData.otherDetails.trim();
+      } else {
+        updateData.otherDetails = undefined;
       }
     }
 

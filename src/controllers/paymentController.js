@@ -125,8 +125,11 @@ export const createPayment = async (req, res) => {
     const doc = await Payment.create(payload);
     const populated = await Payment.findById(doc._id)
       .populate("mediatorId", "name commissionType commissionValue settlementDelayDays")
-      .populate("bankId", "name")
+      .populate("bankId", "name accountCurrency")
       .lean();
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("income");
+    invalidateCache("dashboard");
     return sendSuccessResponse({ res, status: 201, data: populated, message: "Payment created successfully" });
   } catch (err) {
     console.error("Create payment error:", err);
@@ -204,8 +207,11 @@ export const updatePayment = async (req, res) => {
 
     const doc = await Payment.findByIdAndUpdate(id, mongoUpdate, { new: true, runValidators: true })
       .populate("mediatorId", "name commissionType commissionValue settlementDelayDays")
-      .populate("bankId", "name")
+      .populate("bankId", "name accountCurrency")
       .lean();
+    const { invalidateCache } = await import("../util/cacheHelper.js");
+    invalidateCache("income");
+    invalidateCache("dashboard");
     return sendSuccessResponse({ res, status: 200, data: doc, message: "Payment updated successfully" });
   } catch (err) {
     console.error("Update payment error:", err);
@@ -222,7 +228,7 @@ export const getPaymentById = async (req, res) => {
     const doc = await Payment.findById(id)
       .populate("orderId", "orderId clientName products")
       .populate("mediatorId", "name commissionType commissionValue settlementDelayDays")
-      .populate("bankId", "name")
+      .populate("bankId", "name accountCurrency")
       .lean();
     if (!doc) {
       return sendErrorResponse({ res, status: 404, message: "Payment not found" });
@@ -255,7 +261,7 @@ export const getPaymentsByOrderId = async (req, res) => {
     const list = await Payment.find(filter)
       .sort({ createdAt: 1 })
       .populate("mediatorId", "name commissionType commissionValue settlementDelayDays")
-      .populate("bankId", "name")
+      .populate("bankId", "name accountCurrency")
       .lean();
     return sendSuccessResponse({ res, status: 200, data: { payments: list }, message: "Payments retrieved successfully" });
   } catch (err) {
@@ -286,7 +292,7 @@ export const listPayments = async (req, res) => {
         .limit(limitNum)
         .populate("orderId", "orderId clientName")
         .populate("mediatorId", "name commissionType commissionValue")
-        .populate("bankId", "name")
+        .populate("bankId", "name accountCurrency")
         .lean(),
       Payment.countDocuments(filter),
     ]);

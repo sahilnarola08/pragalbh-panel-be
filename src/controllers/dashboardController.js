@@ -11,8 +11,10 @@ export const getDashboard = async (req, res) => {
   try {
     const tab = req.query.tab;
     const filter = req.query.filter || "monthly";
+    const startDate = req.query.startDate || null;
+    const endDate = req.query.endDate || null;
     const tabs = tab ? (Array.isArray(tab) ? tab : [tab]) : null;
-    const data = await dashboardService.getDashboard(tabs, filter);
+    const data = await dashboardService.getDashboard(tabs, filter, { startDate, endDate });
 
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.setHeader("Pragma", "no-cache");

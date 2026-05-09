@@ -44,6 +44,10 @@ const userSchema = new mongoose.Schema({
           type: String,
           trim: true,
      },
+     otherDetails: {
+          type: String,
+          trim: true,
+     },
      // Allow multiple client types (multi-select)
      clientType: [
           {

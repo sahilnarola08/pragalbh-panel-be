@@ -14,6 +14,8 @@ import Payment from "../models/payment.js";
 import { DEFAULT_PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 import { formatCurrency } from "../util/currencyFormat.js";
 import orderProfitService from "../services/orderProfitService.js";
+import { buildDailyOrdersStatusReportBuffer } from "../services/orderDailyStatusReportService.js";
+import { buildDailyOrdersStatusReportPdfBuffer } from "../services/orderDailyStatusReportPdfService.js";
 import * as columnPermissionService from "../services/columnPermissionService.js";
 import nodemailer from "nodemailer";
 import { secret } from "../config/secret.js";
@@ -436,9 +438,10 @@ export const createOrder = async (req, res, next) => {
     // ✅ BATCH VALIDATION - Process all products in parallel instead of sequential
     const productNames = products.map(p => p.productName.trim());
     const orderPlatformIds = products.map(p => p.orderPlatform).filter(Boolean);
+    const orderPlatformAccountIds = products.map(p => p.orderPlatformAccount).filter(Boolean);
     const mediatorIds = products.map(p => p.mediator).filter(Boolean);
     const mediatorsArrayIds = (products.map(p => p.mediators).filter(Boolean).flat()).filter(id => mongoose.Types.ObjectId.isValid(id));
-    const masterIds = [...new Set([...orderPlatformIds, ...mediatorIds].filter(Boolean))];
+    const masterIds = [...new Set([...orderPlatformIds, ...orderPlatformAccountIds, ...mediatorIds].filter(Boolean))];
     const uniqueMediatorIds = [...new Set(mediatorsArrayIds)];
 
     const [existingProducts, existingMasters, existingMediatorsList] = await Promise.all([
@@ -482,6 +485,20 @@ export const createOrder = async (req, res, next) => {
           message: "Invalid order platform",
           status: 400,
         });
+      }
+      let orderPlatformAccountMaster = null;
+      if (product.orderPlatformAccount !== undefined && product.orderPlatformAccount !== null && product.orderPlatformAccount !== "") {
+        const orderPlatformAccountId = typeof product.orderPlatformAccount === 'object'
+          ? product.orderPlatformAccount._id || product.orderPlatformAccount.id || String(product.orderPlatformAccount)
+          : String(product.orderPlatformAccount);
+        orderPlatformAccountMaster = masterMap.get(orderPlatformAccountId);
+        if (!orderPlatformAccountMaster) {
+          return sendErrorResponse({
+            res,
+            message: "Invalid order platform account",
+            status: 400,
+          });
+        }
       }
 
       let mediatorMaster = null;
@@ -570,6 +587,7 @@ export const createOrder = async (req, res, next) => {
         sellingPrice: Math.round((product.sellingPrice || 0) * 100) / 100,
         initialPayment: Math.round((product.initialPayment || 0) * 100) / 100,
         orderPlatform: orderPlatformMaster._id,
+        orderPlatformAccount: orderPlatformAccountMaster ? orderPlatformAccountMaster._id : undefined,
         mediator: mediatorMaster ? mediatorMaster._id : undefined,
         mediators: mediatorsList.length ? mediatorsList : undefined,
         paymentCurrency,
@@ -1226,9 +1244,10 @@ const updateOrder = async (req, res, next) => {
     if (updateData.products && Array.isArray(updateData.products)) {
       const productNames = updateData.products.map(p => p.productName?.trim()).filter(Boolean);
       const orderPlatformIds = updateData.products.map(p => p.orderPlatform).filter(Boolean);
+      const orderPlatformAccountIds = updateData.products.map(p => p.orderPlatformAccount).filter(Boolean);
       const mediatorIds = updateData.products.map(p => p.mediator).filter(Boolean);
       const mediatorsArrayIds = (updateData.products.map(p => p.mediators).filter(Boolean).flat()).filter(id => mongoose.Types.ObjectId.isValid(id));
-      const masterIds = [...new Set([...orderPlatformIds, ...mediatorIds].filter(Boolean))];
+      const masterIds = [...new Set([...orderPlatformIds, ...orderPlatformAccountIds, ...mediatorIds].filter(Boolean))];
       const uniqueMediatorIds = [...new Set(mediatorsArrayIds)];
 
       const [existingProducts, existingMasters, existingMediatorsList] = await Promise.all([
@@ -1268,6 +1287,20 @@ const updateOrder = async (req, res, next) => {
             message: "Invalid order platform",
             status: 400,
           });
+        }
+        let orderPlatformAccountMaster = null;
+        if (product.orderPlatformAccount !== undefined && product.orderPlatformAccount !== null && product.orderPlatformAccount !== "") {
+          const orderPlatformAccountId = typeof product.orderPlatformAccount === 'object'
+            ? product.orderPlatformAccount._id || product.orderPlatformAccount.id || String(product.orderPlatformAccount)
+            : String(product.orderPlatformAccount);
+          orderPlatformAccountMaster = masterMap.get(orderPlatformAccountId);
+          if (!orderPlatformAccountMaster) {
+            return sendErrorResponse({
+              res,
+              message: "Invalid order platform account",
+              status: 400,
+            });
+          }
         }
 
         let mediatorMaster = null;
@@ -1355,6 +1388,7 @@ const updateOrder = async (req, res, next) => {
           sellingPrice: Math.round((product.sellingPrice || 0) * 100) / 100,
           initialPayment: Math.round((product.initialPayment || 0) * 100) / 100,
           orderPlatform: orderPlatformMaster._id,
+          orderPlatformAccount: orderPlatformAccountMaster ? orderPlatformAccountMaster._id : undefined,
           mediator: mediatorMaster ? mediatorMaster._id : undefined,
           mediators: mediatorsList.length ? mediatorsList : undefined,
           paymentCurrency,
@@ -1890,6 +1924,42 @@ const getOrderById = async (req, res, next) => {
 
   } catch (error) {
     next(error);
+  }
+};
+
+/** XLSX — current orders (non-deleted), one row per product line, delay row colors match Order Management. */
+const downloadDailyOrdersStatusReport = async (req, res, next) => {
+  try {
+    const buffer = await buildDailyOrdersStatusReportBuffer();
+    const day = new Date().toISOString().slice(0, 10);
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="orders-daily-status-${day}.xlsx"`
+    );
+    return res.send(buffer);
+  } catch (err) {
+    console.error("downloadDailyOrdersStatusReport:", err);
+    return next(err);
+  }
+};
+
+const downloadDailyOrdersStatusReportPdf = async (req, res, next) => {
+  try {
+    const buffer = await buildDailyOrdersStatusReportPdfBuffer();
+    const day = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="orders-daily-status-${day}.pdf"`
+    );
+    return res.send(buffer);
+  } catch (err) {
+    console.error("downloadDailyOrdersStatusReportPdf:", err);
+    return next(err);
   }
 };
 
@@ -2435,6 +2505,8 @@ export default {
   getOrderById,
   updateOrderStatus,
   getKanbanData,
+  downloadDailyOrdersStatusReport,
+  downloadDailyOrdersStatusReportPdf,
   updateOrderChecklist,
   updateTrackingInfo,
   updateInitialPayment

@@ -2,6 +2,7 @@ import ExpanceIncome from "../models/expance_inc.js";
 import Master from "../models/master.js";
 import Payment from "../models/payment.js";
 import ManualBankEntry from "../models/manualBankEntry.js";
+import Income from "../models/income.js";
 import mongoose from "mongoose";
 import { PAYMENT_LIFECYCLE_STATUS, PAYMENT_STATUS } from "../helper/enums.js";
 
@@ -493,16 +494,16 @@ export const getIncomeExpance = async (req, res) => {
         paymentQuery.creditedDate = paymentQuery.creditedDate || {};
         Object.assign(paymentQuery.creditedDate, dateFilter);
       }
-      const [paymentData, depositEntries, transferEntries] = await Promise.all([
+      const [paymentData, depositEntries, transferEntries, legacyIncomeEntries] = await Promise.all([
         orderFilter.orderId
           ? Payment.find(paymentQuery)
               .populate("orderId", "products clientName orderId")
-              .populate("bankId", "_id name")
+              .populate("bankId", "_id name accountCurrency")
               .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
               .lean()
           : Payment.find(paymentQuery)
               .populate("orderId", "products clientName orderId")
-              .populate("bankId", "_id name")
+              .populate("bankId", "_id name accountCurrency")
               .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
               .lean(),
         orderFilter.orderId
@@ -526,11 +527,31 @@ export const getIncomeExpance = async (req, res) => {
               .populate("toBankId", "_id name")
               .sort(sortQuery)
               .lean(),
+        orderFilter.orderId
+          ? Income.find({
+              orderId: orderFilter.orderId,
+              receivedAmount: { $gt: 0 },
+              bankId: { $exists: true, $ne: null },
+              $or: [{ paymentId: { $exists: false } }, { paymentId: null }],
+              ...(deletedOnly ? { isDeleted: true } : { isDeleted: { $ne: true } }),
+              ...(dateFilter ? { date: dateFilter } : {}),
+            })
+              .populate("bankId", "_id name")
+              .populate("orderId", "products clientName orderId")
+              .sort({ date: sortOrder === "asc" ? 1 : -1, createdAt: sortOrder === "asc" ? 1 : -1 })
+              .lean()
+          : [],
       ]);
 
       const creditItems = [];
       paymentData.forEach((p) => {
-        const amt = roundAmount(p.actualBankCreditINR || 0);
+        const bankCurrency = String(p?.bankId?.accountCurrency || "INR").toUpperCase();
+        const rawActualInr = roundAmount(p.actualBankCreditINR || 0);
+        const rate = roundAmount(p.conversionRate || 0);
+        const amt =
+          bankCurrency === "USD" && rate > 0
+            ? roundAmount(rawActualInr / rate)
+            : rawActualInr;
         if (amt <= 0) return;
         const { bankId: bid, bank } = buildBankResponse(p.bankId);
         const productName = p.orderId?.products?.[0]?.productName || "Payment";
@@ -575,19 +596,52 @@ export const getIncomeExpance = async (req, res) => {
       transferEntries.forEach((e) => {
         const toBank = e.toBankId;
         const { bankId: bid, bank } = buildBankResponse(toBank);
+        const receivedOnTargetBank = e.toAmount != null ? e.toAmount : e.amount;
+        const fromBankName = e.bankId?.name || "";
         creditItems.push({
           _id: e._id,
           incExpType: 1,
           source: "manual",
           manualType: "transfer",
           date: e.date,
-          receivedAmount: roundAmount(e.amount || 0),
+          receivedAmount: roundAmount(receivedOnTargetBank || 0),
           description: e.description || "Transfer received",
+          transferFromBankName: fromBankName,
+          transferFromAmount: roundAmount(e.fromAmount != null ? e.fromAmount : e.amount || 0),
+          transferFromCurrency: e.fromCurrency || null,
+          transferToAmount: roundAmount(receivedOnTargetBank || 0),
+          transferToCurrency: e.toCurrency || null,
+          transferFxRate: e.fxRate != null ? roundAmount(e.fxRate) : null,
           bankId: bid,
           bank,
           orderId: null,
           clientName: "",
           status: "reserved",
+          isDeleted: e.isDeleted || false,
+          deletedAt: e.deletedAt || null,
+        });
+      });
+      legacyIncomeEntries.forEach((e) => {
+        const amt = roundAmount(e.receivedAmount || 0);
+        if (amt <= 0) return;
+        const { bankId: bid, bank } = buildBankResponse(e.bankId);
+        if (!bid) return;
+        const primaryProductName = e.orderId?.products?.[0]?.productName || "Payment";
+        const formattedOrder = e.orderId
+          ? formatOrderMediatorInfo(e.orderId, { productNameHint: primaryProductName })
+          : null;
+        creditItems.push({
+          _id: e._id,
+          incExpType: 1,
+          source: "legacy_income",
+          date: e.date || e.createdAt,
+          receivedAmount: amt,
+          description: e.Description || primaryProductName,
+          bankId: bid,
+          bank,
+          orderId: formattedOrder,
+          clientName: e.orderId?.clientName || "",
+          status: "received",
           isDeleted: e.isDeleted || false,
           deletedAt: e.deletedAt || null,
         });
@@ -862,7 +916,7 @@ export const getIncomeExpance = async (req, res) => {
       const [paymentDataBoth, depositEntriesBoth, transferEntriesBoth, expanceData] = await Promise.all([
         Payment.find(paymentQueryForBoth)
           .populate("orderId", "products clientName orderId")
-          .populate("bankId", "_id name")
+          .populate("bankId", "_id name accountCurrency")
           .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
           .lean(),
         orderFilter.orderId
@@ -906,7 +960,13 @@ export const getIncomeExpance = async (req, res) => {
 
       const incomeList = [];
       paymentDataBoth.forEach((p) => {
-        const amt = roundAmount(p.actualBankCreditINR || 0);
+        const bankCurrency = String(p?.bankId?.accountCurrency || "INR").toUpperCase();
+        const rawActualInr = roundAmount(p.actualBankCreditINR || 0);
+        const rate = roundAmount(p.conversionRate || 0);
+        const amt =
+          bankCurrency === "USD" && rate > 0
+            ? roundAmount(rawActualInr / rate)
+            : rawActualInr;
         if (amt <= 0) return;
         const { bankId: bid, bank } = buildBankResponse(p.bankId);
         const productName = p.orderId?.products?.[0]?.productName || "Payment";
@@ -951,14 +1011,22 @@ export const getIncomeExpance = async (req, res) => {
       transferEntriesBoth.forEach((e) => {
         const toBank = e.toBankId;
         const { bankId: bid, bank } = buildBankResponse(toBank);
+        const receivedOnTargetBank = e.toAmount != null ? e.toAmount : e.amount;
+        const fromBankName = e.bankId?.name || "";
         incomeList.push({
           _id: e._id,
           incExpType: 1,
           source: "manual",
           manualType: "transfer",
           date: e.date,
-          receivedAmount: roundAmount(e.amount || 0),
+          receivedAmount: roundAmount(receivedOnTargetBank || 0),
           description: e.description || "Transfer received",
+          transferFromBankName: fromBankName,
+          transferFromAmount: roundAmount(e.fromAmount != null ? e.fromAmount : e.amount || 0),
+          transferFromCurrency: e.fromCurrency || null,
+          transferToAmount: roundAmount(receivedOnTargetBank || 0),
+          transferToCurrency: e.toCurrency || null,
+          transferFxRate: e.fxRate != null ? roundAmount(e.fxRate) : null,
           bankId: bid,
           bank,
           orderId: null,
@@ -1388,15 +1456,10 @@ export const editExpanseEntry = async (req, res) => {
       }
     }
 
-    // Update paidAmount and recalculate dueAmount
+    // Update paidAmount (keep dueAmount as configured total unless explicitly updated)
     if (paidAmount !== undefined) {
       const newPaidAmount = Math.round(paidAmount * 100) / 100;
       existingExpense.paidAmount = newPaidAmount;
-
-      const base = basePurchasePrice > 0 ? basePurchasePrice : (existingExpense.dueAmount || 0) + (currentPaidAmount || 0);
-      const effectiveBase = base > 0 ? base : existingExpense.dueAmount + newPaidAmount;
-      const newDueAmount = Math.max(0, effectiveBase - newPaidAmount);
-      existingExpense.dueAmount = Math.round(newDueAmount * 100) / 100;
     }
     
     // ALWAYS recalculate status based on current paidAmount (after any updates)

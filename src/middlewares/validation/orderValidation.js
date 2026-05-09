@@ -43,6 +43,7 @@ const productSchema = yup.object().shape({
     sellingPrice: yup.number().required("Selling price is required").min(0, "Selling price must be greater than 0"),
     initialPayment: yup.number().min(0, "Initial payment must be greater than or equal to 0").optional(),
     orderPlatform: yup.string().required("Order platform is required").matches(/^[0-9a-fA-F]{24}$/, 'Order platform must be a valid ObjectId'),
+    orderPlatformAccount: yup.string().matches(/^[0-9a-fA-F]{24}$/, 'Order platform account must be a valid ObjectId').optional(),
     mediator: yup.string().matches(/^[0-9a-fA-F]{24}$/, 'Mediator must be a valid ObjectId').optional(),
     mediators: yup.array().of(yup.string().matches(/^[0-9a-fA-F]{24}$/, 'Invalid mediator ObjectId')).optional(),
     paymentCurrency: yup.string().oneOf(['USD', 'INR']).optional(),
