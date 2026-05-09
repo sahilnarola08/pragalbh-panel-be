@@ -89,6 +89,8 @@ export const cacheMiddleware = (req, res, next) => {
     req.originalUrl.startsWith('/master') ||
     req.originalUrl.startsWith('/dashboard') ||
     req.originalUrl.includes('/order/kanban-board') ||
+    req.originalUrl.includes('/order/daily-status-report.xlsx') ||
+    req.originalUrl.includes('/order/daily-status-report.pdf') ||
     // Order detail drives Payment & Income modal + edit form; must never serve stale costs (supplier/shipping/etc.)
     req.originalUrl.includes('/order/get-order-by-id') ||
     // Supplier "Order Details" modal is built from per-order expenses; must match latest edits immediately

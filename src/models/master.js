@@ -28,6 +28,21 @@ const masterSchema = new mongoose.Schema({
           default: false,
           index: true,
      },
+     /** Primary account currency for bank-type masters (e.g. INR, USD). */
+     accountCurrency: {
+          type: String,
+          trim: true,
+          uppercase: true,
+          default: null,
+          match: /^[A-Z]{3}$/,
+          index: true,
+     },
+     /** Optional opening balance in account currency. */
+     accountOpeningBalance: {
+          type: Number,
+          default: 0,
+          min: 0,
+     },
 }, {
      timestamps: true,
      toJSON: { virtuals: true },

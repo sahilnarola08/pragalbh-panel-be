@@ -38,6 +38,41 @@ const manualBankEntrySchema = new mongoose.Schema(
       required: false,
       index: true,
     },
+    /** Currency-aware transfer fields (kept optional for backward compatibility). */
+    fromCurrency: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      match: /^[A-Z]{3}$/,
+      default: null,
+    },
+    toCurrency: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      match: /^[A-Z]{3}$/,
+      default: null,
+    },
+    fromAmount: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+    toAmount: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+    fxRate: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
+    fxSource: {
+      type: String,
+      enum: ["manual", "auto_api"],
+      default: "manual",
+    },
     /** Optional: linked expense entry for withdrawal/transfer debit */
     linkedExpenseId: {
       type: mongoose.Schema.Types.ObjectId,

@@ -23,6 +23,16 @@ router.post("/bulk-delete-orders", authorize("orders.delete"), orderController.b
 router.patch("/update-status", authorizeAny(["orders.approve", "order_management.edit"]), orderController.updateOrderStatus);
 router.patch("/update-checklist", authorizeAny(["orders.edit", "order_management.edit"]), orderController.updateOrderChecklist);
 router.get("/kanban-board", authorizeAny(["orders.view", "order_management.view"]), orderController.getKanbanData);
+router.get(
+  "/daily-status-report.xlsx",
+  authorizeAny(["orders.view", "order_management.view"]),
+  orderController.downloadDailyOrdersStatusReport
+);
+router.get(
+  "/daily-status-report.pdf",
+  authorizeAny(["orders.view", "order_management.view"]),
+  orderController.downloadDailyOrdersStatusReportPdf
+);
 router.patch("/update-tracking-info", authorizeAny(["orders.edit", "order_management.edit"]), orderController.updateTrackingInfo);
 router.patch("/update-initial-payment", authorizeAny(["orders.edit", "order_management.edit"]), validateUpdateInitialPayment, orderController.updateInitialPayment);
 
