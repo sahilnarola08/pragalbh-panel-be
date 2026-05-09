@@ -498,12 +498,12 @@ export const getIncomeExpance = async (req, res) => {
         orderFilter.orderId
           ? Payment.find(paymentQuery)
               .populate("orderId", "products clientName orderId")
-              .populate("bankId", "_id name")
+              .populate("bankId", "_id name accountCurrency")
               .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
               .lean()
           : Payment.find(paymentQuery)
               .populate("orderId", "products clientName orderId")
-              .populate("bankId", "_id name")
+              .populate("bankId", "_id name accountCurrency")
               .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
               .lean(),
         orderFilter.orderId
@@ -545,7 +545,13 @@ export const getIncomeExpance = async (req, res) => {
 
       const creditItems = [];
       paymentData.forEach((p) => {
-        const amt = roundAmount(p.actualBankCreditINR || 0);
+        const bankCurrency = String(p?.bankId?.accountCurrency || "INR").toUpperCase();
+        const rawActualInr = roundAmount(p.actualBankCreditINR || 0);
+        const rate = roundAmount(p.conversionRate || 0);
+        const amt =
+          bankCurrency === "USD" && rate > 0
+            ? roundAmount(rawActualInr / rate)
+            : rawActualInr;
         if (amt <= 0) return;
         const { bankId: bid, bank } = buildBankResponse(p.bankId);
         const productName = p.orderId?.products?.[0]?.productName || "Payment";
@@ -590,14 +596,22 @@ export const getIncomeExpance = async (req, res) => {
       transferEntries.forEach((e) => {
         const toBank = e.toBankId;
         const { bankId: bid, bank } = buildBankResponse(toBank);
+        const receivedOnTargetBank = e.toAmount != null ? e.toAmount : e.amount;
+        const fromBankName = e.bankId?.name || "";
         creditItems.push({
           _id: e._id,
           incExpType: 1,
           source: "manual",
           manualType: "transfer",
           date: e.date,
-          receivedAmount: roundAmount(e.amount || 0),
+          receivedAmount: roundAmount(receivedOnTargetBank || 0),
           description: e.description || "Transfer received",
+          transferFromBankName: fromBankName,
+          transferFromAmount: roundAmount(e.fromAmount != null ? e.fromAmount : e.amount || 0),
+          transferFromCurrency: e.fromCurrency || null,
+          transferToAmount: roundAmount(receivedOnTargetBank || 0),
+          transferToCurrency: e.toCurrency || null,
+          transferFxRate: e.fxRate != null ? roundAmount(e.fxRate) : null,
           bankId: bid,
           bank,
           orderId: null,
@@ -902,7 +916,7 @@ export const getIncomeExpance = async (req, res) => {
       const [paymentDataBoth, depositEntriesBoth, transferEntriesBoth, expanceData] = await Promise.all([
         Payment.find(paymentQueryForBoth)
           .populate("orderId", "products clientName orderId")
-          .populate("bankId", "_id name")
+          .populate("bankId", "_id name accountCurrency")
           .sort({ creditedDate: sortOrder === "asc" ? 1 : -1 })
           .lean(),
         orderFilter.orderId
@@ -946,7 +960,13 @@ export const getIncomeExpance = async (req, res) => {
 
       const incomeList = [];
       paymentDataBoth.forEach((p) => {
-        const amt = roundAmount(p.actualBankCreditINR || 0);
+        const bankCurrency = String(p?.bankId?.accountCurrency || "INR").toUpperCase();
+        const rawActualInr = roundAmount(p.actualBankCreditINR || 0);
+        const rate = roundAmount(p.conversionRate || 0);
+        const amt =
+          bankCurrency === "USD" && rate > 0
+            ? roundAmount(rawActualInr / rate)
+            : rawActualInr;
         if (amt <= 0) return;
         const { bankId: bid, bank } = buildBankResponse(p.bankId);
         const productName = p.orderId?.products?.[0]?.productName || "Payment";
@@ -991,14 +1011,22 @@ export const getIncomeExpance = async (req, res) => {
       transferEntriesBoth.forEach((e) => {
         const toBank = e.toBankId;
         const { bankId: bid, bank } = buildBankResponse(toBank);
+        const receivedOnTargetBank = e.toAmount != null ? e.toAmount : e.amount;
+        const fromBankName = e.bankId?.name || "";
         incomeList.push({
           _id: e._id,
           incExpType: 1,
           source: "manual",
           manualType: "transfer",
           date: e.date,
-          receivedAmount: roundAmount(e.amount || 0),
+          receivedAmount: roundAmount(receivedOnTargetBank || 0),
           description: e.description || "Transfer received",
+          transferFromBankName: fromBankName,
+          transferFromAmount: roundAmount(e.fromAmount != null ? e.fromAmount : e.amount || 0),
+          transferFromCurrency: e.fromCurrency || null,
+          transferToAmount: roundAmount(receivedOnTargetBank || 0),
+          transferToCurrency: e.toCurrency || null,
+          transferFxRate: e.fxRate != null ? roundAmount(e.fxRate) : null,
           bankId: bid,
           bank,
           orderId: null,

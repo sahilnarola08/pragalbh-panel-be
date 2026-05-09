@@ -98,13 +98,13 @@ export async function getOverview(filter = "monthly", options = {}) {
         { $project: { _id: 0, sum: { $round: ["$sum", 2] } } },
       ]).exec(),
       ManualBankEntry.aggregate([
-        { $match: { isDeleted: { $ne: true }, ...manualDateMatch, $or: [{ type: "deposit" }, { type: "transfer" }] } },
+        { $match: { isDeleted: { $ne: true }, ...manualDateMatch, type: "deposit" } },
         { $group: { _id: null, sum: { $sum: { $round: [{ $ifNull: ["$amount", 0] }, 2] } } } },
         { $project: { _id: 0, sum: { $round: ["$sum", 2] } } },
       ]).exec(),
     ]).then(([a, b]) => [{ totalIncome: (a[0]?.sum ?? 0) + (b[0]?.sum ?? 0) }]),
     ExpanseIncome.aggregate([
-      { $match: { status: { $in: [PAYMENT_STATUS.PAID] }, isDeleted: { $ne: true }, ...expenseDateMatch } },
+      { $match: { status: { $in: [PAYMENT_STATUS.PAID] }, isDeleted: { $ne: true }, manualType: { $ne: "transfer" }, ...expenseDateMatch } },
       { $group: { _id: null, totalExpense: { $sum: { $round: [{ $ifNull: ["$paidAmount", 0] }, 2] } } } },
       { $project: { _id: 0, totalExpense: { $round: ["$totalExpense", 2] } } },
     ]).exec(),
@@ -205,7 +205,7 @@ export async function getFinance(filter = "monthly", options = {}) {
     bankOverview,
   ] = await Promise.all([
     ExpanseIncome.aggregate([
-      { $match: { status: PAYMENT_STATUS.PAID, isDeleted: { $ne: true }, date: { $gte: start, $lte: end } } },
+      { $match: { status: PAYMENT_STATUS.PAID, isDeleted: { $ne: true }, manualType: { $ne: "transfer" }, date: { $gte: start, $lte: end } } },
       { $group: { _id: "$description", total: { $sum: { $round: ["$paidAmount", 2] } } } },
       { $sort: { total: -1 } },
       { $limit: 10 },
@@ -222,7 +222,7 @@ export async function getFinance(filter = "monthly", options = {}) {
         { $group: { _id: "$type", sum: { $sum: "$amount" } } },
       ]).exec(),
       ExpanseIncome.aggregate([
-        { $match: { status: PAYMENT_STATUS.PAID, isDeleted: { $ne: true }, date: { $gte: start, $lte: end } } },
+        { $match: { status: PAYMENT_STATUS.PAID, isDeleted: { $ne: true }, manualType: { $ne: "transfer" }, date: { $gte: start, $lte: end } } },
         { $group: { _id: null, out: { $sum: { $round: ["$paidAmount", 2] } } } },
         { $project: { _id: 0, out: { $round: ["$out", 2] } } },
       ]).exec(),
@@ -255,18 +255,36 @@ export async function getFinance(filter = "monthly", options = {}) {
         { $match: { type: "withdrawal", isDeleted: { $ne: true } } },
         { $group: { _id: "$bankId", totalOut: { $sum: "$amount" } } },
       ]).exec();
+      const transferOutByBank = await ManualBankEntry.aggregate([
+        { $match: { type: "transfer", isDeleted: { $ne: true } } },
+        { $group: { _id: "$bankId", transferOut: { $sum: { $ifNull: ["$fromAmount", "$amount"] } } } },
+      ]).exec();
+      const transferInByBank = await ManualBankEntry.aggregate([
+        { $match: { type: "transfer", isDeleted: { $ne: true }, toBankId: { $ne: null } } },
+        { $group: { _id: "$toBankId", transferIn: { $sum: { $ifNull: ["$toAmount", "$amount"] } } } },
+      ]).exec();
       const creditByBank = await Payment.aggregate([
         { $match: { paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK, isDeleted: { $ne: true }, bankId: { $ne: null } } },
         { $group: { _id: "$bankId", credited: { $sum: { $round: ["$actualBankCreditINR", 2] } } } },
       ]).exec();
       const depositMap = new Map((depositByBank || []).map((r) => [String(r._id), r.totalIn || 0]));
       const withdrawalMap = new Map((withdrawalByBank || []).map((r) => [String(r._id), r.totalOut || 0]));
+      const transferOutMap = new Map((transferOutByBank || []).map((r) => [String(r._id), r.transferOut || 0]));
+      const transferInMap = new Map((transferInByBank || []).map((r) => [String(r._id), r.transferIn || 0]));
       const creditMap = new Map((creditByBank || []).map((r) => [String(r._id), r.credited || 0]));
-      const bankIds = new Set([...depositMap.keys(), ...withdrawalMap.keys(), ...creditMap.keys()]);
+      const bankIds = new Set([
+        ...depositMap.keys(),
+        ...withdrawalMap.keys(),
+        ...transferOutMap.keys(),
+        ...transferInMap.keys(),
+        ...creditMap.keys()
+      ]);
       return Array.from(bankIds).map((bankId) => ({
         bankId,
         deposit: round2(depositMap.get(bankId) || 0),
         withdrawal: round2(withdrawalMap.get(bankId) || 0),
+        transferOut: round2(transferOutMap.get(bankId) || 0),
+        transferIn: round2(transferInMap.get(bankId) || 0),
         credited: round2(creditMap.get(bankId) || 0),
       }));
     }),

@@ -4,6 +4,13 @@ import mongoose from "mongoose";
 
 const roundAmount = (value) => Math.round((Number(value) || 0) * 100) / 100;
 
+const normalizeCurrencyCode = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const code = String(value).trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(code)) return undefined;
+  return code;
+};
+
 const normalizeBankIdOrThrow = async (bankId) => {
   if (!bankId) return null;
   const rawId = typeof bankId === "object" && bankId !== null
@@ -35,7 +42,7 @@ const buildBankResponse = (bank) => {
 /** Add manual bank entry: deposit, withdrawal, or transfer */
 export const addManualBankEntry = async (req, res) => {
   try {
-    const { type, date, amount, description, bankId, toBankId } = req.body;
+    const { type, date, amount, description, bankId, toBankId, fromCurrency, toCurrency, fromAmount, toAmount, fxRate, fxSource } = req.body;
 
     if (!type || !["deposit", "withdrawal", "transfer"].includes(type)) {
       return res.status(400).json({
@@ -193,11 +200,46 @@ export const addManualBankEntry = async (req, res) => {
     }
 
     if (type === "transfer") {
-      const fromBank = await Master.findById(normalizedBankId).select("name").lean();
-      const toBank = await Master.findById(normalizedToBankId).select("name").lean();
+      const fromBank = await Master.findById(normalizedBankId).select("name accountCurrency").lean();
+      const toBank = await Master.findById(normalizedToBankId).select("name accountCurrency").lean();
       const toName = toBank?.name || "Bank";
       const fromName = fromBank?.name || "Bank";
       const descFrom = description.trim() || `Transfer to ${toName}`;
+      const normalizedFromCurrency = normalizeCurrencyCode(fromCurrency ?? fromBank?.accountCurrency ?? "INR");
+      const normalizedToCurrency = normalizeCurrencyCode(toCurrency ?? toBank?.accountCurrency ?? normalizedFromCurrency ?? "INR");
+      if (normalizedFromCurrency === undefined || normalizedToCurrency === undefined) {
+        return res.status(400).json({
+          status: 400,
+          message: "Invalid transfer currency code",
+        });
+      }
+      const fxRateNum = fxRate === undefined || fxRate === null || fxRate === "" ? null : Number(fxRate);
+      if (fxRateNum != null && (!Number.isFinite(fxRateNum) || fxRateNum <= 0)) {
+        return res.status(400).json({
+          status: 400,
+          message: "fxRate must be a positive number",
+        });
+      }
+      const fromAmountNum = fromAmount === undefined || fromAmount === null || fromAmount === ""
+        ? amt
+        : roundAmount(fromAmount);
+      if (!Number.isFinite(fromAmountNum) || fromAmountNum <= 0) {
+        return res.status(400).json({
+          status: 400,
+          message: "fromAmount must be a positive number",
+        });
+      }
+      const derivedToAmount = fxRateNum != null ? roundAmount(fromAmountNum * fxRateNum) : fromAmountNum;
+      const toAmountNum = toAmount === undefined || toAmount === null || toAmount === ""
+        ? derivedToAmount
+        : roundAmount(toAmount);
+      if (!Number.isFinite(toAmountNum) || toAmountNum <= 0) {
+        return res.status(400).json({
+          status: 400,
+          message: "toAmount must be a positive number",
+        });
+      }
+      const fxSourceVal = fxSource === "auto_api" ? "auto_api" : "manual";
 
       const ExpanceIncome = (await import("../models/expance_inc.js")).default;
       const session = await mongoose.startSession();
@@ -208,10 +250,16 @@ export const addManualBankEntry = async (req, res) => {
             {
               type: "transfer",
               date: entryDate,
-              amount: amt,
+              amount: fromAmountNum,
               description: descFrom,
               bankId: normalizedBankId,
               toBankId: normalizedToBankId,
+              fromCurrency: normalizedFromCurrency,
+              toCurrency: normalizedToCurrency,
+              fromAmount: fromAmountNum,
+              toAmount: toAmountNum,
+              fxRate: fxRateNum,
+              fxSource: fxSourceVal,
             },
           ],
           { session }
@@ -222,7 +270,7 @@ export const addManualBankEntry = async (req, res) => {
             {
               date: entryDate,
               description: descFrom,
-              paidAmount: amt,
+              paidAmount: fromAmountNum,
               dueAmount: 0,
               bankId: normalizedBankId,
               status: "paid",
@@ -253,6 +301,12 @@ export const addManualBankEntry = async (req, res) => {
           type: "transfer",
           fromBankId: normalizedBankId,
           toBankId: normalizedToBankId,
+          fromCurrency: normalizedFromCurrency,
+          toCurrency: normalizedToCurrency,
+          fromAmount: fromAmountNum,
+          toAmount: toAmountNum,
+          fxRate: fxRateNum,
+          fxSource: fxSourceVal,
         },
       });
       } catch (e) {

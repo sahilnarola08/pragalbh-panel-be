@@ -25,10 +25,29 @@ const masterIdentityQuery = (trimmedName, masterObjectId, underPlatformObjectId)
     return q;
 };
 
+const normalizeCurrencyCode = (value) => {
+    if (value === undefined || value === null || value === "") return null;
+    const code = String(value).trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(code)) return undefined;
+    return code;
+};
+
+const normalizeOpeningBalance = (value) => {
+    if (value === undefined || value === null || value === "") return undefined;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return NaN;
+    return Math.round(n * 100) / 100;
+};
+
+const isBankAssetByDoc = (assetDoc) => {
+    const nm = String(assetDoc?.name ?? assetDoc?.masterName ?? "").trim().toLowerCase();
+    return nm === "bank";
+};
+
 // Create master - accepts single object
 const createMaster = async (req, res, next) => {
     try {
-        const { name, master, isActive, underPlatform } = req.body;
+        const { name, master, isActive, underPlatform, accountCurrency, accountOpeningBalance } = req.body;
 
         // Validate name
         if (!name || typeof name !== 'string' || name.trim().length === 0) {
@@ -51,6 +70,7 @@ const createMaster = async (req, res, next) => {
         const trimmedName = name.trim();
 
         let masterObjectId = null;
+        let selectedMasterAsset = null;
         if (master !== undefined && master !== null && String(master).trim() !== "") {
             if (!mongoose.Types.ObjectId.isValid(master)) {
                 return sendErrorResponse({
@@ -71,6 +91,7 @@ const createMaster = async (req, res, next) => {
                     status: 400
                 });
             }
+            selectedMasterAsset = masterAsset;
         }
 
         let underPlatformObjectId = null;
@@ -137,11 +158,32 @@ const createMaster = async (req, res, next) => {
             });
         }
 
+        const normalizedCurrency = normalizeCurrencyCode(accountCurrency);
+        if (normalizedCurrency === undefined) {
+            return sendErrorResponse({
+                res,
+                message: "accountCurrency must be a valid 3-letter currency code",
+                status: 400
+            });
+        }
+        const normalizedOpeningBalance = normalizeOpeningBalance(accountOpeningBalance);
+        if (Number.isNaN(normalizedOpeningBalance)) {
+            return sendErrorResponse({
+                res,
+                message: "accountOpeningBalance must be a non-negative number",
+                status: 400
+            });
+        }
+        const shouldDefaultBankCurrency = isBankAssetByDoc(selectedMasterAsset);
+        const effectiveCurrency = normalizedCurrency ?? (shouldDefaultBankCurrency ? "INR" : null);
+
         const newMaster = await Master.create({
             name: trimmedName,
             master: masterObjectId || undefined,
             underPlatform: underPlatformObjectId || undefined,
-            isActive: isActive !== undefined ? isActive : true
+            isActive: isActive !== undefined ? isActive : true,
+            accountCurrency: effectiveCurrency,
+            accountOpeningBalance: normalizedOpeningBalance === undefined ? 0 : normalizedOpeningBalance,
         });
 
         sendSuccessResponse({
@@ -261,7 +303,7 @@ const getAllMasters = async (req, res, next) => {
             .sort(sortObj)
             .skip(offset)
             .limit(limitNum)
-            .select("name master isActive") // Only select name, master, isActive
+            .select("name master isActive accountCurrency accountOpeningBalance")
             .populate({
                 path: 'master',
                 select: 'name'
@@ -351,7 +393,7 @@ const getMasterById = async (req, res, next) => {
 const updateMaster = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { name, master, isActive, underPlatform } = req.body;
+        const { name, master, isActive, underPlatform, accountCurrency, accountOpeningBalance } = req.body;
 
         // Check if master exists
         const existingMaster = await Master.findOne({ 
@@ -384,6 +426,7 @@ const updateMaster = async (req, res, next) => {
 
         // Validate and update master (category / MasterAssets) if provided
         let masterObjectId = null;
+        let selectedMasterAsset = null;
         if (master !== undefined) {
             if (master !== null && master !== "" && !mongoose.Types.ObjectId.isValid(master)) {
                 return sendErrorResponse({
@@ -408,6 +451,7 @@ const updateMaster = async (req, res, next) => {
                         status: 400
                     });
                 }
+                selectedMasterAsset = masterAsset;
             }
             
             updateData.master = masterObjectId || null;
@@ -499,6 +543,39 @@ const updateMaster = async (req, res, next) => {
                 });
             }
             updateData.isActive = isActive;
+        }
+
+        if (accountCurrency !== undefined) {
+            const normalizedCurrency = normalizeCurrencyCode(accountCurrency);
+            if (normalizedCurrency === undefined) {
+                return sendErrorResponse({
+                    res,
+                    message: "accountCurrency must be a valid 3-letter currency code",
+                    status: 400
+                });
+            }
+            updateData.accountCurrency = normalizedCurrency;
+        }
+
+        if (accountOpeningBalance !== undefined) {
+            const normalizedOpeningBalance = normalizeOpeningBalance(accountOpeningBalance);
+            if (Number.isNaN(normalizedOpeningBalance)) {
+                return sendErrorResponse({
+                    res,
+                    message: "accountOpeningBalance must be a non-negative number",
+                    status: 400
+                });
+            }
+            updateData.accountOpeningBalance = normalizedOpeningBalance;
+        }
+
+        if (accountCurrency === undefined) {
+            const effectiveMasterAsset = selectedMasterAsset ?? (existingMaster.master
+                ? await MasterAssets.findById(existingMaster.master).select("name masterName").lean()
+                : null);
+            if (isBankAssetByDoc(effectiveMasterAsset) && !existingMaster.accountCurrency) {
+                updateData.accountCurrency = "INR";
+            }
         }
 
         // Update master
