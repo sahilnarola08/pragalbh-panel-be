@@ -78,5 +78,9 @@ export const SYSTEM_PERMISSIONS = [
   { name: "crm.leads.create", module: "crm", action: "leads_create", description: "Create CRM leads" },
   { name: "crm.leads.edit", module: "crm", action: "leads_edit", description: "Edit CRM leads" },
   { name: "crm.leads.convert", module: "crm", action: "leads_convert", description: "Convert CRM leads to customers" },
+  { name: "crm.leads.assign.team", module: "crm", action: "leads_assign_team", description: "Assign CRM leads to teams" },
+  { name: "crm.leads.assign.owner", module: "crm", action: "leads_assign_owner", description: "Assign CRM leads to owners" },
+  { name: "crm.teams.view", module: "crm", action: "teams_view", description: "View CRM teams" },
+  { name: "crm.teams.manage", module: "crm", action: "teams_manage", description: "Manage CRM teams" },
   { name: "crm.access.manage", module: "crm", action: "access_manage", description: "Provision CRM access for users" },
 ];

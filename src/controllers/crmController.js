@@ -4,6 +4,7 @@ import Auth from "../models/auth.js";
 import CrmFollowup from "../models/crmFollowup.js";
 import CrmLead from "../models/crmLead.js";
 import CrmPipeline from "../models/crmPipeline.js";
+import CrmTeam from "../models/crmTeam.js";
 import { sendErrorResponse, sendSuccessResponse } from "../util/commonResponses.js";
 import { getEffectivePermissions } from "../services/permissionResolver.js";
 import { ensureCustomerInCrmScope } from "../middlewares/resolveCrmScope.js";
@@ -50,8 +51,14 @@ function leadSearchFilter(search) {
 }
 
 function normalizeObjectIdArray(values) {
-  if (!Array.isArray(values)) return [];
-  return values
+  const rawValues = Array.isArray(values)
+    ? values
+    : typeof values === "string"
+      ? values.split(",")
+      : values !== undefined && values !== null
+        ? [values]
+        : [];
+  return rawValues
     .map((value) => String(value || "").trim())
     .filter((value) => mongoose.Types.ObjectId.isValid(value));
 }
@@ -101,6 +108,10 @@ function hasLeadAssignAccess(req) {
   return Boolean(req?.crm?.canAssignLeads);
 }
 
+function hasLeadTeamAssignAccess(req) {
+  return Boolean(req?.crm?.canAssignLeadTeams);
+}
+
 function isLeadOwner(req, ownerUserId) {
   return String(ownerUserId || "") === String(req?.user?._id || "");
 }
@@ -123,6 +134,50 @@ async function getAssignableLeadOwner(ownerUserId) {
   })
     .select("_id")
     .lean();
+}
+
+function slugifyTeamName(name) {
+  const normalized = String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || `team-${Date.now()}`;
+}
+
+async function getAssignableTeam(teamId) {
+  const id = String(teamId || "").trim();
+  if (!id) return null;
+  if (!mongoose.Types.ObjectId.isValid(id)) return null;
+  return CrmTeam.findOne({ _id: id, isActive: true })
+    .select("_id name slug memberUserIds")
+    .lean();
+}
+
+async function getPrimaryTeamForMember(userId) {
+  const id = String(userId || "").trim();
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) return null;
+  return CrmTeam.findOne({
+    isActive: true,
+    memberUserIds: new mongoose.Types.ObjectId(id),
+  })
+    .select("_id name slug memberUserIds")
+    .sort({ name: 1, createdAt: 1 })
+    .lean();
+}
+
+async function normalizeTeamMembers(memberUserIds) {
+  const ids = normalizeObjectIdArray(memberUserIds);
+  if (ids.length === 0) return [];
+  const members = await Auth.find({
+    _id: { $in: ids },
+    isDeleted: false,
+    isActive: true,
+    "crmAccess.enabled": true,
+  })
+    .select("_id")
+    .lean();
+  return members.map((member) => member._id);
 }
 
 function appendLeadEvent(lead, event, actorId) {
@@ -442,7 +497,6 @@ export async function createCrmFollowup(req, res, next) {
         });
       }
     }
-
     const payload = {
       customerId,
       title: String(req.body.title || "").trim(),
@@ -505,6 +559,182 @@ export async function updateCrmFollowup(req, res, next) {
   }
 }
 
+export async function listCrmTeams(req, res, next) {
+  try {
+    if (!req.crm?.canViewTeams) {
+      return sendErrorResponse({ status: 403, res, message: "Missing permission: crm.teams.view" });
+    }
+    const filter = {};
+    if (String(req.query.includeInactive || "").toLowerCase() !== "true") {
+      filter.isActive = true;
+    }
+    const items = await CrmTeam.find(filter).sort({ name: 1 }).lean();
+    return sendSuccessResponse({
+      res,
+      status: 200,
+      message: "CRM teams",
+      data: { items },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function createCrmTeam(req, res, next) {
+  try {
+    if (!req.crm?.canManageTeams) {
+      return sendErrorResponse({ status: 403, res, message: "Missing permission: crm.teams.manage" });
+    }
+    const name = String(req.body.name || "").trim();
+    if (!name) {
+      return sendErrorResponse({ status: 400, res, message: "Team name is required" });
+    }
+    const slug = String(req.body.slug || "").trim() || slugifyTeamName(name);
+    const memberUserIds = await normalizeTeamMembers(req.body.memberUserIds);
+    const created = await CrmTeam.create({
+      name,
+      slug,
+      description: String(req.body.description || "").trim(),
+      memberUserIds,
+      isActive: req.body.isActive !== false,
+      createdByUserId: req.user._id,
+      updatedByUserId: req.user._id,
+    });
+    return sendSuccessResponse({
+      res,
+      status: 201,
+      message: "CRM team created",
+      data: created,
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return sendErrorResponse({ status: 409, res, message: "Team name or slug already exists" });
+    }
+    next(error);
+  }
+}
+
+export async function updateCrmTeam(req, res, next) {
+  try {
+    if (!req.crm?.canManageTeams) {
+      return sendErrorResponse({ status: 403, res, message: "Missing permission: crm.teams.manage" });
+    }
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendErrorResponse({ status: 400, res, message: "Invalid team id" });
+    }
+    const team = await CrmTeam.findById(id);
+    if (!team) {
+      return sendErrorResponse({ status: 404, res, message: "Team not found" });
+    }
+    if (req.body.name !== undefined) {
+      const nextName = String(req.body.name || "").trim();
+      if (!nextName) return sendErrorResponse({ status: 400, res, message: "Team name is required" });
+      team.name = nextName;
+      if (req.body.slug === undefined) {
+        team.slug = slugifyTeamName(nextName);
+      }
+    }
+    if (req.body.slug !== undefined) {
+      const nextSlug = String(req.body.slug || "").trim() || slugifyTeamName(team.name);
+      team.slug = nextSlug;
+    }
+    if (req.body.description !== undefined) {
+      team.description = String(req.body.description || "").trim();
+    }
+    if (req.body.isActive !== undefined) {
+      const nextIsActive = Boolean(req.body.isActive);
+      if (!nextIsActive) {
+        const openLeadCount = await CrmLead.countDocuments({
+          teamId: team._id,
+          status: { $nin: ["converted", "lost"] },
+        });
+        if (openLeadCount > 0) {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Cannot deactivate team with open leads assigned",
+          });
+        }
+      }
+      team.isActive = nextIsActive;
+    }
+    team.updatedByUserId = req.user._id;
+    await team.save();
+    return sendSuccessResponse({
+      res,
+      status: 200,
+      message: "CRM team updated",
+      data: team,
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return sendErrorResponse({ status: 409, res, message: "Team name or slug already exists" });
+    }
+    next(error);
+  }
+}
+
+export async function updateCrmTeamMembers(req, res, next) {
+  try {
+    if (!req.crm?.canManageTeams) {
+      return sendErrorResponse({ status: 403, res, message: "Missing permission: crm.teams.manage" });
+    }
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendErrorResponse({ status: 400, res, message: "Invalid team id" });
+    }
+    const team = await CrmTeam.findById(id);
+    if (!team || !team.isActive) {
+      return sendErrorResponse({ status: 404, res, message: "Team not found" });
+    }
+    const memberUserIds = await normalizeTeamMembers(req.body.memberUserIds);
+    team.memberUserIds = memberUserIds;
+    team.updatedByUserId = req.user._id;
+    await team.save();
+    return sendSuccessResponse({
+      res,
+      status: 200,
+      message: "CRM team members updated",
+      data: team,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getCrmTeamMembers(req, res, next) {
+  try {
+    if (!req.crm?.canViewTeams) {
+      return sendErrorResponse({ status: 403, res, message: "Missing permission: crm.teams.view" });
+    }
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return sendErrorResponse({ status: 400, res, message: "Invalid team id" });
+    }
+    const team = await CrmTeam.findOne({ _id: id, isActive: true }).lean();
+    if (!team) return sendErrorResponse({ status: 404, res, message: "Team not found" });
+    const memberIds = normalizeObjectIdArray(team.memberUserIds);
+    const members = await Auth.find({
+      _id: { $in: memberIds },
+      isDeleted: false,
+      isActive: true,
+      "crmAccess.enabled": true,
+    })
+      .select("_id name email")
+      .sort({ name: 1, email: 1 })
+      .lean();
+    return sendSuccessResponse({
+      res,
+      status: 200,
+      message: "CRM team members",
+      data: { team, items: members },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function listCrmLeads(req, res, next) {
   try {
     if (!req.crm?.canViewLeads) {
@@ -534,6 +764,17 @@ export async function listCrmLeads(req, res, next) {
     }
     if (req.query.pipelineId && mongoose.Types.ObjectId.isValid(String(req.query.pipelineId))) {
       filter.pipelineId = String(req.query.pipelineId);
+    }
+    if (req.query.teamId !== undefined) {
+      const requestedTeamId = String(req.query.teamId || "").trim();
+      if (requestedTeamId) {
+        if (!mongoose.Types.ObjectId.isValid(requestedTeamId)) {
+          return sendErrorResponse({ status: 400, res, message: "Invalid team id" });
+        }
+        filter.teamId = requestedTeamId;
+      } else {
+        filter.teamId = null;
+      }
     }
     if (req.query.convertedCustomerId && mongoose.Types.ObjectId.isValid(String(req.query.convertedCustomerId))) {
       const cid = String(req.query.convertedCustomerId);
@@ -572,12 +813,30 @@ export async function listCrmLeads(req, res, next) {
       CrmLead.find(filter).sort(sort).skip(skip).limit(limit).lean(),
       CrmLead.countDocuments(filter),
     ]);
+    const teamIds = Array.from(
+      new Set(
+        items
+          .map((item) => String(item?.teamId || "").trim())
+          .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      )
+    );
+    const teamNameById = {};
+    if (teamIds.length > 0) {
+      const teams = await CrmTeam.find({ _id: { $in: teamIds } }).select("_id name").lean();
+      for (const team of teams) {
+        teamNameById[String(team._id)] = String(team.name || "").trim() || String(team._id);
+      }
+    }
+    const normalizedItems = items.map((item) => ({
+      ...item,
+      teamName: item?.teamId ? teamNameById[String(item.teamId)] || null : null,
+    }));
 
     return sendSuccessResponse({
       res,
       status: 200,
       message: "CRM leads",
-      data: { items, total, page, limit },
+      data: { items: normalizedItems, total, page, limit },
     });
   } catch (error) {
     next(error);
@@ -625,21 +884,51 @@ export async function createCrmLead(req, res, next) {
         createdByUserId: req.user._id,
       });
     }
+    const requestedTeamId = String(req.body.teamId || "").trim();
+    let nextTeamId = null;
+    let selectedTeam = null;
+    if (requestedTeamId) {
+      if (!hasLeadTeamAssignAccess(req)) {
+        return sendErrorResponse({ status: 403, res, message: "Missing permission to assign lead teams" });
+      }
+      selectedTeam = await getAssignableTeam(requestedTeamId);
+      if (!selectedTeam) {
+        return sendErrorResponse({ status: 400, res, message: "Team not found or inactive" });
+      }
+      nextTeamId = selectedTeam._id;
+    }
     const requestedOwnerUserId = String(req.body.ownerUserId || "").trim();
     let nextOwnerUserId = req.user._id;
     if (requestedOwnerUserId) {
       if (!mongoose.Types.ObjectId.isValid(requestedOwnerUserId)) {
         return sendErrorResponse({ status: 400, res, message: "Invalid owner id" });
       }
+      const assignee = await getAssignableLeadOwner(requestedOwnerUserId);
+      if (!assignee) {
+        return sendErrorResponse({ status: 400, res, message: "Assignee not found or CRM is disabled" });
+      }
       if (requestedOwnerUserId !== String(req.user._id)) {
         if (!hasLeadAssignAccess(req)) {
           return sendErrorResponse({ status: 403, res, message: "Missing permission to assign leads" });
         }
-        const assignee = await getAssignableLeadOwner(requestedOwnerUserId);
-        if (!assignee) {
-          return sendErrorResponse({ status: 400, res, message: "Assignee not found or CRM is disabled" });
-        }
-        nextOwnerUserId = assignee._id;
+      }
+      nextOwnerUserId = assignee._id;
+      const ownerTeam = await getPrimaryTeamForMember(assignee._id);
+      nextTeamId = ownerTeam?._id || null;
+      selectedTeam = ownerTeam || null;
+    } else if (nextTeamId) {
+      const teamMemberIds = normalizeObjectIdArray(selectedTeam?.memberUserIds);
+      const currentUserId = String(req.user._id);
+      if (teamMemberIds.includes(currentUserId)) {
+        nextOwnerUserId = req.user._id;
+      } else if (teamMemberIds.length > 0) {
+        nextOwnerUserId = teamMemberIds[0];
+      } else {
+        return sendErrorResponse({
+          status: 400,
+          res,
+          message: "Cannot create lead for a team with no active members",
+        });
       }
     }
     const payload = {
@@ -663,13 +952,19 @@ export async function createCrmLead(req, res, next) {
       pipelineId,
       nextFollowupAt: req.body.nextFollowupAt || null,
       ownerUserId: nextOwnerUserId,
+      teamId: nextTeamId,
       updatedByUserId: req.user._id,
     };
     payload.activityEvents = [
       {
         type: "created",
         message: "Lead created",
-        metadata: { status: payload.status, pipelineId: payload.pipelineId || null },
+        metadata: {
+          status: payload.status,
+          pipelineId: payload.pipelineId || null,
+          teamId: payload.teamId || null,
+          ownerUserId: payload.ownerUserId || null,
+        },
         createdAt: new Date(),
         createdByUserId: req.user._id,
       },
@@ -709,6 +1004,8 @@ export async function updateCrmLead(req, res, next) {
     const prevStatus = String(lead.status || "");
     const prevPipelineId = String(lead.pipelineId || "");
     const prevOwner = String(lead.ownerUserId || "");
+    const prevTeamId = String(lead.teamId || "");
+    let selectedTeam = null;
 
     const allowed = [
       "firstName",
@@ -772,6 +1069,26 @@ export async function updateCrmLead(req, res, next) {
         appendLeadEvent(lead, { type: "note", message: `Note added: ${noteText}` }, req.user._id);
       }
     }
+    if (req.body.teamId !== undefined) {
+      const requestedTeamId = String(req.body.teamId || "").trim();
+      if (!requestedTeamId) {
+        if (!hasLeadTeamAssignAccess(req)) {
+          return sendErrorResponse({ status: 403, res, message: "Missing permission to assign lead teams" });
+        }
+        lead.teamId = null;
+      } else {
+        if (!hasLeadTeamAssignAccess(req)) {
+          return sendErrorResponse({ status: 403, res, message: "Missing permission to assign lead teams" });
+        }
+        selectedTeam = await getAssignableTeam(requestedTeamId);
+        if (!selectedTeam) {
+          return sendErrorResponse({ status: 400, res, message: "Team not found or inactive" });
+        }
+        lead.teamId = selectedTeam._id;
+      }
+    } else if (lead.teamId) {
+      selectedTeam = await getAssignableTeam(lead.teamId);
+    }
     if (req.body.ownerUserId !== undefined) {
       const requestedOwnerUserId = String(req.body.ownerUserId || "").trim();
       if (!requestedOwnerUserId) {
@@ -789,6 +1106,9 @@ export async function updateCrmLead(req, res, next) {
           return sendErrorResponse({ status: 400, res, message: "Assignee not found or CRM is disabled" });
         }
         lead.ownerUserId = assignee._id;
+        const ownerTeam = await getPrimaryTeamForMember(assignee._id);
+        lead.teamId = ownerTeam?._id || null;
+        selectedTeam = ownerTeam || null;
       }
     }
     if (req.body.pipelineId !== undefined) {
@@ -834,6 +1154,17 @@ export async function updateCrmLead(req, res, next) {
           type: "owner_change",
           message: "Owner reassigned",
           metadata: { from: prevOwner || null, to: String(lead.ownerUserId || "") || null },
+        },
+        req.user._id
+      );
+    }
+    if (String(lead.teamId || "") !== prevTeamId) {
+      appendLeadEvent(
+        lead,
+        {
+          type: "team_change",
+          message: "Team assignment changed",
+          metadata: { from: prevTeamId || null, to: String(lead.teamId || "") || null },
         },
         req.user._id
       );
@@ -889,12 +1220,31 @@ export async function bulkUpdateCrmLeads(req, res, next) {
       return sendErrorResponse({ status: 400, res, message: "No valid lead ids provided" });
     }
     const update = {};
+    let selectedTeam = null;
     if (req.body.status !== undefined) update.status = String(req.body.status || "");
+    if (req.body.teamId !== undefined) {
+      if (!hasLeadTeamAssignAccess(req)) {
+        return sendErrorResponse({ status: 403, res, message: "Missing permission to assign lead teams" });
+      }
+      const requestedTeamId = String(req.body.teamId || "").trim();
+      if (!requestedTeamId) {
+        update.teamId = null;
+      } else {
+        selectedTeam = await getAssignableTeam(requestedTeamId);
+        if (!selectedTeam) {
+          return sendErrorResponse({ status: 400, res, message: "Team not found or inactive" });
+        }
+        update.teamId = selectedTeam._id;
+      }
+    }
     if (req.body.ownerUserId !== undefined) {
       if (!hasLeadAssignAccess(req)) {
         return sendErrorResponse({ status: 403, res, message: "Missing permission to assign leads" });
       }
       const requestedOwnerUserId = String(req.body.ownerUserId || "").trim();
+      if (!requestedOwnerUserId) {
+        return sendErrorResponse({ status: 400, res, message: "Lead owner is required" });
+      }
       if (!mongoose.Types.ObjectId.isValid(requestedOwnerUserId)) {
         return sendErrorResponse({ status: 400, res, message: "Invalid owner id" });
       }
@@ -903,6 +1253,8 @@ export async function bulkUpdateCrmLeads(req, res, next) {
         return sendErrorResponse({ status: 400, res, message: "Assignee not found or CRM is disabled" });
       }
       update.ownerUserId = assignee._id;
+      const ownerTeam = await getPrimaryTeamForMember(assignee._id);
+      update.teamId = ownerTeam?._id || null;
     }
     if (req.body.pipelineId !== undefined) {
       const requested = String(req.body.pipelineId || "").trim();
@@ -1287,13 +1639,40 @@ export async function listCrmAssignableUsers(req, res, next) {
     if (!req.crm?.canViewLeads) {
       return sendErrorResponse({ status: 403, res, message: "Missing permission: crm.leads.view" });
     }
+    const requestScope = String(req.query.scope || "").trim().toLowerCase();
+    const isTeamScope = requestScope === "team";
     const filter = {
       isDeleted: false,
       isActive: true,
       "crmAccess.enabled": true,
     };
-    if (!hasLeadWideAccess(req) && !hasLeadAssignAccess(req)) {
+    const canReadAllForTeamSetup = Boolean(req.crm?.canManageTeams || req.crm?.canViewTeams);
+    if ((!hasLeadWideAccess(req) && !hasLeadAssignAccess(req)) && !(isTeamScope && canReadAllForTeamSetup)) {
       filter._id = req.user._id;
+    }
+    if (req.query.teamId !== undefined) {
+      const requestedTeamId = String(req.query.teamId || "").trim();
+      if (requestedTeamId) {
+        if (!mongoose.Types.ObjectId.isValid(requestedTeamId)) {
+          return sendErrorResponse({ status: 400, res, message: "Invalid team id" });
+        }
+        const team = await CrmTeam.findOne({ _id: requestedTeamId, isActive: true })
+          .select("memberUserIds")
+          .lean();
+        if (!team) {
+          return sendErrorResponse({ status: 404, res, message: "Team not found" });
+        }
+        const memberIds = normalizeObjectIdArray(team.memberUserIds);
+        if (typeof filter._id === "string" || mongoose.Types.ObjectId.isValid(String(filter._id || ""))) {
+          if (!memberIds.includes(String(filter._id))) {
+            filter._id = { $in: [] };
+          }
+        } else if (filter._id && typeof filter._id === "object" && Array.isArray(filter._id.$in)) {
+          filter._id = { $in: filter._id.$in.filter((id) => memberIds.includes(String(id))) };
+        } else {
+          filter._id = { $in: memberIds };
+        }
+      }
     }
     const items = await Auth.find(filter).select("_id name email").sort({ name: 1, email: 1 }).lean();
     return sendSuccessResponse({

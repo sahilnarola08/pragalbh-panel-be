@@ -9,6 +9,11 @@ import {
   listCrmFollowups,
   createCrmFollowup,
   updateCrmFollowup,
+  listCrmTeams,
+  createCrmTeam,
+  updateCrmTeam,
+  updateCrmTeamMembers,
+  getCrmTeamMembers,
   listCrmLeads,
   createCrmLead,
   updateCrmLead,
@@ -42,6 +47,11 @@ router.patch("/followups/:id", updateCrmFollowup);
 
 router.get("/leads", listCrmLeads);
 router.get("/team-members", listCrmAssignableUsers);
+router.get("/teams", listCrmTeams);
+router.post("/teams", createCrmTeam);
+router.patch("/teams/:id", updateCrmTeam);
+router.patch("/teams/:id/members", updateCrmTeamMembers);
+router.get("/teams/:id/members", getCrmTeamMembers);
 router.post("/leads", createCrmLead);
 router.post("/leads/bulk-update", bulkUpdateCrmLeads);
 router.patch("/leads/:id", updateCrmLead);

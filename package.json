@@ -7,7 +7,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "echo build done"
+    "build": "echo build done",
+    "crm:backfill-team": "node src/scripts/backfillLeadTeams.js"
   },
   "keywords": [
     "inventory",
