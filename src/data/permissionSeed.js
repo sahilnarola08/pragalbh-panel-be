@@ -83,4 +83,6 @@ export const SYSTEM_PERMISSIONS = [
   { name: "crm.teams.view", module: "crm", action: "teams_view", description: "View CRM teams" },
   { name: "crm.teams.manage", module: "crm", action: "teams_manage", description: "Manage CRM teams" },
   { name: "crm.access.manage", module: "crm", action: "access_manage", description: "Provision CRM access for users" },
+  { name: "messaging.view", module: "messaging", action: "view", description: "View messaging integrations (WhatsApp / Telegram / etc.)" },
+  { name: "messaging.manage", module: "messaging", action: "manage", description: "Create, update, delete messaging integrations" },
 ];

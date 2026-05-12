@@ -238,9 +238,12 @@ const getAllMasters = async (req, res, next) => {
             matchStage.isDeleted = false;
         }
 
-        // Filter by master type (master asset ID)
+        // Filter by master type (master asset ID) — use ObjectId so matches are reliable across drivers/DBs
         if (masterType && masterType.trim().length > 0) {
-            matchStage.master = masterType.trim();
+            const mt = masterType.trim();
+            matchStage.master = mongoose.Types.ObjectId.isValid(mt)
+                ? new mongoose.Types.ObjectId(mt)
+                : mt;
         }
 
         const upRaw = underPlatform && String(underPlatform).trim();
@@ -303,9 +306,13 @@ const getAllMasters = async (req, res, next) => {
             .sort(sortObj)
             .skip(offset)
             .limit(limitNum)
-            .select("name master isActive accountCurrency accountOpeningBalance")
+            .select("name master isActive accountCurrency accountOpeningBalance underPlatform")
             .populate({
                 path: 'master',
+                select: 'name'
+            })
+            .populate({
+                path: 'underPlatform',
                 select: 'name'
             });
 

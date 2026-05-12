@@ -333,6 +333,7 @@ export const createOrder = async (req, res, next) => {
         lastName,
         address: newAddress,
         contactNumber,
+        telegramUsername,
         email,
         company,
         clientType,
@@ -377,11 +378,17 @@ export const createOrder = async (req, res, next) => {
 
       const companyValue = company && String(company).trim() ? String(company).trim() : undefined;
       const clientTypeValue = Array.isArray(clientType) && clientType.length ? clientType : undefined;
+      const normalizedTelegramUsername =
+        telegramUsername && String(telegramUsername).trim()
+          ? String(telegramUsername).trim().replace(/^@+/, "").toLowerCase()
+          : undefined;
+
       const created = await User.create({
         firstName: String(firstName).trim(),
         lastName: String(lastName).trim(),
         address: (newAddress || address || "").trim(),
         contactNumber: (contactNumber && String(contactNumber).trim()) || `ord_${uniqueSuffix}`,
+        telegramUsername: normalizedTelegramUsername,
         email: (email && String(email).trim()) || `client_${uniqueSuffix}@order.local`,
         company: companyValue,
         clientType: clientTypeValue,

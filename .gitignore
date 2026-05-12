@@ -6,12 +6,12 @@ node_modules/
 .serverless/
 .sls-next/
 
-# Local environment variables
+# Local environment variables (never commit real secrets — GitHub push protection will block)
 .env
-# .env.local
-# .env.development
-# .env.staging
-# .env.production
+.env.local
+.env.development
+.env.staging
+.env.production
 
 # Logs
 npm-debug.log*

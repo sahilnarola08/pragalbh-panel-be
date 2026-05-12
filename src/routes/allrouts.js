@@ -32,6 +32,9 @@ import crmRouter from "./crmRoute.js";
 import crmAuthLocalRouter from "./crmAuthLocalRoute.js";
 import crmGatewayRouter from "./crmGatewayRoute.js";
 import crmCustomersAliasRouter from "./crmCustomersAliasRoute.js";
+import whatsappRouter from "./whatsappRoute.js";
+import messagingIntegrationRouter from "./messagingIntegrationRoute.js";
+import messagingDispatchRouter from "./messagingDispatchRoute.js";
 
 const routes = (app) => {
   app.use("/health", healthRouter);
@@ -68,6 +71,9 @@ app.use("/payments", paymentRouter);
   app.use("/crm", crmCustomersAliasRouter);
   app.use("/crm-auth", crmAuthLocalRouter);
   app.use("/crm-gateway", crmGatewayRouter);
+  app.use("/whatsapp", whatsappRouter);
+  app.use("/messaging-integrations", messagingIntegrationRouter);
+  app.use("/messaging", messagingDispatchRouter);
 };
 
 export default routes;
