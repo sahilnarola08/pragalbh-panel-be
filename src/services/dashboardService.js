@@ -4,17 +4,99 @@
  * Reuses payment lifecycle enums and orderProfitService where applicable.
  */
 
+import mongoose from "mongoose";
 import Order from "../models/order.js";
 import Payment from "../models/payment.js";
 import ExpanseIncome from "../models/expance_inc.js";
 import ManualBankEntry from "../models/manualBankEntry.js";
+import Master from "../models/master.js";
 import Partner from "../models/partner.js";
 import PartnerTransaction from "../models/partnerTransaction.js";
 import Mediator from "../models/mediator.js";
 import { PAYMENT_STATUS, PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 import { getOrderProfitSummaryBulk } from "./orderProfitService.js";
+import { findActiveTargetByType } from "./targetService.js";
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/** Match paid expense rows (excludes internal transfer mirror rows). */
+function expensePaidMatch(start, end) {
+  return {
+    status: PAYMENT_STATUS.PAID,
+    isDeleted: { $ne: true },
+    manualType: { $ne: "transfer" },
+    date: { $gte: start, $lte: end },
+  };
+}
+
+/**
+ * Aggregation expression: human-readable bucket for expense tracking
+ * (extra expense category, salary, order components, order COGS, then “order misc”).
+ */
+function expenseCategoryLabelExpr() {
+  return {
+    $let: {
+      vars: {
+        ecn: { $trim: { input: { $ifNull: ["$extraCategoryName", ""] } } },
+      },
+      in: {
+        $cond: [
+          { $gt: [{ $strLenCP: "$$ecn" }, 0] },
+          "$$ecn",
+          {
+            $switch: {
+              branches: [{ case: { $eq: ["$expenseSourceType", "SALARY"] }, then: "Salary" }],
+              default: {
+                $cond: [
+                  { $and: [{ $ne: [{ $type: "$orderId" }, "missing"] }, { $ne: ["$orderId", null] }] },
+                  {
+                    $switch: {
+                      branches: [
+                        {
+                          case: { $eq: ["$isOrderProductPurchase", true] },
+                          then: "Order · Product / COGS",
+                        },
+                        {
+                          case: { $eq: ["$componentType", "shipping"] },
+                          then: "Order · Shipping",
+                        },
+                        {
+                          case: { $eq: ["$componentType", "packaging"] },
+                          then: "Order · Packaging",
+                        },
+                        {
+                          case: { $eq: ["$componentType", "other"] },
+                          then: "Order · Other component",
+                        },
+                      ],
+                      default: "Order · Supplier & misc.",
+                    },
+                  },
+                  "General / standalone",
+                ],
+              },
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+/** Group smart categories and fold the tail into "Other categories" for readable charts. */
+function foldCategoryTotals(rows, topN) {
+  const clean = (rows || [])
+    .map((r) => ({
+      category: r._id == null || r._id === "" ? "Uncategorized" : String(r._id),
+      total: round2(Number(r.total) || 0),
+    }))
+    .filter((r) => r.total > 0);
+  if (clean.length <= topN + 1) return clean;
+  const head = clean.slice(0, topN);
+  const tailSum = round2(clean.slice(topN).reduce((s, r) => s + r.total, 0));
+  if (tailSum > 0) head.push({ category: "Other categories", total: tailSum });
+  return head;
+}
 
 /** Get start/end dates for filter (weekly, monthly, yearly, custom). Default monthly. */
 function getDateRange(filter = "monthly", options = {}) {
@@ -57,6 +139,15 @@ function getDateRange(filter = "monthly", options = {}) {
   return { start, end };
 }
 
+/** Inclusive calendar days between range bounds (UTC midnight safe for dashboards). */
+function inclusiveDayCount(start, end) {
+  const s = new Date(start);
+  s.setHours(0, 0, 0, 0);
+  const e = new Date(end);
+  e.setHours(0, 0, 0, 0);
+  return Math.max(1, Math.round((e.getTime() - s.getTime()) / 86400000) + 1);
+}
+
 /** Start of current week (Monday) for "credited this week" */
 function getStartOfWeek() {
   const d = new Date();
@@ -89,6 +180,7 @@ export async function getOverview(filter = "monthly", options = {}) {
     creditedThisWeekResult,
     totalCommissionPaidResult,
     currencyGainLossResult,
+    expenseCategoryOverviewAgg,
   ] = await Promise.all([
     Order.countDocuments({ isDeleted: false, ...orderDateMatch }),
     Promise.all([
@@ -155,6 +247,12 @@ export async function getOverview(filter = "monthly", options = {}) {
       { $group: { _id: null, totalDiff: { $sum: { $round: ["$exchangeDifference", 2] } }, gain: { $sum: { $cond: [{ $gte: ["$exchangeDifference", 0] }, { $round: ["$exchangeDifference", 2] }, 0] } }, loss: { $sum: { $cond: [{ $lt: ["$exchangeDifference", 0] }, { $abs: { $round: ["$exchangeDifference", 2] } }, 0] } } } },
       { $project: { _id: 0, totalDiff: { $round: ["$totalDiff", 2] }, gain: { $round: ["$gain", 2] }, loss: { $round: ["$loss", 2] } } },
     ]).exec(),
+    ExpanseIncome.aggregate([
+      { $match: expensePaidMatch(start, end) },
+      { $addFields: { expenseCategoryLabel: expenseCategoryLabelExpr() } },
+      { $group: { _id: "$expenseCategoryLabel", total: { $sum: { $round: [{ $ifNull: ["$paidAmount", 0] }, 2] } } } },
+      { $sort: { total: -1 } },
+    ]).exec(),
   ]);
 
   const totalOrders = totalOrdersResult || 0;
@@ -170,6 +268,9 @@ export async function getOverview(filter = "monthly", options = {}) {
   const currencyGainLoss = currencyGainLossResult[0] || { totalDiff: 0, gain: 0, loss: 0 };
   const netProfit = round2(totalIncome - totalExpense);
   const companyBalance = netProfit;
+  const periodDays = inclusiveDayCount(start, end);
+  const topExpenseCategories = foldCategoryTotals(expenseCategoryOverviewAgg || [], 5);
+  const expenseAvgDaily = round2((totalExpense || 0) / periodDays);
 
   return {
     totalOrders,
@@ -189,6 +290,9 @@ export async function getOverview(filter = "monthly", options = {}) {
       gain: round2(currencyGainLoss.gain || 0),
       loss: round2(currencyGainLoss.loss || 0),
     },
+    topExpenseCategories,
+    expensePeriodDays: periodDays,
+    expenseAvgDaily,
   };
 }
 
@@ -199,17 +303,36 @@ export async function getFinance(filter = "monthly", options = {}) {
   const { start, end } = getDateRange(filter, options);
   const [
     expenseByCategory,
+    expenseSmartBuckets,
+    expenseDailySeries,
     cashflowBuckets,
     currencyGainLoss,
     commissionSummary,
     bankOverview,
   ] = await Promise.all([
     ExpanseIncome.aggregate([
-      { $match: { status: PAYMENT_STATUS.PAID, isDeleted: { $ne: true }, manualType: { $ne: "transfer" }, date: { $gte: start, $lte: end } } },
+      { $match: expensePaidMatch(start, end) },
       { $group: { _id: "$description", total: { $sum: { $round: ["$paidAmount", 2] } } } },
       { $sort: { total: -1 } },
       { $limit: 10 },
       { $project: { category: "$_id", total: { $round: ["$total", 2] }, _id: 0 } },
+    ]).exec(),
+    ExpanseIncome.aggregate([
+      { $match: expensePaidMatch(start, end) },
+      { $addFields: { expenseCategoryLabel: expenseCategoryLabelExpr() } },
+      { $group: { _id: "$expenseCategoryLabel", total: { $sum: { $round: [{ $ifNull: ["$paidAmount", 0] }, 2] } } } },
+      { $sort: { total: -1 } },
+    ]).exec(),
+    ExpanseIncome.aggregate([
+      { $match: expensePaidMatch(start, end) },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
+          total: { $sum: { $round: [{ $ifNull: ["$paidAmount", 0] }, 2] } },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { date: "$_id", total: { $round: ["$total", 2] }, _id: 0 } },
     ]).exec(),
     Promise.all([
       Payment.aggregate([
@@ -222,7 +345,7 @@ export async function getFinance(filter = "monthly", options = {}) {
         { $group: { _id: "$type", sum: { $sum: "$amount" } } },
       ]).exec(),
       ExpanseIncome.aggregate([
-        { $match: { status: PAYMENT_STATUS.PAID, isDeleted: { $ne: true }, manualType: { $ne: "transfer" }, date: { $gte: start, $lte: end } } },
+        { $match: expensePaidMatch(start, end) },
         { $group: { _id: null, out: { $sum: { $round: ["$paidAmount", 2] } } } },
         { $project: { _id: 0, out: { $round: ["$out", 2] } } },
       ]).exec(),
@@ -277,22 +400,73 @@ export async function getFinance(filter = "monthly", options = {}) {
         ...withdrawalMap.keys(),
         ...transferOutMap.keys(),
         ...transferInMap.keys(),
-        ...creditMap.keys()
+        ...creditMap.keys(),
       ]);
-      return Array.from(bankIds).map((bankId) => ({
-        bankId,
-        deposit: round2(depositMap.get(bankId) || 0),
-        withdrawal: round2(withdrawalMap.get(bankId) || 0),
-        transferOut: round2(transferOutMap.get(bankId) || 0),
-        transferIn: round2(transferInMap.get(bankId) || 0),
-        credited: round2(creditMap.get(bankId) || 0),
-      }));
+      const idList = Array.from(bankIds).filter(
+        (id) => id && mongoose.Types.ObjectId.isValid(String(id))
+      );
+      const oidList = idList.map((id) => new mongoose.Types.ObjectId(String(id)));
+      const masters =
+        oidList.length > 0
+          ? await Master.find({ _id: { $in: oidList } })
+              .select("name")
+              .lean()
+              .exec()
+          : [];
+      const bankNameMap = new Map((masters || []).map((m) => [String(m._id), (m.name || "").trim() || "Bank"]));
+
+      return Array.from(bankIds).map((bankId) => {
+        const key = bankId != null ? String(bankId) : "";
+        const named = key && mongoose.Types.ObjectId.isValid(key) ? bankNameMap.get(key) : null;
+        const bankName =
+          named ||
+          (key === "" || key === "null" || key === "undefined"
+            ? "Unassigned bank"
+            : mongoose.Types.ObjectId.isValid(key)
+              ? `Unknown bank (${key.slice(-6)})`
+              : `Invalid ref (${String(key).slice(0, 12)}…)`);
+        return {
+          bankId: key || null,
+          bankName,
+          deposit: round2(depositMap.get(bankId) || 0),
+          withdrawal: round2(withdrawalMap.get(bankId) || 0),
+          transferOut: round2(transferOutMap.get(bankId) || 0),
+          transferIn: round2(transferInMap.get(bankId) || 0),
+          credited: round2(creditMap.get(bankId) || 0),
+        };
+      });
     }),
   ]);
 
+  const cf = cashflowBuckets || {};
+  const periodDays = inclusiveDayCount(start, end);
+  const expenseDaily = (expenseDailySeries || []).map((r) => ({
+    date: r.date,
+    total: round2(Number(r.total) || 0),
+  }));
+  let peakDay = null;
+  let peakAmount = 0;
+  for (const row of expenseDaily) {
+    if (row.total > peakAmount) {
+      peakAmount = row.total;
+      peakDay = row.date;
+    }
+  }
+  const expenseTracking = {
+    totalExpense: round2(cf.expenseOut ?? 0),
+    calendarDays: periodDays,
+    avgDaily: round2((cf.expenseOut || 0) / periodDays),
+    peakDay,
+    peakAmount: round2(peakAmount),
+    activeSpendDays: expenseDaily.filter((x) => x.total > 0).length,
+  };
+
   return {
     expensePie: expenseByCategory || [],
-    cashflow: cashflowBuckets || {},
+    expenseByCategory: foldCategoryTotals(expenseSmartBuckets || [], 10),
+    expenseDaily,
+    expenseTracking,
+    cashflow: cf,
     currencyGainLoss: currencyGainLoss[0] || { totalDiff: 0, gain: 0, loss: 0 },
     commissionSummary: commissionSummary[0] || { totalCommissionUSD: 0, count: 0 },
     bankOverview: bankOverview || [],
@@ -356,55 +530,240 @@ export async function getOrders(filter = "monthly", options = {}) {
 // ---------------------------------------------------------------------------
 // PAYMENTS
 // ---------------------------------------------------------------------------
+const PAYMENTS_TARGET_FILTER_MAP = {
+  weekly: "weekly",
+  monthly: "monthly",
+  yearly: "yearly",
+};
+
+async function getPaymentTargetCreditsVsSales(filter) {
+  const targetKey = PAYMENTS_TARGET_FILTER_MAP[filter];
+  if (!targetKey) return null;
+  const targetDoc = await findActiveTargetByType(targetKey);
+  if (!targetDoc) return null;
+  const ts = new Date(targetDoc.startDate);
+  ts.setHours(0, 0, 0, 0);
+  const te = new Date(targetDoc.endDate);
+  te.setHours(23, 59, 59, 999);
+  const creditedAgg = await Payment.aggregate([
+    {
+      $match: {
+        paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
+        isDeleted: { $ne: true },
+        creditedDate: { $gte: ts, $lte: te },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        amountINR: { $sum: { $round: [{ $ifNull: ["$actualBankCreditINR", 0] }, 2] } },
+      },
+    },
+    { $project: { _id: 0, amountINR: { $round: ["$amountINR", 2] } } },
+  ]).exec();
+  const creditedINR = creditedAgg[0]?.amountINR ?? 0;
+  const tgt = Number(targetDoc.salesTargetAmount) || 0;
+  return {
+    targetType: targetKey,
+    salesTargetAmount: round2(tgt),
+    creditedINRForTargetPeriod: round2(creditedINR),
+    pctCreditedVsSalesTarget: tgt > 0 ? round2((creditedINR / tgt) * 100) : 0,
+    targetPeriodStart: targetDoc.startDate,
+    targetPeriodEnd: targetDoc.endDate,
+  };
+}
+
 export async function getPayments(filter = "monthly", options = {}) {
   const { start, end } = getDateRange(filter, options);
+  const facetGroup = () => ({
+    count: { $sum: 1 },
+    amountUSD: { $sum: { $round: [{ $ifNull: ["$grossAmountUSD", 0] }, 2] } },
+    amountINR: { $sum: { $round: [{ $ifNull: ["$expectedAmountINR", 0] }, 2] } },
+  });
+
   const [
-    pendingWithMediatorUSD,
-    pendingWithMediatorINR,
-    processingAgg,
-    creditedThisWeek,
+    lifecycleFacet,
     mediatorWiseCommission,
     settlementDelay,
+    creditedDaily,
+    targetCreditsComparison,
   ] = await Promise.all([
     Payment.aggregate([
-        { $match: { paymentStatus: PAYMENT_LIFECYCLE_STATUS.PENDING_WITH_MEDIATOR, isDeleted: { $ne: true }, createdAt: { $gte: start, $lte: end } } },
-      { $group: { _id: null, amount: { $sum: { $round: ["$grossAmountUSD", 2] } } } },
-      { $project: { _id: 0, amount: { $round: ["$amount", 2] } } },
+      {
+        $facet: {
+          pending: [
+            {
+              $match: {
+                paymentStatus: PAYMENT_LIFECYCLE_STATUS.PENDING_WITH_MEDIATOR,
+                isDeleted: { $ne: true },
+                createdAt: { $gte: start, $lte: end },
+              },
+            },
+            { $group: { _id: null, ...facetGroup() } },
+            {
+              $project: {
+                _id: 0,
+                count: { $ifNull: ["$count", 0] },
+                amountUSD: { $round: ["$amountUSD", 2] },
+                amountINR: { $round: ["$amountINR", 2] },
+              },
+            },
+          ],
+          processing: [
+            {
+              $match: {
+                paymentStatus: PAYMENT_LIFECYCLE_STATUS.PROCESSING,
+                isDeleted: { $ne: true },
+                createdAt: { $gte: start, $lte: end },
+              },
+            },
+            { $group: { _id: null, ...facetGroup() } },
+            {
+              $project: {
+                _id: 0,
+                count: { $ifNull: ["$count", 0] },
+                amountUSD: { $round: ["$amountUSD", 2] },
+                amountINR: { $round: ["$amountINR", 2] },
+              },
+            },
+          ],
+          credited: [
+            {
+              $match: {
+                paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
+                isDeleted: { $ne: true },
+                creditedDate: { $gte: start, $lte: end },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                count: { $sum: 1 },
+                amountUSD: { $sum: { $round: [{ $ifNull: ["$grossAmountUSD", 0] }, 2] } },
+                amountINR: {
+                  $sum: { $round: [{ $ifNull: ["$actualBankCreditINR", 0] }, 2] },
+                },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                count: { $ifNull: ["$count", 0] },
+                amountUSD: { $round: ["$amountUSD", 2] },
+                amountINR: { $round: ["$amountINR", 2] },
+              },
+            },
+          ],
+        },
+      },
     ]).exec(),
     Payment.aggregate([
-        { $match: { paymentStatus: PAYMENT_LIFECYCLE_STATUS.PENDING_WITH_MEDIATOR, isDeleted: { $ne: true }, createdAt: { $gte: start, $lte: end } } },
-      { $group: { _id: null, amount: { $sum: { $round: ["$expectedAmountINR", 2] } } } },
-      { $project: { _id: 0, amount: { $round: ["$amount", 2] } } },
-    ]).exec(),
-    Payment.aggregate([
-        { $match: { paymentStatus: PAYMENT_LIFECYCLE_STATUS.PROCESSING, isDeleted: { $ne: true }, createdAt: { $gte: start, $lte: end } } },
-      { $group: { _id: null, amountUSD: { $sum: { $round: ["$grossAmountUSD", 2] } }, amountINR: { $sum: { $round: ["$expectedAmountINR", 2] } } } },
-      { $project: { _id: 0, amountUSD: { $round: ["$amountUSD", 2] }, amountINR: { $round: ["$amountINR", 2] } } },
-    ]).exec(),
-    Payment.aggregate([
-      { $match: { paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK, isDeleted: { $ne: true }, creditedDate: { $gte: start, $lte: end } } },
-      { $group: { _id: null, amount: { $sum: { $round: ["$actualBankCreditINR", 2] } } } },
-      { $project: { _id: 0, amount: { $round: ["$amount", 2] } } },
-    ]).exec(),
-    Payment.aggregate([
-      { $match: { paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK, isDeleted: { $ne: true }, creditedDate: { $gte: start, $lte: end } } },
-      { $group: { _id: "$mediatorId", totalCommission: { $sum: { $round: ["$mediatorCommissionAmount", 2] } }, count: { $sum: 1 } } },
+      {
+        $match: {
+          paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
+          isDeleted: { $ne: true },
+          creditedDate: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $group: {
+          _id: "$mediatorId",
+          totalCommission: { $sum: { $round: ["$mediatorCommissionAmount", 2] } },
+          count: { $sum: 1 },
+        },
+      },
       { $lookup: { from: "mediators", localField: "_id", foreignField: "_id", as: "mediator" } },
       { $unwind: { path: "$mediator", preserveNullAndEmptyArrays: true } },
-      { $project: { mediatorId: "$_id", mediatorName: "$mediator.name", totalCommission: { $round: ["$totalCommission", 2] }, count: 1, _id: 0 } },
+      {
+        $project: {
+          mediatorId: "$_id",
+          mediatorName: "$mediator.name",
+          totalCommission: { $round: ["$totalCommission", 2] },
+          count: 1,
+          _id: 0,
+        },
+      },
     ]).exec(),
     Mediator.find({ isActive: true }).select("name settlementDelayDays").lean().exec(),
+    Payment.aggregate([
+      {
+        $match: {
+          paymentStatus: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
+          isDeleted: { $ne: true },
+          creditedDate: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$creditedDate" } },
+          totalINR: { $sum: { $round: [{ $ifNull: ["$actualBankCreditINR", 0] }, 2] } },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { date: "$_id", totalINR: { $round: ["$totalINR", 2] }, _id: 0 } },
+    ]).exec(),
+    getPaymentTargetCreditsVsSales(filter),
   ]);
 
-  const proc = processingAgg[0];
+  const pend = lifecycleFacet?.[0]?.pending?.[0];
+  const proc = lifecycleFacet?.[0]?.processing?.[0];
+  const credit = lifecycleFacet?.[0]?.credited?.[0];
+
+  const lifecycleBreakdown = [
+    {
+      key: PAYMENT_LIFECYCLE_STATUS.PENDING_WITH_MEDIATOR,
+      label: "Pending with mediator",
+      count: pend?.count ?? 0,
+      amountUSD: round2(pend?.amountUSD ?? 0),
+      amountINR: round2(pend?.amountINR ?? 0),
+    },
+    {
+      key: PAYMENT_LIFECYCLE_STATUS.PROCESSING,
+      label: "Processing",
+      count: proc?.count ?? 0,
+      amountUSD: round2(proc?.amountUSD ?? 0),
+      amountINR: round2(proc?.amountINR ?? 0),
+    },
+    {
+      key: PAYMENT_LIFECYCLE_STATUS.CREDITED_TO_BANK,
+      label: "Credited to bank",
+      count: credit?.count ?? 0,
+      amountUSD: round2(credit?.amountUSD ?? 0),
+      amountINR: round2(credit?.amountINR ?? 0),
+    },
+  ];
+
+  const pipelineINR = round2((pend?.amountINR ?? 0) + (proc?.amountINR ?? 0));
+  const creditedINRPeriod = round2(credit?.amountINR ?? 0);
+  const exposedINR = round2(pipelineINR + creditedINRPeriod);
+  const realizationRatePct =
+    exposedINR > 0 ? round2((creditedINRPeriod / exposedINR) * 100) : 0;
+
   return {
-    pendingWithMediatorUSD: round2(pendingWithMediatorUSD[0]?.amount ?? 0),
-    pendingWithMediatorINR: round2(pendingWithMediatorINR[0]?.amount ?? 0),
+    pendingWithMediatorUSD: round2(pend?.amountUSD ?? 0),
+    pendingWithMediatorINR: round2(pend?.amountINR ?? 0),
     processingUSD: round2(proc?.amountUSD ?? 0),
     processingINR: round2(proc?.amountINR ?? 0),
-    creditedThisWeek: round2(creditedThisWeek[0]?.amount ?? 0),
+    creditedThisWeek: creditedINRPeriod,
     mediatorWiseCommission: mediatorWiseCommission || [],
-    settlementDelayTracking: (settlementDelay || []).map((m) => ({ name: m.name, settlementDelayDays: m.settlementDelayDays || 0 })),
+    settlementDelayTracking: (settlementDelay || []).map((m) => ({
+      name: m.name,
+      settlementDelayDays: m.settlementDelayDays || 0,
+    })),
+    lifecycleBreakdown,
+    creditedDailyINR: (creditedDaily || []).map((r) => ({
+      date: r.date,
+      totalINR: round2(Number(r.totalINR) || 0),
+    })),
+    collectionSummary: {
+      creditedINR: creditedINRPeriod,
+      pipelineExpectedINR: pipelineINR,
+      totalExposureINR: exposedINR,
+      realizationRatePct,
+      creditedCount: credit?.count ?? 0,
+      pipelineCount: (pend?.count ?? 0) + (proc?.count ?? 0),
+    },
+    targetCreditsComparison,
   };
 }
 

@@ -3,11 +3,14 @@ import app from "./app.js";
 import connectDB from "./config/db.js";
 import { syncMasterIndexesSafe } from "./config/syncMasterIndexes.js";
 import { runRbacSeed } from "./services/permissionSeedService.js";
+import { warnIfMissingKey } from "./util/crypto.js";
 
 // Default 8003 matches pragalbh-panel-fe/.env NEXT_PUBLIC_API when PORT is unset
 const PORT = process.env.PORT || 8003;
 
 async function start() {
+  warnIfMissingKey();
+
   try {
     await connectDB();
   } catch (err) {

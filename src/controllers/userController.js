@@ -12,6 +12,7 @@ const register = async (req, res, next) => {
         lastName, 
         address, 
         contactNumber, 
+        telegramUsername,
         platforms,
         email, 
         clientType,
@@ -80,12 +81,20 @@ const register = async (req, res, next) => {
       const otherDetailsValue =
         otherDetails && otherDetails.trim() !== "" ? otherDetails.trim() : undefined;
 
+      // Normalize Telegram username (strip leading @, lowercase) so lookups
+      // are consistent. Empty becomes undefined to avoid persisting blanks.
+      const telegramUsernameValue =
+        telegramUsername && String(telegramUsername).trim() !== ""
+          ? String(telegramUsername).trim().replace(/^@+/, "").toLowerCase()
+          : undefined;
+
       // Create new user (no password)
       const user = await User.create({
         firstName,
         lastName,
         address,
         contactNumber: contactNumberValue,
+        telegramUsername: telegramUsernameValue,
         platforms,
         email,
         clientType,
@@ -383,6 +392,14 @@ const updateUser = async (req, res, next) => {
         // Convert empty string to undefined
         updateData.contactNumber = undefined;
       }
+    }
+
+    // Normalize Telegram username on update (strip @, lowercase, empty → "")
+    if (updateData.telegramUsername !== undefined) {
+      const raw = String(updateData.telegramUsername || "").trim();
+      updateData.telegramUsername = raw
+        ? raw.replace(/^@+/, "").toLowerCase()
+        : "";
     }
 
     // Handle empty company - convert to undefined

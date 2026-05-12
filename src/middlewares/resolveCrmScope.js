@@ -13,6 +13,10 @@ const CRM_ACCESS_PERMISSIONS = [
   "crm.leads.create",
   "crm.leads.edit",
   "crm.leads.convert",
+  "crm.teams.view",
+  "crm.teams.manage",
+  "crm.leads.assign.team",
+  "crm.leads.assign.owner",
 ];
 
 export async function resolveCrmScope(req, res, next) {
@@ -58,9 +62,24 @@ export async function resolveCrmScope(req, res, next) {
       canConvertLeads:
         permissions.includes("crm.leads.convert") || permissions.includes("crm.clients.edit"),
       canAssignLeads:
-        permissions.includes("crm.access.manage") || permissions.includes("users.manage"),
+        permissions.includes("crm.access.manage") ||
+        permissions.includes("users.manage") ||
+        permissions.includes("crm.leads.assign.owner"),
+      canAssignLeadTeams:
+        permissions.includes("crm.access.manage") ||
+        permissions.includes("users.manage") ||
+        permissions.includes("crm.leads.assign.team"),
       canViewAllLeads:
         permissions.includes("crm.access.manage") || permissions.includes("users.manage"),
+      canViewTeams:
+        permissions.includes("crm.teams.view") ||
+        permissions.includes("crm.teams.manage") ||
+        permissions.includes("crm.access.manage") ||
+        permissions.includes("users.manage"),
+      canManageTeams:
+        permissions.includes("crm.teams.manage") ||
+        permissions.includes("crm.access.manage") ||
+        permissions.includes("users.manage"),
     };
 
     next();

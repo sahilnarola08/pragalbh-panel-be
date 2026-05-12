@@ -34,6 +34,11 @@ const userSchema = new mongoose.Schema({
           type: String,
           trim: true,
      },
+     telegramUsername: {
+          type: String,
+          trim: true,
+          default: "",
+     },
      platforms: [platformSchema],
      company: {
           type: String,

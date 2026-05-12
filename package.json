@@ -7,7 +7,9 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "echo build done"
+    "build": "echo build done",
+    "crm:backfill-team": "node src/scripts/backfillLeadTeams.js",
+    "telegram:login": "node src/scripts/telegramLogin.js"
   },
   "keywords": [
     "inventory",
@@ -28,6 +30,7 @@
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
     "googleapis": "^144.0.0",
+    "input": "^1.0.1",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.18.0",
     "multer": "^1.4.5-lts.1",
@@ -35,6 +38,7 @@
     "nodemailer": "^6.9.16",
     "pdfmake": "^0.2.20",
     "sharp": "^0.32.6",
+    "telegram": "^2.26.22",
     "xlsx": "^0.18.5",
     "yup": "^1.4.0"
   },
