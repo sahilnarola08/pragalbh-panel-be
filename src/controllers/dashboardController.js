@@ -59,6 +59,9 @@ export const getDashboardStats = async (req, res) => {
       creditedThisWeek: overview.creditedThisWeek,
       totalCommissionPaid: overview.totalCommissionPaid,
       currencyGainLossSummary: overview.currencyGainLossSummary,
+      topExpenseCategories: overview.topExpenseCategories,
+      expenseAvgDaily: overview.expenseAvgDaily,
+      expensePeriodDays: overview.expensePeriodDays,
     };
 
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");

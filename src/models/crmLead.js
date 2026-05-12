@@ -54,6 +54,12 @@ const crmLeadSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    teamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CrmTeam",
+      default: null,
+      index: true,
+    },
     pipelineId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "CrmPipeline",
@@ -81,6 +87,7 @@ const crmLeadSchema = new mongoose.Schema(
 crmLeadSchema.index({ ownerUserId: 1, status: 1, createdAt: -1 });
 crmLeadSchema.index({ status: 1, nextFollowupAt: 1 });
 crmLeadSchema.index({ pipelineId: 1, status: 1, updatedAt: -1 });
+crmLeadSchema.index({ teamId: 1, status: 1, updatedAt: -1 });
 
 const CrmLead = mongoose.model("CrmLead", crmLeadSchema);
 export default CrmLead;
