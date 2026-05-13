@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
+import healthController from "./controllers/healthController.js";
 import routes from "./routes/allrouts.js";
 import { startSchedulers } from "./services/schedulerService.js";
 import compression from "compression";
@@ -68,6 +69,8 @@ app.use(
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+app.get("/health", healthController.createHealth);
 
 // Disable caching
 app.use((req, res, next) => {
