@@ -18,10 +18,17 @@ import {
   verifyLoginCode,
   disconnectClient,
 } from "../services/telegramUserService.js";
+import {
+  createTransporterFromEmailIntegration,
+  getFromAddressForEmailIntegration,
+  getReplyToForEmailIntegration,
+} from "../services/emailSmtpIntegrationService.js";
 
 const SUPPORTED_TYPES = ["whatsapp", "telegram", "sms", "email", "other"];
 
 const TELEGRAM_PLACEHOLDER = "********";
+
+const SMTP_PASSWORD_PLACEHOLDER = "********";
 
 const isHexId = (v) => /^[a-f\d]{24}$/i.test(String(v || ""));
 
@@ -40,6 +47,7 @@ const sanitizeIntegrationPayload = (body = {}, { existing = null } = {}) => {
     description,
     extra,
     telegram,
+    emailSmtp,
   } = body || {};
 
   const cleaned = {};
@@ -117,16 +125,53 @@ const sanitizeIntegrationPayload = (body = {}, { existing = null } = {}) => {
     if (Object.keys(tg).length > 0) cleaned.telegram = tg;
   }
 
+  if (emailSmtp && typeof emailSmtp === "object") {
+    if (!isEncryptionAvailable()) {
+      throw new Error(
+        "MESSAGING_ENCRYPTION_KEY is not set on the server. Cannot save SMTP passwords.",
+      );
+    }
+    const sm = {};
+    if (emailSmtp.host !== undefined) {
+      sm.host = String(emailSmtp.host || "").trim();
+    }
+    if (emailSmtp.port !== undefined) {
+      const p = parseInt(String(emailSmtp.port), 10);
+      sm.port =
+        Number.isFinite(p) && p > 0 && p <= 65535 ? p : 587;
+    }
+    if (emailSmtp.secure !== undefined) sm.secure = Boolean(emailSmtp.secure);
+    if (emailSmtp.authUser !== undefined) {
+      sm.authUser = String(emailSmtp.authUser || "").trim();
+    }
+    if (emailSmtp.authPassword !== undefined) {
+      const raw = String(emailSmtp.authPassword || "").trim();
+      if (raw && raw !== SMTP_PASSWORD_PLACEHOLDER) {
+        sm.authPassword = encrypt(raw);
+      }
+    }
+    if (emailSmtp.fromEmail !== undefined) {
+      sm.fromEmail = String(emailSmtp.fromEmail || "").trim();
+    }
+    if (emailSmtp.fromName !== undefined) {
+      sm.fromName = String(emailSmtp.fromName || "").trim();
+    }
+    if (emailSmtp.replyTo !== undefined) {
+      sm.replyTo = String(emailSmtp.replyTo || "").trim();
+    }
+    if (Object.keys(sm).length > 0) cleaned.emailSmtp = sm;
+  }
+
   return cleaned;
 };
 
-const applyTelegramPatch = (existing, patch) => {
+const applyEmailSmtpPatch = (existing, patch) => {
   if (!patch) return;
-  existing.telegram = existing.telegram || {};
+  existing.emailSmtp = existing.emailSmtp || {};
   for (const [k, v] of Object.entries(patch)) {
-    existing.telegram[k] = v;
+    existing.emailSmtp[k] = v;
   }
-  existing.markModified("telegram");
+  existing.markModified("emailSmtp");
 };
 
 /** When marking an integration as default, unset the default on its peers (same type). */
@@ -175,6 +220,19 @@ const maskedView = (doc) => {
       hasApiHash: Boolean(tg.apiHash),
       hasSession: Boolean(tg.sessionString),
       hasTwoFactor: Boolean(tg.twoFactorPassword),
+    };
+  }
+  if (obj.emailSmtp) {
+    const es = obj.emailSmtp || {};
+    obj.emailSmtp = {
+      host: es.host || "",
+      port: Number(es.port) || 587,
+      secure: Boolean(es.secure),
+      authUser: es.authUser || "",
+      fromEmail: es.fromEmail || "",
+      fromName: es.fromName || "",
+      replyTo: es.replyTo || "",
+      hasPassword: Boolean(es.authPassword),
     };
   }
   return obj;
@@ -298,6 +356,18 @@ const messagingIntegrationController = {
       const payload = sanitizeIntegrationPayload(req.body);
       if (!payload.type) throw new Error("Type is required.");
       if (!payload.name) throw new Error("Name is required.");
+      if (payload.type === "email") {
+        const es = payload.emailSmtp;
+        if (!es?.host) {
+          throw new Error("emailSmtp.host is required for email integrations.");
+        }
+        if (!es?.authUser) {
+          throw new Error("emailSmtp.authUser (SMTP username) is required.");
+        }
+        if (!es?.authPassword) {
+          throw new Error("emailSmtp.authPassword (SMTP password) is required.");
+        }
+      }
 
       const created = await MessagingIntegration.create(payload);
       if (created.isDefault) {
@@ -348,8 +418,12 @@ const messagingIntegrationController = {
       const telegramPatch = payload.telegram;
       delete payload.telegram;
 
+      const emailSmtpPatch = payload.emailSmtp;
+      delete payload.emailSmtp;
+
       Object.assign(existing, payload);
       if (telegramPatch) applyTelegramPatch(existing, telegramPatch);
+      if (emailSmtpPatch) applyEmailSmtpPatch(existing, emailSmtpPatch);
 
       // If the user changed apiId or apiHash, any previously-saved session is
       // no longer valid for the new credentials — force re-connect.
@@ -501,6 +575,60 @@ const messagingIntegrationController = {
           status: 200,
           message: "Telegram test message sent.",
           data: { integrationId: integration._id, provider: body },
+        });
+      }
+
+      if (integration.type === "email") {
+        const { to, email: toAlt } = req.body || {};
+        const dest = String(to || toAlt || "").trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(dest)) {
+          return sendErrorResponse({
+            res,
+            status: 400,
+            message:
+              "Provide a valid recipient address in the `to` (or `email`) field.",
+          });
+        }
+        const transport = createTransporterFromEmailIntegration(integration);
+        if (!transport) {
+          return sendErrorResponse({
+            res,
+            status: 400,
+            message:
+              "This integration's SMTP is incomplete or the password could not be decrypted. Check host, SMTP user, password, and MESSAGING_ENCRYPTION_KEY.",
+          });
+        }
+        const fromAddr =
+          getFromAddressForEmailIntegration(integration) ||
+          integration.emailSmtp?.authUser?.trim();
+        if (!fromAddr) {
+          return sendErrorResponse({
+            res,
+            status: 400,
+            message:
+              "Set From email (or SMTP user) on this integration before testing.",
+          });
+        }
+        const replyTo = getReplyToForEmailIntegration(integration);
+        const safeHtml = `<pre style="font-family:system-ui,sans-serif;white-space:pre-wrap">${String(
+          finalMessage,
+        )
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")}</pre>`;
+        await transport.sendMail({
+          from: fromAddr,
+          to: dest,
+          subject: `Test — ${integration.name}`,
+          text: finalMessage,
+          html: safeHtml,
+          ...(replyTo ? { replyTo } : {}),
+        });
+        return sendSuccessResponse({
+          res,
+          status: 200,
+          message: "Test email sent.",
+          data: { integrationId: integration._id, to: dest },
         });
       }
 
