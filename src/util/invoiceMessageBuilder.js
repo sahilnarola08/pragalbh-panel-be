@@ -29,8 +29,13 @@ const formatDate = (d) => {
   }
 };
 
-/** Build a customer-friendly invoice message body from an order document. */
-export const buildOrderInvoiceMessage = (
+/**
+ * Structured invoice data shared by WhatsApp/Telegram text and HTML email.
+ * @param {object} order
+ * @param {string} [customerName]
+ * @param {{ brandName?: string }} [opts]
+ */
+export const buildOrderInvoiceContext = (
   order,
   customerName,
   { brandName = BRAND_NAME } = {},
@@ -38,13 +43,12 @@ export const buildOrderInvoiceMessage = (
   const greetingName = (customerName || order?.clientName || "Customer").trim();
   const orderId = order?.orderId || order?._id || "—";
   const createdAt = order?.createdAt || new Date();
-
   const products = Array.isArray(order?.products) ? order.products : [];
 
   let inrSubtotal = 0;
   let usdSubtotal = 0;
 
-  const itemLines = products.map((p, idx) => {
+  const items = products.map((p, idx) => {
     const price = Number(p?.sellingPrice) || 0;
     const currency = p?.paymentCurrency === "USD" ? "USD" : "INR";
     const priceText =
@@ -52,7 +56,13 @@ export const buildOrderInvoiceMessage = (
     if (currency === "USD") usdSubtotal += price;
     else inrSubtotal += price;
     const name = p?.productName || "Item";
-    return `${idx + 1}. ${name} — ${priceText}`;
+    return {
+      index: idx + 1,
+      name,
+      priceText,
+      currency,
+      price,
+    };
   });
 
   const shipping = Number(order?.shippingCost) || 0;
@@ -61,31 +71,69 @@ export const buildOrderInvoiceMessage = (
   const extraINR = shipping + packaging + otherExp;
   const totalINR = inrSubtotal + extraINR;
 
-  const summaryLines = [];
+  const summaryRows = [];
   if (inrSubtotal > 0)
-    summaryLines.push(`Items Subtotal: ${formatINR(inrSubtotal)}`);
+    summaryRows.push({ label: "Items subtotal (INR)", value: formatINR(inrSubtotal) });
   if (usdSubtotal > 0)
-    summaryLines.push(`Items Subtotal (USD): ${formatUSD(usdSubtotal)}`);
-  if (shipping > 0) summaryLines.push(`Shipping: ${formatINR(shipping)}`);
-  if (packaging > 0) summaryLines.push(`Packaging: ${formatINR(packaging)}`);
-  if (otherExp > 0) summaryLines.push(`Other charges: ${formatINR(otherExp)}`);
-
-  const totalLines = [];
-  if (totalINR > 0) totalLines.push(`*Total Payable (INR):* ${formatINR(totalINR)}`);
-  if (usdSubtotal > 0)
-    totalLines.push(`*Total Payable (USD):* ${formatUSD(usdSubtotal)}`);
+    summaryRows.push({
+      label: "Items subtotal (USD)",
+      value: formatUSD(usdSubtotal),
+    });
+  if (shipping > 0)
+    summaryRows.push({ label: "Shipping", value: formatINR(shipping) });
+  if (packaging > 0)
+    summaryRows.push({ label: "Packaging", value: formatINR(packaging) });
+  if (otherExp > 0)
+    summaryRows.push({ label: "Other charges", value: formatINR(otherExp) });
 
   const address = (order?.address || "").trim();
 
+  return {
+    brandName,
+    greetingName,
+    orderId: String(orderId),
+    createdAt,
+    createdAtFormatted: formatDate(createdAt),
+    items,
+    summaryRows,
+    totalINR,
+    totalUSD: usdSubtotal,
+    totalINRFormatted: totalINR > 0 ? formatINR(totalINR) : "",
+    totalUSDFormatted: usdSubtotal > 0 ? formatUSD(usdSubtotal) : "",
+    address,
+    inrSubtotal,
+    usdSubtotal,
+  };
+};
+
+/** Build a customer-friendly invoice message body from an order document. */
+export const buildOrderInvoiceMessage = (
+  order,
+  customerName,
+  opts = {},
+) => {
+  const ctx = buildOrderInvoiceContext(order, customerName, opts);
+  const itemLines = ctx.items.map(
+    (row) => `${row.index}. ${row.name} — ${row.priceText}`,
+  );
+
+  const summaryLines = ctx.summaryRows.map((r) => `${r.label}: ${r.value}`);
+
+  const totalLines = [];
+  if (ctx.totalINR > 0)
+    totalLines.push(`*Total Payable (INR):* ${ctx.totalINRFormatted}`);
+  if (ctx.totalUSD > 0)
+    totalLines.push(`*Total Payable (USD):* ${ctx.totalUSDFormatted}`);
+
   const parts = [];
-  parts.push(`Namaste ${greetingName} 🙏`);
+  parts.push(`Namaste ${ctx.greetingName} 🙏`);
   parts.push("");
-  parts.push(`Thank you for your order with *${brandName}*! ✨`);
+  parts.push(`Thank you for your order with *${ctx.brandName}*! ✨`);
   parts.push(`We have received your order and started processing it.`);
   parts.push("");
   parts.push(`📋 *Order Invoice*`);
-  parts.push(`Order ID: *${orderId}*`);
-  parts.push(`Date: ${formatDate(createdAt)}`);
+  parts.push(`Order ID: *${ctx.orderId}*`);
+  parts.push(`Date: ${ctx.createdAtFormatted}`);
   parts.push("");
   parts.push(`🛍️ *Items:*`);
   if (itemLines.length) parts.push(...itemLines);
@@ -102,17 +150,17 @@ export const buildOrderInvoiceMessage = (
     parts.push(...totalLines);
   }
 
-  if (address) {
+  if (ctx.address) {
     parts.push("");
     parts.push(`📍 *Delivery Address:*`);
-    parts.push(address);
+    parts.push(ctx.address);
   }
 
   parts.push("");
   parts.push(`We'll keep you updated on dispatch and tracking details.`);
   parts.push(`For any queries, simply reply to this message.`);
   parts.push("");
-  parts.push(`Thank you for choosing ${brandName}! 💎`);
+  parts.push(`Thank you for choosing ${ctx.brandName}! 💎`);
 
   return parts.join("\n");
 };

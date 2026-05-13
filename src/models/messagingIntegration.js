@@ -90,6 +90,20 @@ const messagingIntegrationSchema = new mongoose.Schema(
       connected: { type: Boolean, default: false },
       lastConnectedAt: { type: Date, default: null },
     },
+    /**
+     * SMTP for type "email" — one mailbox per brand / integration.
+     * authPassword is encrypted at rest (same key as Telegram).
+     */
+    emailSmtp: {
+      host: { type: String, trim: true, default: "" },
+      port: { type: Number, default: 587 },
+      secure: { type: Boolean, default: false },
+      authUser: { type: String, trim: true, default: "" },
+      authPassword: { type: String, default: "" },
+      fromEmail: { type: String, trim: true, default: "" },
+      fromName: { type: String, trim: true, default: "" },
+      replyTo: { type: String, trim: true, default: "" },
+    },
     isDeleted: {
       type: Boolean,
       default: false,
