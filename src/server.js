@@ -1,4 +1,5 @@
-import "dotenv/config"; // Must be first to load env vars before other imports
+// Load `.env` from this package root (not process.cwd()) so markers and secrets work from any IDE cwd
+import "./loadDotenv.js";
 import app from "./app.js";
 import connectDB from "./config/db.js";
 import { syncMasterIndexesSafe } from "./config/syncMasterIndexes.js";
