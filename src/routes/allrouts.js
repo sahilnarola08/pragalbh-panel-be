@@ -1,4 +1,3 @@
-import healthRouter from "./Health/healthRoutes.js";
 import userRouter from "./userRoute.js";
 import supplierRouter from "./supplierRoute.js";
 import orderRouter from "./orderRouter.js";
@@ -37,7 +36,6 @@ import messagingIntegrationRouter from "./messagingIntegrationRoute.js";
 import messagingDispatchRouter from "./messagingDispatchRoute.js";
 
 const routes = (app) => {
-  app.use("/health", healthRouter);
   app.use("/auth", authRouter);
   app.use("/roles", roleRouter);
   app.use("/permissions", permissionRouter);
