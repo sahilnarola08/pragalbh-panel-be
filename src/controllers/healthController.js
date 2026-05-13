@@ -2,9 +2,15 @@ import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.
 const healthController = {
     createHealth: async (req, res) => {
         try {
-            sendSuccessResponse({ res, data: {
-                status: "200",
-            }, message: "Health check successful", status: 200 });
+            sendSuccessResponse({
+                res,
+                data: {
+                    status: "200",
+                    envMarker: process.env.HEALTH_ENV_MARKER?.trim() || null,
+                },
+                message: "Health check successful",
+                status: 200,
+            });
         } catch (error) {
             console.error('Health check error:', error);
             sendErrorResponse({ res, message: "Health check failed", status: 500 });
