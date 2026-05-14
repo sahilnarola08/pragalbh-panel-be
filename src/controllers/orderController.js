@@ -14,6 +14,7 @@ import Payment from "../models/payment.js";
 import { DEFAULT_PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 import { formatCurrency } from "../util/currencyFormat.js";
 import orderProfitService from "../services/orderProfitService.js";
+import { notifyOrderLifecycleStatusChange } from "../services/orderStatusNotificationService.js";
 import { buildDailyOrdersStatusReportBuffer } from "../services/orderDailyStatusReportService.js";
 import { buildDailyOrdersStatusReportPdfBuffer } from "../services/orderDailyStatusReportPdfService.js";
 import * as columnPermissionService from "../services/columnPermissionService.js";
@@ -2171,6 +2172,8 @@ export const updateOrderStatus = async (req, res) => {
       return sendErrorResponse({ res, status: 404, message: "Order not found" });
     }
 
+    const previousStatus = order.status;
+
     const protectedColumns = [
       ORDER_STATUS.VIDEO_CONFIRMATION,
       ORDER_STATUS.DISPATCH,
@@ -2228,10 +2231,26 @@ export const updateOrderStatus = async (req, res) => {
     invalidateCache('dashboard');
     invalidateCache('kanban');
 
+    const orderPlain = order.toObject();
+    let customerNotifications = null;
+    try {
+      customerNotifications = await notifyOrderLifecycleStatusChange(
+        orderPlain,
+        previousStatus,
+      );
+    } catch (notifyErr) {
+      console.error("[orderStatusNotify] unexpected:", notifyErr);
+      customerNotifications = {
+        attempted: false,
+        reason: "notify_exception",
+        detail: notifyErr?.message || String(notifyErr),
+      };
+    }
+
     return sendSuccessResponse({
       res,
       status: 200,
-      data: order,
+      data: { ...orderPlain, customerNotifications },
       message: "Order status updated successfully",
     });
 
@@ -2333,6 +2352,8 @@ export const updateTrackingInfo = async (req, res) => {
       return sendErrorResponse({ res, status: 404, message: "Order not found" });
     }
 
+    const previousStatus = order.status;
+
     order.trackingEntries = entries;
     order.trackingId = entries[0]?.trackingId || "";
     order.courierCompany = entries[0]?.courierCompany || "";
@@ -2355,10 +2376,25 @@ export const updateTrackingInfo = async (req, res) => {
     invalidateCache('dashboard');
     invalidateCache('kanban');
 
+    const orderPlain = order.toObject();
+    let customerNotifications = null;
+    try {
+      customerNotifications = await notifyOrderLifecycleStatusChange(orderPlain, previousStatus, {
+        forceNotifyTracking: true,
+      });
+    } catch (notifyErr) {
+      console.error("[orderStatusNotify] unexpected (tracking):", notifyErr);
+      customerNotifications = {
+        attempted: false,
+        reason: "notify_exception",
+        detail: notifyErr?.message || String(notifyErr),
+      };
+    }
+
     return sendSuccessResponse({
       res,
       status: 200,
-      data: order,
+      data: { ...orderPlain, customerNotifications },
       message: "Tracking info updated successfully and order moved to Updated Tracking ID column",
     });
   } catch (error) {
@@ -2415,6 +2451,8 @@ export const updateInitialPayment = async (req, res) => {
     if (!order) {
       return sendErrorResponse({ res, status: 404, message: "Order not found" });
     }
+
+    const previousStatusForLifecycleNotify = order.status;
 
     if (!order.products || !Array.isArray(order.products) || order.products.length === 0) {
       return sendErrorResponse({ res, status: 400, message: "Order has no products" });
@@ -2486,10 +2524,26 @@ export const updateInitialPayment = async (req, res) => {
     invalidateCache('order', orderId);
     invalidateCache('dashboard');
 
+    const orderPlain = order.toObject();
+    let customerNotifications = null;
+    try {
+      customerNotifications = await notifyOrderLifecycleStatusChange(
+        orderPlain,
+        previousStatusForLifecycleNotify,
+      );
+    } catch (notifyErr) {
+      console.error("[orderStatusNotify] unexpected (payment):", notifyErr);
+      customerNotifications = {
+        attempted: false,
+        reason: "notify_exception",
+        detail: notifyErr?.message || String(notifyErr),
+      };
+    }
+
     return sendSuccessResponse({
       res,
       status: 200,
-      data: populatedOrder,
+      data: { ...populatedOrder, customerNotifications },
       message: "Initial payment updated successfully.",
     });
   } catch (error) {
