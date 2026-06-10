@@ -88,10 +88,44 @@ export async function resolveCrmScope(req, res, next) {
   }
 }
 
+export function hasCrmWideLeadAccess(req) {
+  return Boolean(req?.crm?.canViewAllLeads);
+}
+
+/** Customer filter for followups / work queue based on assignment scope. */
+export function getFollowupCustomerScopeFilter(req) {
+  if (!req.crm) return { customerId: { $in: [] } };
+  if (hasCrmWideLeadAccess(req)) {
+    if (req.crm.accessMode === "all") return {};
+    return req.crm.allowedCustomerIds.length > 0
+      ? { customerId: { $in: req.crm.allowedCustomerIds } }
+      : { customerId: { $in: [] } };
+  }
+  const assigned = Array.isArray(req.crm.assignedCustomerIds) ? req.crm.assignedCustomerIds : [];
+  return assigned.length > 0 ? { customerId: { $in: assigned } } : { customerId: { $in: [] } };
+}
+
+/** Client list filter: team members only see customers from their assigned leads. */
+export function getClientScopeFilter(req) {
+  if (!req.crm) return { _id: { $in: [] } };
+  if (hasCrmWideLeadAccess(req)) {
+    if (req.crm.accessMode === "all") return {};
+    return req.crm.allowedCustomerIds.length > 0
+      ? { _id: { $in: req.crm.allowedCustomerIds } }
+      : { _id: { $in: [] } };
+  }
+  const assigned = Array.isArray(req.crm.assignedCustomerIds) ? req.crm.assignedCustomerIds : [];
+  return assigned.length > 0 ? { _id: { $in: assigned } } : { _id: { $in: [] } };
+}
+
 export function ensureCustomerInCrmScope(req, customerId) {
   if (!req.crm) return false;
   if (!mongoose.Types.ObjectId.isValid(customerId)) return false;
-  if (req.crm.accessMode === "all") return true;
-  return req.crm.allowedCustomerIds.includes(String(customerId));
+  if (hasCrmWideLeadAccess(req)) {
+    if (req.crm.accessMode === "all") return true;
+    return req.crm.allowedCustomerIds.includes(String(customerId));
+  }
+  const assigned = Array.isArray(req.crm.assignedCustomerIds) ? req.crm.assignedCustomerIds : [];
+  return assigned.includes(String(customerId));
 }
 

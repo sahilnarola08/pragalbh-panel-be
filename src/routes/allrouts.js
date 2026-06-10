@@ -34,6 +34,7 @@ import crmCustomersAliasRouter from "./crmCustomersAliasRoute.js";
 import whatsappRouter from "./whatsappRoute.js";
 import messagingIntegrationRouter from "./messagingIntegrationRoute.js";
 import messagingDispatchRouter from "./messagingDispatchRoute.js";
+import skuRouter from "./skuRoute.js";
 
 const routes = (app) => {
   app.use("/auth", authRouter);
@@ -65,6 +66,7 @@ app.use("/payments", paymentRouter);
   app.use("/employees", employeeRouter);
   app.use("/salary", salaryRouter);
   app.use("/stocks", stockRouter);
+  app.use("/sku", skuRouter);
   app.use("/crm", crmRouter);
   app.use("/crm", crmCustomersAliasRouter);
   app.use("/crm-auth", crmAuthLocalRouter);

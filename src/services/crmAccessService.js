@@ -93,6 +93,7 @@ export function getCrmContract(user, permissions) {
     ? crmAccess.allowedCustomerIds.map((id) => String(id))
     : [];
 
+  const perms = permissions || [];
   return {
     userId: String(user?._id || ""),
     email: user?.email || "",
@@ -100,9 +101,10 @@ export function getCrmContract(user, permissions) {
     invitationStatus: crmAccess.invitationStatus || "none",
     accessMode: crmAccess.accessMode === "all" ? "all" : "selected",
     allowedCustomerIds: crmAccess.accessMode === "all" ? [] : allowedIds,
+    canViewAllLeads: perms.includes("crm.access.manage") || perms.includes("users.manage"),
     tokenSource: "bearer_or_cookie",
     sessionId: user?.sessionId || null,
-    permissions: permissions || [],
+    permissions: perms,
     lastLoginAt: crmAccess.lastLoginAt || null,
   };
 }

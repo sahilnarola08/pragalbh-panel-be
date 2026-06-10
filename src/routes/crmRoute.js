@@ -1,6 +1,7 @@
 import express from "express";
 import { authenticateJWT } from "../middlewares/authenticateJWT.js";
 import { resolveCrmScope } from "../middlewares/resolveCrmScope.js";
+import { loadCrmAssignedScope } from "../middlewares/loadCrmAssignedScope.js";
 import {
   crmAuthContract,
   listCrmClients,
@@ -34,6 +35,7 @@ const router = express.Router();
 
 router.use(authenticateJWT);
 router.use(resolveCrmScope);
+router.use(loadCrmAssignedScope);
 
 router.get("/auth/contract", crmAuthContract);
 

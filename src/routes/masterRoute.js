@@ -18,6 +18,13 @@ router.get(
     "orders.create",
     "orders.edit",
     "order_management.view",
+    "crm.leads.view",
+    "crm.leads.create",
+    "crm.leads.edit",
+    "crm.leads.convert",
+    "crm.clients.view",
+    "crm.followups.view",
+    "crm.followups.create",
   ]),
   masterController.getAllMasters
 );

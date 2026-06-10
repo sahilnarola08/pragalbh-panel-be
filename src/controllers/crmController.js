@@ -7,7 +7,11 @@ import CrmPipeline from "../models/crmPipeline.js";
 import CrmTeam from "../models/crmTeam.js";
 import { sendErrorResponse, sendSuccessResponse } from "../util/commonResponses.js";
 import { getEffectivePermissions } from "../services/permissionResolver.js";
-import { ensureCustomerInCrmScope } from "../middlewares/resolveCrmScope.js";
+import {
+  ensureCustomerInCrmScope,
+  getClientScopeFilter,
+  getFollowupCustomerScopeFilter,
+} from "../middlewares/resolveCrmScope.js";
 import { getCrmContract } from "../services/crmAccessService.js";
 
 function parsePagination(query) {
@@ -126,14 +130,37 @@ async function getAssignableLeadOwner(ownerUserId) {
   const id = String(ownerUserId || "").trim();
   if (!id) return null;
   if (!mongoose.Types.ObjectId.isValid(id)) return null;
-  return Auth.findOne({
+
+  const user = await Auth.findOne({
     _id: id,
     isDeleted: false,
     isActive: true,
-    "crmAccess.enabled": true,
   })
-    .select("_id")
+    .select("_id role crmAccess.enabled")
     .lean();
+  if (!user) return null;
+
+  if (user.crmAccess?.enabled) {
+    return { _id: user._id };
+  }
+
+  // Super Admin / panel admins may own leads even when CRM access flag is off.
+  const permissions = await getEffectivePermissions(user._id);
+  const isPanelAdmin =
+    user.role === 1 ||
+    permissions.includes("users.manage") ||
+    permissions.includes("crm.access.manage");
+  if (isPanelAdmin) {
+    return { _id: user._id };
+  }
+
+  return null;
+}
+
+function enforceAssignedLeadOwnerFilter(req, filter) {
+  if (hasLeadWideAccess(req)) return filter;
+  const ownerId = new mongoose.Types.ObjectId(String(req.user._id));
+  return { ...filter, ownerUserId: ownerId };
 }
 
 function slugifyTeamName(name) {
@@ -164,6 +191,53 @@ async function getPrimaryTeamForMember(userId) {
     .select("_id name slug memberUserIds")
     .sort({ name: 1, createdAt: 1 })
     .lean();
+}
+
+function resolveLeadCreatorId(lead) {
+  if (lead?.createdByUserId) return String(lead.createdByUserId);
+  const events = Array.isArray(lead?.activityEvents) ? lead.activityEvents : [];
+  const createdEvent = events.find((event) => String(event?.type || "") === "created");
+  if (createdEvent?.createdByUserId) return String(createdEvent.createdByUserId);
+  if (lead?.updatedByUserId) return String(lead.updatedByUserId);
+  return "";
+}
+
+async function enrichLeadsWithUserMeta(items) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+  const userIds = new Set();
+  for (const item of items) {
+    const ownerId = String(item?.ownerUserId || "").trim();
+    const creatorId = resolveLeadCreatorId(item);
+    if (mongoose.Types.ObjectId.isValid(ownerId)) userIds.add(ownerId);
+    if (mongoose.Types.ObjectId.isValid(creatorId)) userIds.add(creatorId);
+  }
+  if (userIds.size === 0) {
+    return items.map((item) => ({
+      ...item,
+      ownerName: null,
+      createdByName: null,
+      createdByUserId: resolveLeadCreatorId(item) || null,
+    }));
+  }
+  const users = await Auth.find({ _id: { $in: Array.from(userIds) } })
+    .select("_id name email")
+    .lean();
+  const nameById = Object.fromEntries(
+    users.map((user) => [
+      String(user._id),
+      String(user?.name || "").trim() || user?.email || String(user._id),
+    ])
+  );
+  return items.map((item) => {
+    const ownerId = String(item?.ownerUserId || "");
+    const creatorId = resolveLeadCreatorId(item);
+    return {
+      ...item,
+      createdByUserId: creatorId || null,
+      ownerName: ownerId ? nameById[ownerId] || ownerId : null,
+      createdByName: creatorId ? nameById[creatorId] || creatorId : null,
+    };
+  });
 }
 
 async function normalizeTeamMembers(memberUserIds) {
@@ -321,22 +395,21 @@ export async function listCrmClients(req, res, next) {
     }
 
     const { page, limit, skip } = parsePagination(req.query);
+    const scopeFilter = getClientScopeFilter(req);
+    if (scopeFilter._id && Array.isArray(scopeFilter._id.$in) && scopeFilter._id.$in.length === 0) {
+      return sendSuccessResponse({
+        res,
+        status: 200,
+        message: "CRM clients",
+        data: { items: [], total: 0, page, limit },
+      });
+    }
+
     const filter = {
       isDeleted: false,
       ...customerSearchFilter(req.query.search),
+      ...scopeFilter,
     };
-
-    if (req.crm.accessMode !== "all") {
-      if (req.crm.allowedCustomerIds.length === 0) {
-        return sendSuccessResponse({
-          res,
-          status: 200,
-          message: "CRM clients",
-          data: { items: [], total: 0, page, limit },
-        });
-      }
-      filter._id = { $in: req.crm.allowedCustomerIds };
-    }
 
     const [items, total] = await Promise.all([
       User.find(filter)
@@ -561,12 +634,17 @@ export async function updateCrmFollowup(req, res, next) {
 
 export async function listCrmTeams(req, res, next) {
   try {
-    if (!req.crm?.canViewTeams) {
+    const canListTeamsForLeadForm =
+      req.crm?.canViewTeams || req.crm?.canViewLeads || req.crm?.canCreateLeads;
+    if (!canListTeamsForLeadForm) {
       return sendErrorResponse({ status: 403, res, message: "Missing permission: crm.teams.view" });
     }
     const filter = {};
     if (String(req.query.includeInactive || "").toLowerCase() !== "true") {
       filter.isActive = true;
+    }
+    if (!hasLeadWideAccess(req) && !req.crm?.canManageTeams) {
+      filter.memberUserIds = req.user._id;
     }
     const items = await CrmTeam.find(filter).sort({ name: 1 }).lean();
     return sendSuccessResponse({
@@ -715,6 +793,11 @@ export async function getCrmTeamMembers(req, res, next) {
     const team = await CrmTeam.findOne({ _id: id, isActive: true }).lean();
     if (!team) return sendErrorResponse({ status: 404, res, message: "Team not found" });
     const memberIds = normalizeObjectIdArray(team.memberUserIds);
+    if (!hasLeadWideAccess(req) && !req.crm?.canManageTeams) {
+      if (!memberIds.includes(String(req.user._id))) {
+        return sendErrorResponse({ status: 403, res, message: "Team not accessible" });
+      }
+    }
     const members = await Auth.find({
       _id: { $in: memberIds },
       isDeleted: false,
@@ -746,8 +829,9 @@ export async function listCrmLeads(req, res, next) {
     };
     if (req.query.status) filter.status = String(req.query.status);
     const currentUserId = String(req.user._id);
+    const currentUserObjectId = new mongoose.Types.ObjectId(String(req.user._id));
     if (req.query.owner === "me") {
-      filter.ownerUserId = req.user._id;
+      filter.ownerUserId = currentUserObjectId;
     } else if (req.query.ownerId !== undefined) {
       const ownerId = String(req.query.ownerId || "").trim();
       if (ownerId) {
@@ -757,10 +841,10 @@ export async function listCrmLeads(req, res, next) {
         if (!hasLeadWideAccess(req) && ownerId !== currentUserId) {
           return sendErrorResponse({ status: 403, res, message: "Cannot view other users' leads" });
         }
-        filter.ownerUserId = ownerId;
+        filter.ownerUserId = new mongoose.Types.ObjectId(ownerId);
       }
     } else if (!hasLeadWideAccess(req)) {
-      filter.ownerUserId = req.user._id;
+      filter.ownerUserId = currentUserObjectId;
     }
     if (req.query.pipelineId && mongoose.Types.ObjectId.isValid(String(req.query.pipelineId))) {
       filter.pipelineId = String(req.query.pipelineId);
@@ -770,6 +854,12 @@ export async function listCrmLeads(req, res, next) {
       if (requestedTeamId) {
         if (!mongoose.Types.ObjectId.isValid(requestedTeamId)) {
           return sendErrorResponse({ status: 400, res, message: "Invalid team id" });
+        }
+        if (!hasLeadWideAccess(req)) {
+          const userTeam = await getPrimaryTeamForMember(req.user._id);
+          if (!userTeam || String(userTeam._id) !== requestedTeamId) {
+            return sendErrorResponse({ status: 403, res, message: "Cannot filter by another team" });
+          }
         }
         filter.teamId = requestedTeamId;
       } else {
@@ -804,14 +894,16 @@ export async function listCrmLeads(req, res, next) {
       if (nextFollowupTo) filter.nextFollowupAt.$lte = nextFollowupTo;
     }
 
+    const scopedFilter = enforceAssignedLeadOwnerFilter(req, filter);
+
     const sortableFields = new Set(["updatedAt", "createdAt", "nextFollowupAt", "priority", "status"]);
     const sortBy = sortableFields.has(String(req.query.sortBy || "")) ? String(req.query.sortBy) : "updatedAt";
     const sortOrder = String(req.query.sortOrder || "desc").toLowerCase() === "asc" ? 1 : -1;
     const sort = { [sortBy]: sortOrder };
 
     const [items, total] = await Promise.all([
-      CrmLead.find(filter).sort(sort).skip(skip).limit(limit).lean(),
-      CrmLead.countDocuments(filter),
+      CrmLead.find(scopedFilter).sort(sort).skip(skip).limit(limit).lean(),
+      CrmLead.countDocuments(scopedFilter),
     ]);
     const teamIds = Array.from(
       new Set(
@@ -827,10 +919,11 @@ export async function listCrmLeads(req, res, next) {
         teamNameById[String(team._id)] = String(team.name || "").trim() || String(team._id);
       }
     }
-    const normalizedItems = items.map((item) => ({
+    const withTeamNames = items.map((item) => ({
       ...item,
       teamName: item?.teamId ? teamNameById[String(item.teamId)] || null : null,
     }));
+    const normalizedItems = await enrichLeadsWithUserMeta(withTeamNames);
 
     return sendSuccessResponse({
       res,
@@ -931,6 +1024,11 @@ export async function createCrmLead(req, res, next) {
         });
       }
     }
+    if (!nextTeamId) {
+      const ownerTeam = await getPrimaryTeamForMember(nextOwnerUserId);
+      nextTeamId = ownerTeam?._id || null;
+      selectedTeam = ownerTeam || selectedTeam;
+    }
     const payload = {
       firstName: String(req.body.firstName || "").trim(),
       lastName: String(req.body.lastName || "").trim(),
@@ -953,6 +1051,7 @@ export async function createCrmLead(req, res, next) {
       nextFollowupAt: req.body.nextFollowupAt || null,
       ownerUserId: nextOwnerUserId,
       teamId: nextTeamId,
+      createdByUserId: req.user._id,
       updatedByUserId: req.user._id,
     };
     payload.activityEvents = [
@@ -964,6 +1063,7 @@ export async function createCrmLead(req, res, next) {
           pipelineId: payload.pipelineId || null,
           teamId: payload.teamId || null,
           ownerUserId: payload.ownerUserId || null,
+          createdByUserId: req.user._id,
         },
         createdAt: new Date(),
         createdByUserId: req.user._id,
@@ -976,11 +1076,12 @@ export async function createCrmLead(req, res, next) {
     }
 
     const created = await CrmLead.create(payload);
+    const [enrichedLead] = await enrichLeadsWithUserMeta([created.toObject()]);
     return sendSuccessResponse({
       res,
       status: 201,
       message: "CRM lead created",
-      data: { lead: created, customer },
+      data: { lead: enrichedLead || created, customer },
     });
   } catch (error) {
     next(error);
@@ -1171,11 +1272,13 @@ export async function updateCrmLead(req, res, next) {
     }
     await lead.save();
 
+    const [enrichedLead] = await enrichLeadsWithUserMeta([lead.toObject()]);
+
     return sendSuccessResponse({
       res,
       status: 200,
       message: "CRM lead updated",
-      data: lead,
+      data: enrichedLead || lead,
     });
   } catch (error) {
     next(error);
@@ -1448,11 +1551,7 @@ export async function getCrmWorkQueue(req, res, next) {
 
     const baseFilter = {
       status: { $in: ["open", "in_progress"] },
-      ...(req.crm.accessMode === "all"
-        ? {}
-        : req.crm.allowedCustomerIds.length > 0
-          ? { customerId: { $in: req.crm.allowedCustomerIds } }
-          : { customerId: { $in: [] } }),
+      ...getFollowupCustomerScopeFilter(req),
     };
 
     const [overdue, today, week] = await Promise.all([
@@ -1515,11 +1614,7 @@ export async function getCrmOverviewMetrics(req, res, next) {
 
     const followupFilter = {
       ...dateFilter,
-      ...(req.crm.accessMode === "all"
-        ? {}
-        : req.crm.allowedCustomerIds.length > 0
-          ? { customerId: { $in: req.crm.allowedCustomerIds } }
-          : { customerId: { $in: [] } }),
+      ...getFollowupCustomerScopeFilter(req),
     };
 
     const [leads, followups] = await Promise.all([

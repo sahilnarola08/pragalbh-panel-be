@@ -4,6 +4,7 @@ import app from "./app.js";
 import connectDB from "./config/db.js";
 import { syncMasterIndexesSafe } from "./config/syncMasterIndexes.js";
 import { runRbacSeed } from "./services/permissionSeedService.js";
+import { ensureDefaultTemplate } from "./controllers/skuController.js";
 import { warnIfMissingKey } from "./util/crypto.js";
 
 // Default 8003 matches pragalbh-panel-fe/.env NEXT_PUBLIC_API when PORT is unset
@@ -29,6 +30,12 @@ async function start() {
     await runRbacSeed();
   } catch (err) {
     console.error("[Startup] RBAC seed failed (continuing):", err.message);
+  }
+
+  try {
+    await ensureDefaultTemplate();
+  } catch (err) {
+    console.error("[Startup] SKU default template init failed (continuing):", err.message);
   }
 
   try {
