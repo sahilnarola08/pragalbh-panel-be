@@ -1,5 +1,6 @@
 import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.js";
 import { deleteImageFile } from "../middlewares/upload.js";
+import { deleteVideoFile } from "../middlewares/videoUpload.js";
 
 const buildAbsoluteUrl = (relativePath, req = null) => {
   if (!relativePath) return null;
@@ -106,7 +107,7 @@ export const uploadProductImages = async (req, res) => {
     console.error("Error uploading images:", error);
 
     if (req.processedImages?.length) {
-      req.processedImages.forEach((image) => deleteImageFile(image.filename));
+      await Promise.all(req.processedImages.map((image) => deleteImageFile(image.imageUrl)));
     }
 
     return sendErrorResponse({
@@ -130,7 +131,7 @@ export const deleteUploadedImage = async (req, res) => {
       });
     }
 
-    deleteImageFile(imageUrl);
+    await deleteImageFile(imageUrl);
 
     return sendSuccessResponse({
       res,
@@ -143,6 +144,80 @@ export const deleteUploadedImage = async (req, res) => {
     return sendErrorResponse({
       res,
       message: "Failed to delete image",
+      status: 500,
+      error: error.message || error,
+    });
+  }
+};
+
+export const uploadProductVideos = async (req, res) => {
+  try {
+    const processed = req.processedVideos || [];
+
+    if (!processed.length) {
+      return sendErrorResponse({
+        res,
+        message: "No videos uploaded. Please upload between 1 and 3 videos.",
+        status: 400,
+      });
+    }
+
+    const videos = processed.map((video) => ({
+      filename: video.filename,
+      originalName: video.originalname,
+      url: buildAbsoluteUrl(video.videoUrl, req),
+      relativePath: video.videoUrl,
+      mimetype: video.mimetype,
+      size: video.size,
+    }));
+
+    return sendSuccessResponse({
+      res,
+      data: { videos },
+      message: "Videos uploaded successfully!",
+      status: 200,
+    });
+  } catch (error) {
+    console.error("Error uploading videos:", error);
+
+    if (req.processedVideos?.length) {
+      await Promise.all(req.processedVideos.map((video) => deleteVideoFile(video.videoUrl)));
+    }
+
+    return sendErrorResponse({
+      res,
+      message: "Failed to upload videos",
+      status: 500,
+      error: error.message || error,
+    });
+  }
+};
+
+export const deleteUploadedVideo = async (req, res) => {
+  try {
+    const { videoUrl } = req.body;
+
+    if (!videoUrl) {
+      return sendErrorResponse({
+        res,
+        message: "Video URL is required",
+        status: 400,
+      });
+    }
+
+    await deleteVideoFile(videoUrl);
+
+    return sendSuccessResponse({
+      res,
+      data: { deletedUrl: videoUrl },
+      message: "Video deleted successfully",
+      status: 200,
+    });
+  } catch (error) {
+    console.error("Error deleting video:", error);
+    return sendErrorResponse({
+      res,
+      message: "Failed to delete video",
       status: 500,
       error: error.message || error,
     });

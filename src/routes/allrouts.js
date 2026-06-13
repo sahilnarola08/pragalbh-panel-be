@@ -35,6 +35,7 @@ import whatsappRouter from "./whatsappRoute.js";
 import messagingIntegrationRouter from "./messagingIntegrationRoute.js";
 import messagingDispatchRouter from "./messagingDispatchRoute.js";
 import skuRouter from "./skuRoute.js";
+import storageSettingsRouter from "./storageSettingsRoute.js";
 
 const routes = (app) => {
   app.use("/auth", authRouter);
@@ -74,6 +75,7 @@ app.use("/payments", paymentRouter);
   app.use("/whatsapp", whatsappRouter);
   app.use("/messaging-integrations", messagingIntegrationRouter);
   app.use("/messaging", messagingDispatchRouter);
+  app.use("/settings/storage", storageSettingsRouter);
 };
 
 export default routes;

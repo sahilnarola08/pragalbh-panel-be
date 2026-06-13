@@ -1,19 +1,9 @@
-import fs from "fs";
 import multer from "multer";
 import path from "path";
 import sharp from "sharp";
-import { fileURLToPath } from "url";
+import { deleteImageFile, getImageUrl, saveImageBuffer } from "../services/storage/storageService.js";
 
 const supportedImage = /png|jpg|jpeg|webp|gif/;
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const imageUploadDir = path.join(__dirname, "../../uploads/images");
-
-if (!fs.existsSync(imageUploadDir)) {
-  fs.mkdirSync(imageUploadDir, { recursive: true });
-}
 
 const storage = multer.memoryStorage();
 
@@ -27,11 +17,13 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
+const MAX_IMAGE_UPLOAD_BYTES = 15 * 1024 * 1024; // 15MB — sharp compresses to webp after upload
+
 const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 4 * 1024 * 1024, // 4MB per file
+    fileSize: MAX_IMAGE_UPLOAD_BYTES,
   },
 });
 
@@ -45,14 +37,17 @@ const convertAndSaveImage = async (buffer, originalname) => {
   const uniqueSuffix = Date.now();
   const sanitized = sanitizeName(originalname);
   const filename = `${uniqueSuffix}-${sanitized}.webp`;
-  const outputPath = path.join(imageUploadDir, filename);
-
-  await sharp(buffer).webp({ quality: 80 }).toFile(outputPath);
+  const webpBuffer = await sharp(buffer)
+    .rotate()
+    .resize({ width: 2048, height: 2048, fit: "inside", withoutEnlargement: true })
+    .webp({ quality: 80 })
+    .toBuffer();
+  const saved = await saveImageBuffer({ buffer: webpBuffer, filename });
 
   return {
-    filename,
-    imageUrl: `/images/${filename}`,
-    outputPath,
+    filename: saved.filename,
+    imageUrl: saved.imageUrl,
+    outputPath: saved.outputPath,
   };
 };
 
@@ -94,44 +89,4 @@ export const processImages = async (req, res, next) => {
   }
 };
 
-export const getImageUrl = (filename) => {
-  if (!filename) return null;
-  if (filename.startsWith("http://") || filename.startsWith("https://")) {
-    return filename;
-  }
-  if (filename.startsWith("/uploads/images/")) {
-    return filename.replace("/uploads/images/", "/images/");
-  }
-  if (filename.startsWith("/images/")) {
-    return filename;
-  }
-  return `/images/${filename}`;
-};
-
-export const deleteImageFile = (imagePath) => {
-  try {
-    if (!imagePath) return;
-
-    let filename;
-    if (imagePath.includes("/uploads/images/")) {
-      filename = imagePath.split("/uploads/images/")[1];
-    } else if (imagePath.includes("/images/")) {
-      filename = imagePath.split("/images/")[1];
-    } else if (path.isAbsolute(imagePath)) {
-      filename = path.basename(imagePath);
-    } else {
-      filename = imagePath;
-    }
-
-    if (!filename) return;
-
-    const filePath = path.join(imageUploadDir, filename);
-
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-  } catch (error) {
-    console.error("Error deleting image file:", error.message);
-  }
-};
-
+export { getImageUrl, deleteImageFile, MAX_IMAGE_UPLOAD_BYTES };
