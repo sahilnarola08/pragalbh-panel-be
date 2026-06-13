@@ -54,6 +54,12 @@ const crmLeadSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    createdByUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Auth",
+      default: null,
+      index: true,
+    },
     teamId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "CrmTeam",

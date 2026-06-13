@@ -230,6 +230,14 @@ const getAllMasters = async (req, res, next) => {
         // Non-master users can only read Bank masters (used by expense/payment flows).
         const perms = await getEffectivePermissions(req.user?._id);
         const hasMasterView = Array.isArray(perms) && perms.includes("master.view");
+        const hasCrmCatalogAccess =
+          Array.isArray(perms) &&
+          perms.some(
+            (p) =>
+              p.startsWith("crm.leads.") ||
+              p.startsWith("crm.clients.") ||
+              p.startsWith("crm.followups.")
+          );
 
         // Handle isDeleted filter
         if (isDeleted === 'true') {
@@ -262,7 +270,11 @@ const getAllMasters = async (req, res, next) => {
             ];
         }
 
-        if (!hasMasterView && !(masterType && masterType.trim().length > 0)) {
+        if (
+          !hasMasterView &&
+          !hasCrmCatalogAccess &&
+          !(masterType && masterType.trim().length > 0)
+        ) {
             const bankAsset = await MasterAssets.findOne({
                 isDeleted: false,
                 $or: [

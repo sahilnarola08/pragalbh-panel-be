@@ -49,7 +49,14 @@ const extractImageURLs = (input, { fallback } = { fallback: false }) => {
 // create product controller
 const createProduct = async (req, res) => {
   try {
-    const { category, productName, imageURLs, image } = req.body;
+    const {
+      category,
+      productName,
+      imageURLs,
+      image,
+      autoGenerateSku,
+      skuAttributes,
+    } = req.body;
 
     // Validate category ObjectId format
     if (!mongoose.Types.ObjectId.isValid(category)) {
@@ -100,6 +107,23 @@ const createProduct = async (req, res) => {
       productName: trimmedProductName,
       imageURLs: normalizedImageURLs,
     });
+
+    if (autoGenerateSku && skuAttributes?.category) {
+      try {
+        const { generateSku } = await import("../services/skuGeneratorService.js");
+        const sku = await generateSku(skuAttributes, {
+          persist: true,
+          productId: newProduct._id,
+          productName: trimmedProductName,
+          createdBy: req.user?._id || req.user?.id || null,
+        });
+        newProduct.skuId = sku._id;
+        newProduct.skuCode = sku.skuCode;
+        await newProduct.save();
+      } catch (skuErr) {
+        console.warn("[Product] Auto SKU generation skipped:", skuErr.message);
+      }
+    }
 
     await newProduct.populate({
       path: "category",

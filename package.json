@@ -9,7 +9,12 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "echo build done",
     "crm:backfill-team": "node src/scripts/backfillLeadTeams.js",
-    "telegram:login": "node src/scripts/telegramLogin.js"
+    "telegram:login": "node src/scripts/telegramLogin.js",
+    "storage:migrate-supabase": "node src/scripts/migrateLocalMediaToSupabase.js",
+    "storage:migrate-supabase:dry-run": "node src/scripts/migrateLocalMediaToSupabase.js --dry-run",
+    "storage:migrate-db-urls": "node src/scripts/migrateDatabaseMediaUrls.js",
+    "storage:migrate-db-urls:dry-run": "node src/scripts/migrateDatabaseMediaUrls.js --dry-run",
+    "storage:test-usage": "node src/scripts/testStorageUsage.js"
   },
   "keywords": [
     "inventory",
@@ -21,6 +26,7 @@
   "license": "ISC",
   "description": "Backend API for inventory management system",
   "dependencies": {
+    "@supabase/supabase-js": "^2.108.1",
     "bcryptjs": "^3.0.2",
     "cloudinary": "^2.8.0",
     "compression": "^1.7.4",
@@ -37,8 +43,10 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^6.9.16",
     "pdfmake": "^0.2.20",
+    "qrcode": "^1.5.4",
     "sharp": "^0.32.6",
     "telegram": "^2.26.22",
+    "ws": "^8.21.0",
     "xlsx": "^0.18.5",
     "yup": "^1.4.0"
   },

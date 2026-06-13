@@ -7,6 +7,8 @@ import routes from "./routes/allrouts.js";
 import { startSchedulers } from "./services/schedulerService.js";
 import compression from "compression";
 import cacheMiddleware from "./middlewares/cache.js";
+import { storageConfig } from "./config/storage.js";
+import { buildSupabaseImageUrl } from "./services/storage/legacyMediaUrl.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,8 +86,27 @@ app.use((req, res, next) => {
 // Cache middleware
 app.use(cacheMiddleware);
 
-// Static files
-app.use("/images", express.static(path.join(__dirname, "../uploads/images")));
+// Static files (kept for backward compatibility with locally stored media)
+app.use(
+  "/images",
+  express.static(path.join(__dirname, "../uploads/images"), { fallthrough: true })
+);
+app.get("/images/:filename", (req, res) => {
+  const { filename } = req.params;
+  if (!filename || filename.includes("..")) {
+    return res.status(400).json({ message: "Invalid filename" });
+  }
+
+  if (storageConfig.isSupabase) {
+    const supabaseUrl = buildSupabaseImageUrl(filename);
+    if (supabaseUrl) {
+      return res.redirect(302, supabaseUrl);
+    }
+  }
+
+  return res.status(404).json({ message: "Image not found" });
+});
+app.use("/uploads/videos", express.static(path.join(__dirname, "../uploads/videos")));
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 // Logging
@@ -109,9 +130,12 @@ app.use((error, req, res, next) => {
 
   if (error.name === "MulterError") {
     if (error.code === "LIMIT_FILE_SIZE") {
+      const isImageUpload = String(req.originalUrl || req.path || "").includes("/upload/images");
       return res.status(400).json({
         success: false,
-        message: "File size too large (e.g. customer import allows up to 10MB).",
+        message: isImageUpload
+          ? "Image too large. Maximum size is 15MB per file."
+          : "File size too large.",
         status: 400,
         data: null,
       });

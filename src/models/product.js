@@ -28,6 +28,20 @@ const productSchema = new mongoose.Schema({
       },
     ],
   },
+  skuId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Sku",
+    default: null,
+    index: true,
+  },
+  skuCode: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    default: null,
+    sparse: true,
+    index: true,
+  },
   isDeleted: {
     type: Boolean,
     default: false,
