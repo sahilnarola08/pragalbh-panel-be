@@ -39,10 +39,22 @@ router.post("/registration", authorize("user.create"), validateUserRegistration,
 // Needed by Add Order client picker for production/order-management roles.
 router.get(
   "/users-data",
-  authorizeAny(["user.view", "orders.create", "orders.edit", "order_management.view"]),
+  authorizeAny([
+    "user.view",
+    "user.create",
+    "user.edit",
+    "orders.create",
+    "orders.edit",
+    "order_management.view",
+  ]),
   userController.getAllUsers
 );
-router.get("/user-data-by-id/:id", authorize("user.view"), validateUserDelete, userController.getUserById);
+router.get(
+  "/user-data-by-id/:id",
+  authorizeAny(["user.view", "user.edit"]),
+  validateUserDelete,
+  userController.getUserById
+);
 router.put("/user-update/:id", authorize("user.edit"), validateUserUpdate, userController.updateUser);
 router.delete("/user-delete/:id", authorize("user.delete"), validateUserDelete, userController.deleteUser);
 

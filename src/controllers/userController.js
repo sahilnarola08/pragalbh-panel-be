@@ -50,14 +50,19 @@ const register = async (req, res, next) => {
         }
       }
 
-      // Check if user already exists by email
-      const existingUserByEmail = await User.findOne({ email });
-      if (existingUserByEmail) {
-        return sendErrorResponse({
-          status: 400,
-          res,
-          message: "Email already exists."
-        });
+      // Normalize email — empty is allowed (partial unique index); only check real addresses
+      const emailValue =
+        email && String(email).trim() !== "" ? String(email).trim().toLowerCase() : undefined;
+
+      if (emailValue) {
+        const existingUserByEmail = await User.findOne({ email: emailValue });
+        if (existingUserByEmail) {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Email already exists."
+          });
+        }
       }
 
       // Convert empty contactNumber to undefined to avoid unique index issues
@@ -96,7 +101,7 @@ const register = async (req, res, next) => {
         contactNumber: contactNumberValue,
         telegramUsername: telegramUsernameValue,
         platforms,
-        email,
+        email: emailValue,
         clientType,
         company: companyValue,
         otherDetails: otherDetailsValue
@@ -357,18 +362,24 @@ const updateUser = async (req, res, next) => {
       });
     }
 
-    // Check if email is being updated and already exists for another user
-    if (updateData.email) {
-      const existingUserByEmail = await User.findOne({ 
-        email: updateData.email,
-        _id: { $ne: id }
-      });
-      if (existingUserByEmail) {
-        return sendErrorResponse({
-          status: 400,
-          res,
-          message: "Email already exists for another user."
+    // Normalize email — empty clears the field; only enforce uniqueness for real addresses
+    if (updateData.email !== undefined) {
+      if (updateData.email && String(updateData.email).trim() !== "") {
+        const normalizedEmail = String(updateData.email).trim().toLowerCase();
+        const existingUserByEmail = await User.findOne({
+          email: normalizedEmail,
+          _id: { $ne: id },
         });
+        if (existingUserByEmail) {
+          return sendErrorResponse({
+            status: 400,
+            res,
+            message: "Email already exists for another user.",
+          });
+        }
+        updateData.email = normalizedEmail;
+      } else {
+        updateData.email = undefined;
       }
     }
 

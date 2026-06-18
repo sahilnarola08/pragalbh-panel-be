@@ -15,7 +15,7 @@ import PartnerTransaction from "../models/partnerTransaction.js";
 import Mediator from "../models/mediator.js";
 import { PAYMENT_STATUS, PAYMENT_LIFECYCLE_STATUS } from "../helper/enums.js";
 import { getOrderProfitSummaryBulk } from "./orderProfitService.js";
-import { findActiveTargetByType } from "./targetService.js";
+import { findActiveTargetByType, getActualSales } from "./targetService.js";
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -473,6 +473,156 @@ export async function getFinance(filter = "monthly", options = {}) {
   };
 }
 
+/** Calendar month bounds (month is 0-indexed). */
+function getCalendarMonthRange(year, month) {
+  const start = new Date(year, month, 1, 0, 0, 0, 0);
+  const end = new Date(year, month + 1, 0, 23, 59, 59, 999);
+  return { start, end };
+}
+
+async function aggregatePeriodSales(start, end) {
+  const [salesAgg, orderCount] = await Promise.all([
+    Order.aggregate([
+      { $match: { isDeleted: false, createdAt: { $gte: start, $lte: end } } },
+      { $unwind: "$products" },
+      {
+        $group: {
+          _id: null,
+          totalSales: { $sum: { $ifNull: ["$products.sellingPrice", 0] } },
+        },
+      },
+      { $project: { _id: 0, totalSales: { $round: ["$totalSales", 2] } } },
+    ]).exec(),
+    Order.countDocuments({ isDeleted: false, createdAt: { $gte: start, $lte: end } }),
+  ]);
+  return {
+    totalSales: round2(salesAgg[0]?.totalSales ?? 0),
+    orderCount: orderCount || 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SALES
+// ---------------------------------------------------------------------------
+export async function getSales(filter = "monthly", options = {}) {
+  const { start, end } = getDateRange(filter, options);
+  const now = new Date();
+  const curMonth = getCalendarMonthRange(now.getFullYear(), now.getMonth());
+  const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lastMonth = getCalendarMonthRange(lastMonthDate.getFullYear(), lastMonthDate.getMonth());
+
+  const trendFormat = filter === "yearly" ? "%Y-%m" : "%Y-%m-%d";
+  const monthBuckets = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    monthBuckets.push({
+      year: d.getFullYear(),
+      month: d.getMonth(),
+      label: d.toLocaleDateString("en-IN", { month: "short", year: "2-digit" }),
+    });
+  }
+
+  const monthlySalesPromises = monthBuckets.map(async (b) => {
+    const r = getCalendarMonthRange(b.year, b.month);
+    const total = await getActualSales(r.start, r.end);
+    return { label: b.label, sales: round2(total), year: b.year, month: b.month };
+  });
+
+  const [
+    currentMonthData,
+    lastMonthData,
+    periodData,
+    salesTrend,
+    salesByStatus,
+    monthlyComparison,
+  ] = await Promise.all([
+    aggregatePeriodSales(curMonth.start, curMonth.end),
+    aggregatePeriodSales(lastMonth.start, lastMonth.end),
+    aggregatePeriodSales(start, end),
+    Order.aggregate([
+      { $match: { isDeleted: false, createdAt: { $gte: start, $lte: end } } },
+      { $unwind: "$products" },
+      {
+        $group: {
+          _id: { $dateToString: { format: trendFormat, date: "$createdAt" } },
+          sales: { $sum: { $ifNull: ["$products.sellingPrice", 0] } },
+          orders: { $addToSet: "$_id" },
+        },
+      },
+      { $sort: { _id: 1 } },
+      {
+        $project: {
+          date: "$_id",
+          sales: { $round: ["$sales", 2] },
+          orderCount: { $size: "$orders" },
+          _id: 0,
+        },
+      },
+    ]).exec(),
+    Order.aggregate([
+      { $match: { isDeleted: false, createdAt: { $gte: start, $lte: end } } },
+      { $unwind: "$products" },
+      {
+        $group: {
+          _id: "$status",
+          sales: { $sum: { $ifNull: ["$products.sellingPrice", 0] } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { sales: -1 } },
+      { $project: { status: "$_id", sales: { $round: ["$sales", 2] }, count: 1, _id: 0 } },
+    ]).exec(),
+    Promise.all(monthlySalesPromises),
+  ]);
+
+  const currentMonthSales = currentMonthData.totalSales;
+  const lastMonthSales = lastMonthData.totalSales;
+  const monthOverMonthChange =
+    lastMonthSales > 0
+      ? round2(((currentMonthSales - lastMonthSales) / lastMonthSales) * 100)
+      : currentMonthSales > 0
+        ? 100
+        : 0;
+
+  const filterLabels = {
+    weekly: "This Week",
+    monthly: "This Month",
+    yearly: "This Year",
+    custom: "Custom Range",
+  };
+
+  return {
+    currentMonth: {
+      sales: currentMonthSales,
+      orderCount: currentMonthData.orderCount,
+      label: now.toLocaleDateString("en-IN", { month: "long", year: "numeric" }),
+      startDate: curMonth.start.toISOString(),
+      endDate: curMonth.end.toISOString(),
+    },
+    lastMonth: {
+      sales: lastMonthSales,
+      orderCount: lastMonthData.orderCount,
+      label: lastMonthDate.toLocaleDateString("en-IN", { month: "long", year: "numeric" }),
+      startDate: lastMonth.start.toISOString(),
+      endDate: lastMonth.end.toISOString(),
+    },
+    monthOverMonthChange,
+    period: {
+      sales: periodData.totalSales,
+      orderCount: periodData.orderCount,
+      filter,
+      filterLabel: filterLabels[filter] || filterLabels.monthly,
+      startDate: start.toISOString(),
+      endDate: end.toISOString(),
+      avgOrderValue:
+        periodData.orderCount > 0 ? round2(periodData.totalSales / periodData.orderCount) : 0,
+    },
+    salesTrend: salesTrend || [],
+    monthlyComparison: monthlyComparison || [],
+    salesByStatus: salesByStatus || [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // ORDERS
 // ---------------------------------------------------------------------------
@@ -886,6 +1036,7 @@ export async function getOperations(filter = "monthly", options = {}) {
 // ---------------------------------------------------------------------------
 const TAB_FNS = {
   overview: getOverview,
+  sales: getSales,
   finance: getFinance,
   orders: getOrders,
   payments: getPayments,
@@ -913,6 +1064,7 @@ export async function getDashboard(tabs = null, filter = "monthly", options = {}
 
 export default {
   getOverview,
+  getSales,
   getFinance,
   getOrders,
   getPayments,
