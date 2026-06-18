@@ -32,8 +32,11 @@ const userRegistrationSchema = yup.object().shape({
 
   email: yup
     .string()
-    .email('Please enter a valid email address')
-    .max(100, 'Email must not exceed 100 characters'),
+    .nullable()
+    .transform((value) => (value === "" || value === null || value === undefined ? undefined : value))
+    .optional()
+    .email("Please enter a valid email address")
+    .max(100, "Email must not exceed 100 characters"),
 
   contactNumber: yup
     .string()
@@ -124,9 +127,11 @@ const userUpdateSchema = yup.object().shape({
 
   email: yup
     .string()
-    .email('Please enter a valid email address')
-    .max(100, 'Email must not exceed 100 characters')
-    .optional(),
+    .nullable()
+    .transform((value) => (value === "" || value === null || value === undefined ? undefined : value))
+    .optional()
+    .email("Please enter a valid email address")
+    .max(100, "Email must not exceed 100 characters"),
 
   contactNumber: yup
     .string()

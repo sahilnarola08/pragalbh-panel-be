@@ -12,6 +12,8 @@ router.get(
   "/get",
   authorizeAny([
     "master.view",
+    "user.create",
+    "user.edit",
     "expense.view",
     "income.view",
     "payment.view",

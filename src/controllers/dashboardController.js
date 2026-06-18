@@ -3,7 +3,7 @@ import { sendSuccessResponse, sendErrorResponse } from "../util/commonResponses.
 
 /**
  * GET /dashboard?tab=overview&filter=monthly
- * Returns { overview, finance, orders, payments, profitAnalytics, partnership, operations }.
+ * Returns { overview, sales, finance, orders, payments, profitAnalytics, partnership, operations }.
  * If tab is provided, only that tab is computed (and returned as the only key with data).
  * If multiple tabs: tab=overview&tab=payments returns both.
  */
